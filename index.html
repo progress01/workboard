@@ -1,0 +1,710 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>戰術白板系統 2.0 (手動雲端版)</title>
+    
+    <!-- Firebase Compat -->
+    <script src="https://www.gstatic.com/firebasejs/10.8.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.8.1/firebase-auth-compat.js"></script>
+
+    <style>
+        :root { --primary: #4f46e5; --bg: #f8fafc; --text: #1f2937; --font-stack: "Microsoft JhengHei", sans-serif; }
+        * { box-sizing: border-box; font-family: var(--font-stack); }
+        body { background: var(--bg); color: var(--text); margin: 0; padding: 0; min-height: 100vh; padding-top: 80px; overflow-x: hidden; }
+        
+        #login-screen { position: fixed; top:0; left:0; right:0; bottom:0; background: radial-gradient(circle at center, #1e293b 0%, #0f172a 100%); display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 10000; color: white; }
+        
+        /* 頂部工具列 */
+        .toolbar { position: fixed; top: 0; left: 0; right: 0; background: #1e293b; color: white; padding: 10px 20px; display: flex; justify-content: space-between; align-items: center; z-index: 2000; height: 60px; box-shadow: 0 2px 10px rgba(0,0,0,0.2); }
+        .tool-left, .tool-right { display: flex; align-items: center; gap: 8px; }
+        .tool-title { font-weight: bold; font-size: 1.2rem; margin-right: 15px; }
+        .btn { background: transparent; border: 1px solid #475569; color: #e2e8f0; padding: 6px 12px; border-radius: 4px; cursor: pointer; transition: 0.2s; white-space: nowrap; font-size: 0.9rem; }
+        .btn:hover { background: rgba(255,255,255,0.1); border-color: white; color: white; }
+        .btn.active { background: var(--primary); border-color: var(--primary); color: white; }
+        .btn-danger { border-color: #f87171; color: #f87171; }
+        .btn-danger:hover { background: #f87171; color: white; }
+        
+        /* 雲端按鈕特別樣式 */
+        .btn-cloud-save { background: #10b981; border-color: #059669; color: white; font-weight: bold; }
+        .btn-cloud-save:hover { background: #059669; }
+        .btn-cloud-load { background: #f59e0b; border-color: #d97706; color: white; font-weight: bold; }
+        .btn-cloud-load:hover { background: #d97706; }
+
+        .search-input { background: #334155; border: 1px solid #475569; color: white; padding: 6px 10px; border-radius: 20px; outline: none; width: 120px; }
+        
+        /* 左側分頁列 */
+        #tab-bar { position: fixed; top: 60px; left: 0; bottom: 0; width: 45px; background: #e2e8f0; z-index: 1900; display: flex; flex-direction: column; align-items: center; padding: 10px 0; gap: 8px; box-shadow: 2px 0 5px rgba(0,0,0,0.05); }
+        .tab-item { padding: 15px 4px; background: #cbd5e1; color: #64748b; cursor: pointer; font-size: 0.9rem; font-weight: bold; writing-mode: vertical-lr; text-orientation: upright; letter-spacing: 2px; border-radius: 0 8px 8px 0; width: 100%; display: flex; align-items: center; justify-content: center; border-left: 3px solid transparent; transition: 0.2s; user-select: none; }
+        .tab-item:hover { background: #d1d5db; }
+        .tab-item.active { background: var(--bg); color: var(--primary); border-left: 3px solid var(--primary); }
+        .tab-add { width: 32px; height: 32px; border-radius: 50%; background: white; border: 1px solid #cbd5e1; display: flex; align-items: center; justify-content: center; cursor: pointer; color: #64748b; font-weight: bold; }
+        
+        /* 主區域佈局 */
+        .main-area { margin-left: 60px; padding: 20px; max-width: 1000px; margin-right: auto; }
+        .view-container { display: none; background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); border: 1px solid #e2e8f0; margin-bottom: 40px; overflow-x: auto; }
+        .view-container.active { display: block; }
+        
+        /* 時間軸 & 卡片 (Timeline View) */
+        .timeline { position: relative; padding: 20px 0; }
+        .timeline::before { content: ''; position: absolute; top: 0; bottom: 0; left: 20px; width: 4px; background: #e5e7eb; border-radius: 2px; }
+        .card-wrapper { display: flex; margin-bottom: 30px; position: relative; padding-left: 45px; cursor: grab; }
+        .card-wrapper.dragging { opacity: 0.5; }
+        .card-dot { position: absolute; left: 16px; top: 20px; width: 12px; height: 12px; background: white; border: 4px solid var(--primary); border-radius: 50%; z-index: 2; }
+        
+        .card { flex: 1; background: white; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); border-top: 5px solid var(--primary); position: relative; transition: 0.2s; }
+        .card[data-color="blue"] { border-top-color: #4f46e5; }
+        .card[data-color="green"] { border-top-color: #10b981; background: #f0fdf4; }
+        .card[data-color="red"] { border-top-color: #ef4444; background: #fef2f2; }
+        .card[data-color="yellow"] { border-top-color: #f59e0b; background: #fffbeb; }
+        .card.memo-mode { border-top-style: dashed; }
+        
+        .card-header { padding: 10px 15px; border-bottom: 1px dashed #e2e8f0; display: flex; justify-content: space-between; align-items: center; background: rgba(255,255,255,0.5); }
+        .status-dot { width: 14px; height: 14px; border-radius: 50%; cursor: pointer; border: 2px solid rgba(0,0,0,0.1); display: inline-block; }
+        .status-0 { background: #9ca3af; } .status-1 { background: #f59e0b; } .status-2 { background: #10b981; } .status-3 { background: #ef4444; }
+        
+        .card-body { padding: 15px; display: flex; flex-direction: column; gap: 8px; }
+        .input-title { font-size: 1.25rem; font-weight: bold; color: var(--primary); border: none; border-bottom: 1px dashed #cbd5e1; padding: 5px 0; outline: none; background: transparent; width: 100%; }
+        .input-date { border: 1px solid #cbd5e1; padding: 4px; border-radius: 4px; font-size: 0.9rem; outline: none; background: white; }
+        .input-content { min-height: 80px; padding: 10px; border: 1px solid transparent; border-radius: 6px; font-size: 1rem; line-height: 1.6; resize: vertical; outline: none; background: transparent; color: #475569; }
+        .input-content:focus { border-color: #cbd5e1; background: rgba(255,255,255,0.8); }
+        
+        .card-footer { background: #cbd5e1; padding: 5px 15px; display: flex; justify-content: flex-end; border-radius: 0 0 12px 12px; }
+        .card[data-color="blue"] .card-footer { background: #4f46e5; } .card[data-color="green"] .card-footer { background: #10b981; }
+        .card[data-color="red"] .card-footer { background: #ef4444; } .card[data-color="yellow"] .card-footer { background: #f59e0b; }
+        .input-project { background: transparent; border: none; color: white; font-weight: bold; text-align: right; outline: none; }
+        .input-project::placeholder { color: rgba(255,255,255,0.7); }
+        
+        .icon-btn { background: white; border: 1px solid #cbd5e1; border-radius: 4px; width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; color: #64748b; font-size: 14px; }
+        .icon-btn:hover { background: #f1f5f9; color: var(--primary); }
+        
+        /* 專案過濾列 */
+        #project-bar { position: fixed; top: 60px; left: 45px; right: 0; background: white; border-bottom: 1px solid #e2e8f0; padding: 10px 20px; z-index: 1800; display: flex; gap: 10px; overflow-x: auto; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
+        .proj-badge { padding: 4px 12px; border-radius: 20px; border: 1px solid #cbd5e1; background: white; color: #64748b; font-size: 0.85rem; cursor: pointer; white-space: nowrap; }
+        .proj-badge.active { background: #dbeafe; border-color: #3b82f6; color: #2563eb; font-weight: bold; }
+
+        /* 大事記 (Chronicle) */
+        .chronicle-row { display: flex; margin-bottom: 20px; border-left: 3px solid #e2e8f0; padding-left: 15px; position: relative; }
+        .chronicle-row::before { content: ''; position: absolute; left: -7px; top: 5px; width: 11px; height: 11px; border-radius: 50%; background: var(--primary); }
+        .chronicle-date { font-weight: bold; width: 100px; flex-shrink: 0; color: #64748b; }
+        .chronicle-info { flex: 1; }
+        .chronicle-title { font-weight: bold; font-size: 1.1rem; color: #1e293b; }
+
+        /* 模態彈窗 */
+        .modal-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); z-index: 9000; align-items: center; justify-content: center; backdrop-filter: blur(2px); }
+        .modal-content { background: white; padding: 20px; border-radius: 12px; width: 90%; max-width: 800px; max-height: 90vh; overflow-y: auto; box-shadow: 0 10px 25px rgba(0,0,0,0.2); }
+        .nb-textarea { width: 100%; height: 300px; resize: vertical; padding: 15px; border: 1px solid #cbd5e1; border-radius: 8px; outline: none; font-size: 1rem; line-height: 1.6; }
+        
+        .add-main-btn { display: block; width: 100%; max-width: 400px; margin: 30px auto; padding: 15px; background: white; border: 2px dashed #cbd5e1; border-radius: 12px; text-align: center; color: #64748b; font-weight: bold; cursor: pointer; font-size: 1.1rem; }
+        .add-main-btn:hover { border-color: var(--primary); color: var(--primary); background: #eff6ff; }
+        
+        @media (max-width: 768px) {
+            .tool-title, .mobile-hidden { display: none !important; }
+            .tool-right { margin-left: auto; }
+            .btn-cloud-save::before { content: "☁️"; } .btn-cloud-save { font-size: 0; }
+            .btn-cloud-load::before { content: "📥"; } .btn-cloud-load { font-size: 0; }
+            .btn-clear-local::before { content: "🧹"; } .btn-clear-local { font-size: 0; padding: 6px; }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- 🔑 登入畫面 -->
+    <div id="login-screen">
+        <h1 style="font-size: 2.5rem; margin-bottom: 10px;">🧠 戰術白板 2.0</h1>
+        <p style="color: #94a3b8; margin-bottom: 30px;">(本地優先・手動雲端備份版)</p>
+        <button onclick="app.login()" style="padding: 12px 24px; font-size: 1.1rem; border-radius: 30px; border: none; background: #3b82f6; color: white; font-weight: bold; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.3);">
+            使用 Google 登入
+        </button>
+    </div>
+
+    <!-- 🛠️ 應用程式內容 -->
+    <div id="app-content" style="display: none;">
+        <!-- 頂部工具列 -->
+        <div class="toolbar">
+            <div class="tool-left">
+                <div class="tool-title">🧠 戰術白板</div>
+                
+                <button class="btn" onclick="app.toggleProjectBar()">📁 專案</button>
+                <button class="btn" onclick="app.switchView('timeline')" id="btn-view-timeline">📜 時間軸</button>
+                <button class="btn mobile-hidden" onclick="app.switchView('chronicle')" id="btn-view-chronicle">⚡ 大事記</button>
+                <button class="btn mobile-hidden" onclick="app.switchView('gantt')" id="btn-view-gantt">📊 甘特圖</button>
+                <button class="btn mobile-hidden" onclick="app.switchView('calendar')" id="btn-view-calendar">📅 日曆</button>
+            </div>
+            <div class="tool-right">
+                <button class="btn btn-cloud-save" onclick="app.saveToCloudManual()" title="將目前進度覆蓋到雲端">☁️ 存上雲端</button>
+                <button class="btn btn-cloud-load" onclick="app.loadFromCloudManual()" title="從雲端抓取最新進度">📥 載入雲端</button>
+                
+                <div style="width:1px; height:20px; background:#475569; margin:0 5px;"></div>
+                
+                <button class="btn btn-danger btn-clear-local" onclick="app.clearLocalData()" title="清空這台裝置的暫存 (不會影響雲端)">🧹 清空本機</button>
+                
+                <button class="btn" id="pomodoro-btn" onclick="app.togglePomodoro()" title="番茄鐘">🍅 <span id="pomo-time">25:00</span></button>
+                <button class="btn" onclick="app.openNotebook()">📖 筆記</button>
+                <button class="btn btn-danger mobile-hidden" onclick="app.logout()">登出</button>
+            </div>
+        </div>
+
+        <!-- 專案過濾列 -->
+        <div id="project-bar" style="display: none;"></div>
+
+        <!-- 左側分頁工作區 -->
+        <div id="tab-bar"></div>
+
+        <!-- 主視圖區域 -->
+        <div class="main-area">
+            <!-- 1. 時間軸 (Timeline) -->
+            <div id="view-timeline" class="view-container active">
+                <div style="text-align:right; font-size:0.8rem; color:#94a3b8; margin-bottom:10px;">目前狀態：<span id="local-save-status">✅ 已存於本機瀏覽器</span></div>
+                <div class="timeline" id="timeline-render-target"></div>
+                <button class="add-main-btn" onclick="app.actions.addCard()">＋ 新增節點</button>
+            </div>
+
+            <!-- 2. 大事記 (Chronicle) -->
+            <div id="view-chronicle" class="view-container">
+                <h3 style="text-align: center; color: #475569;">⚡ 大事記與衝突偵測</h3>
+                <div id="chronicle-render-target"></div>
+            </div>
+
+            <!-- 3. 甘特圖 (Gantt) -->
+            <div id="view-gantt" class="view-container">
+                <h3 style="text-align: center; color: #475569;">📊 專案甘特圖 (唯讀)</h3>
+                <div id="gantt-render-target" style="min-width: 600px;"></div>
+            </div>
+
+            <!-- 4. 日曆 (Calendar) -->
+            <div id="view-calendar" class="view-container">
+                <h3 style="text-align: center; color: #475569;">📅 全域日曆 (匯總所有分頁)</h3>
+                <div id="calendar-render-target"></div>
+            </div>
+        </div>
+
+        <!-- 模態彈窗：全域筆記本 -->
+        <div id="modal-notebook" class="modal-overlay">
+            <div class="modal-content">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                    <h3 style="margin: 0; color: #1e293b;">📖 全域共用筆記本</h3>
+                    <button class="icon-btn" onclick="app.closeNotebook()">×</button>
+                </div>
+                <select id="nb-template" onchange="app.actions.updateNotebookTemplate(this.value)" style="margin-bottom: 10px; padding: 5px; border-radius: 4px;">
+                    <option value="free">📝 自由筆記</option>
+                    <option value="matrix">⚖️ 艾森豪四象限</option>
+                </select>
+                <div id="notebook-render-target"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 🌟 核心應用程式邏輯 🌟 -->
+    <script>
+        const firebaseConfig = {
+            apiKey: "AIzaSyAIY9PU-bDLktkTpLSmFKRe1uepvWCKEiU",
+            authDomain: "maplestoryboss.firebaseapp.com",
+            projectId: "maplestoryboss",
+            storageBucket: "maplestoryboss.firebasestorage.app",
+            messagingSenderId: "198034430854",
+            appId: "1:198034430854:web:527ffcee039e223b972a07"
+        };
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.firestore();
+        const auth = firebase.auth();
+        const provider = new firebase.auth.GoogleAuthProvider();
+
+        const app = {
+            currentUser: null,
+            draggedCardId: null,
+
+            // 核心狀態
+            state: {
+                tabs: [{ id: 'main', name: '主工作區' }],
+                activeTabId: 'main',
+                workspaces: { 'main': [] },
+                globalNotebook: { template: 'free', free: '', matrix: { q1:'', q2:'', q3:'', q4:'' } },
+                view: 'timeline',
+                filters: { keyword: '', activeProject: null },
+                showProjectBar: false
+            },
+
+            init() {
+                auth.onAuthStateChanged((user) => {
+                    if (user) {
+                        this.currentUser = user;
+                        document.getElementById('login-screen').style.display = 'none';
+                        document.getElementById('app-content').style.display = 'block';
+                        this.loadFromLocal();
+                    } else {
+                        this.currentUser = null;
+                        document.getElementById('login-screen').style.display = 'flex';
+                        document.getElementById('app-content').style.display = 'none';
+                    }
+                });
+            },
+
+            login() { auth.signInWithPopup(provider).catch(err => alert("登入失敗: " + err.message)); },
+            
+            logout() { 
+                if(confirm('確定登出？\n\n(注意：登出不會自動清除這台裝置的暫存資料。若您不希望資料留在這台裝置上，請先點擊右上角的「🧹 清空本機」)')) {
+                    auth.signOut(); 
+                } 
+            },
+
+            // ==========================================
+            // 存檔策略：本地優先 + 手動雲端
+            // ==========================================
+            saveToLocal() {
+                localStorage.setItem(`whiteboard_state_${this.currentUser.uid}`, JSON.stringify({
+                    tabs: this.state.tabs,
+                    workspaces: this.state.workspaces,
+                    globalNotebook: this.state.globalNotebook
+                }));
+                
+                const statusEl = document.getElementById('local-save-status');
+                if(statusEl) {
+                    statusEl.innerText = '💾 儲存中...';
+                    setTimeout(() => { statusEl.innerText = '✅ 已存於本機瀏覽器 (記得手動推上雲端)'; }, 500);
+                }
+            },
+
+            loadFromLocal() {
+                const localData = localStorage.getItem(`whiteboard_state_${this.currentUser.uid}`);
+                if (localData) {
+                    const data = JSON.parse(localData);
+                    this.state.tabs = data.tabs || [{ id: 'main', name: '主工作區' }];
+                    this.state.workspaces = data.workspaces || { 'main': [] };
+                    this.state.globalNotebook = data.globalNotebook || { template: 'free', free: '', matrix: {} };
+                    this.renderAll();
+                } else {
+                    if(confirm("本機沒有暫存資料。是否要從雲端下載最新進度？")) {
+                        this.loadFromCloudManual();
+                    } else {
+                        this.renderAll();
+                    }
+                }
+            },
+
+            clearLocalData() {
+                if (!this.currentUser) return;
+                
+                if(!confirm("⚠️ 警告：這將會徹底清除「這台裝置」上的所有進度！\n\n如果您還沒點擊過「☁️ 存上雲端」，未上傳的資料將會永遠遺失。\n\n您確定要清空本機資料嗎？")) return;
+
+                localStorage.removeItem(`whiteboard_state_${this.currentUser.uid}`);
+                
+                this.state.tabs = [{ id: 'main', name: '主工作區' }];
+                this.state.activeTabId = 'main';
+                this.state.workspaces = { 'main': [] };
+                this.state.globalNotebook = { template: 'free', free: '', matrix: { q1:'', q2:'', q3:'', q4:'' } };
+                
+                this.renderAll();
+                alert("🧹 本機資料已清空！\n畫面已重置。您可以點擊「📥 載入雲端」抓取雲端上的備份。");
+            },
+
+            saveToCloudManual() {
+                if (!this.currentUser) return;
+                const btn = document.querySelector('.btn-cloud-save');
+                btn.innerText = "上傳中...";
+                
+                const payload = {
+                    tabs: this.state.tabs,
+                    workspaces: this.state.workspaces,
+                    globalNotebook: this.state.globalNotebook,
+                    updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+                };
+                
+                db.collection('Whiteboard_Data').doc(this.currentUser.uid)
+                  .set(payload, { merge: true })
+                  .then(() => {
+                      alert("✅ 成功！目前資料已備份至雲端。");
+                      btn.innerText = "☁️ 存上雲端";
+                  })
+                  .catch(err => {
+                      alert("上傳失敗：" + err.message);
+                      btn.innerText = "☁️ 存上雲端";
+                  });
+            },
+
+            loadFromCloudManual() {
+                if (!this.currentUser) return;
+                if(!confirm("⚠️ 警告：這將會使用雲端的資料「完全覆蓋」您目前畫面上的資料。確定要繼續嗎？")) return;
+
+                const btn = document.querySelector('.btn-cloud-load');
+                btn.innerText = "下載中...";
+
+                db.collection('Whiteboard_Data').doc(this.currentUser.uid).get()
+                  .then((doc) => {
+                      if (doc.exists) {
+                          const data = doc.data();
+                          this.state.tabs = data.tabs || [{ id: 'main', name: '主工作區' }];
+                          this.state.workspaces = data.workspaces || { 'main': [] };
+                          this.state.globalNotebook = data.globalNotebook || { template: 'free', free: '', matrix: {} };
+                          
+                          if (!this.state.tabs.find(t => t.id === this.state.activeTabId)) {
+                              this.state.activeTabId = this.state.tabs[0].id;
+                          }
+                          
+                          this.saveToLocal();
+                          this.renderAll();
+                          alert("📥 載入成功！畫面已更新為雲端最新版本。");
+                      } else {
+                          alert("雲端目前沒有任何備份資料喔！");
+                      }
+                  })
+                  .catch(err => alert("下載失敗：" + err.message))
+                  .finally(() => {
+                      btn.innerText = "📥 載入雲端";
+                  });
+            },
+
+            // 4. 資料存取輔助函數
+            getActiveCards() {
+                let cards = this.state.workspaces[this.state.activeTabId] || [];
+                if (this.state.filters.activeProject) cards = cards.filter(c => c.project === this.state.filters.activeProject);
+                return cards;
+            },
+            getAllCardsAcrossTabs() {
+                let all = [];
+                for (let tabId in this.state.workspaces) {
+                    const tabName = this.state.tabs.find(t => t.id === tabId)?.name || '未知';
+                    this.state.workspaces[tabId].forEach(c => all.push({ ...c, tabId, tabName }));
+                }
+                return all;
+            },
+
+            // 5. 使用者操作動作
+            actions: {
+                addCard() {
+                    const newCard = { id: 'card_' + Date.now(), title: '', content: '', project: '', dateMode: 'single', dateSingle: new Date().toISOString().split('T')[0], dateStart: '', dateEnd: '', color: 'blue', status: 0, isMemo: false };
+                    app.state.workspaces[app.state.activeTabId].unshift(newCard);
+                    app.saveToLocal(); app.renderAll();
+                },
+                updateCard(id, field, value) {
+                    const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id);
+                    if (card) { 
+                        card[field] = value; 
+                        app.saveToLocal(); 
+                        if(field === 'project') app.renderProjectBar();
+                    }
+                },
+                deleteCard(id) {
+                    if(confirm('確定移除此卡片？')) {
+                        app.state.workspaces[app.state.activeTabId] = app.state.workspaces[app.state.activeTabId].filter(c => c.id !== id);
+                        app.saveToLocal(); app.renderAll();
+                    }
+                },
+                cycleStatus(id) {
+                    const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id);
+                    if (card) { card.status = (card.status + 1) % 4; app.saveToLocal(); app.renderAll(); }
+                },
+                cycleColor(id) {
+                    const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id);
+                    const colors = ['blue', 'green', 'red', 'yellow'];
+                    if (card) { card.color = colors[(colors.indexOf(card.color) + 1) % colors.length]; app.saveToLocal(); app.renderAll(); }
+                },
+                toggleMemo(id) {
+                    const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id);
+                    if (card) { card.isMemo = !card.isMemo; app.saveToLocal(); app.renderAll(); }
+                },
+                toggleDateMode(id) {
+                    const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id);
+                    if (card) { card.dateMode = card.dateMode === 'single' ? 'range' : 'single'; app.saveToLocal(); app.renderAll(); }
+                },
+                
+                switchTab(id) { app.state.activeTabId = id; app.state.filters.activeProject = null; app.renderAll(); },
+                addTab() {
+                    const name = prompt("請輸入新工作區名稱：");
+                    if (name) {
+                        const id = 'tab_' + Date.now();
+                        app.state.tabs.push({ id, name });
+                        app.state.workspaces[id] = [];
+                        app.state.activeTabId = id;
+                        app.saveToLocal(); app.renderAll();
+                    }
+                },
+
+                // 🔥 新增：分頁管理機制 (右鍵重新命名與刪除)
+                manageTab(e, id) {
+                    e.preventDefault(); 
+                    if (id === 'main') {
+                        alert('「主工作區」為系統預設，無法修改或刪除！');
+                        return;
+                    }
+                    
+                    const tab = app.state.tabs.find(t => t.id === id);
+                    const action = prompt(`管理分頁：「${tab.name}」\n\n請輸入數字選擇動作：\n[1] 重新命名\n[2] 刪除分頁 (此分頁內的所有卡片將一併刪除)`);
+                    
+                    if (action === '1') {
+                        const newName = prompt('請輸入新名稱：', tab.name);
+                        if (newName && newName.trim() !== '') {
+                            tab.name = newName.trim();
+                            app.saveToLocal(); app.renderAll();
+                        }
+                    } else if (action === '2') {
+                        if (confirm(`⚠️ 警告：確定要刪除「${tab.name}」嗎？\n裡面的所有卡片都會消失，且無法復原！`)) {
+                            app.state.tabs = app.state.tabs.filter(t => t.id !== id);
+                            delete app.state.workspaces[id];
+                            app.state.activeTabId = 'main';
+                            
+                            app.saveToLocal(); app.renderAll();
+                            alert('🗑️ 分頁已刪除');
+                        }
+                    }
+                },
+                
+                updateNotebookTemplate(val) { app.state.globalNotebook.template = val; app.saveToLocal(); app.renderNotebookArea(); },
+                updateNotebook(field, val) {
+                    if (field === 'free') app.state.globalNotebook.free = val;
+                    else { const key = field.split('.')[1]; app.state.globalNotebook.matrix[key] = val; }
+                    app.saveToLocal();
+                },
+
+                onDragStart(e, id) { app.draggedCardId = id; e.target.classList.add('dragging'); },
+                onDragOver(e) { e.preventDefault(); },
+                onDrop(e, targetId) {
+                    e.preventDefault();
+                    document.querySelectorAll('.card-wrapper').forEach(el => el.classList.remove('dragging'));
+                    if(!app.draggedCardId || app.draggedCardId === targetId) return;
+                    
+                    const list = app.state.workspaces[app.state.activeTabId];
+                    const fromIdx = list.findIndex(c => c.id === app.draggedCardId);
+                    const toIdx = list.findIndex(c => c.id === targetId);
+                    
+                    const [movedItem] = list.splice(fromIdx, 1);
+                    list.splice(toIdx, 0, movedItem);
+                    
+                    app.draggedCardId = null;
+                    app.saveToLocal(); app.renderAll();
+                }
+            },
+
+            // 6. UI 切換控制器
+            switchView(viewName) {
+                this.state.view = viewName;
+                document.querySelectorAll('.view-container').forEach(el => el.classList.remove('active'));
+                document.querySelectorAll('.toolbar .btn').forEach(el => el.classList.remove('active'));
+                
+                document.getElementById('view-' + viewName).classList.add('active');
+                document.getElementById('btn-view-' + viewName).classList.add('active');
+                this.renderAll();
+            },
+            toggleProjectBar() {
+                this.state.showProjectBar = !this.state.showProjectBar;
+                document.getElementById('project-bar').style.display = this.state.showProjectBar ? 'flex' : 'none';
+                this.renderProjectBar();
+            },
+            openNotebook() { 
+                document.getElementById('nb-template').value = this.state.globalNotebook.template;
+                this.renderNotebookArea();
+                document.getElementById('modal-notebook').style.display = 'flex'; 
+            },
+            closeNotebook() { document.getElementById('modal-notebook').style.display = 'none'; },
+
+            // 7. 渲染器
+            renderAll() {
+                this.renderTabs();
+                if (this.state.showProjectBar) this.renderProjectBar();
+                
+                if (this.state.view === 'timeline') this.renderTimeline();
+                else if (this.state.view === 'chronicle') this.renderChronicle();
+                else if (this.state.view === 'gantt') this.renderGantt();
+                else if (this.state.view === 'calendar') this.renderCalendar();
+            },
+
+            renderTabs() {
+                const html = this.state.tabs.map(t => `
+                    <div class="tab-item ${t.id === this.state.activeTabId ? 'active' : ''}" 
+                         onclick="app.actions.switchTab('${t.id}')"
+                         oncontextmenu="app.actions.manageTab(event, '${t.id}')"
+                         title="右鍵點擊可修改或刪除">${t.name}</div>
+                `).join('') + `<div class="tab-add" onclick="app.actions.addTab()" title="新增分頁">＋</div>`;
+                document.getElementById('tab-bar').innerHTML = html;
+            },
+
+            renderProjectBar() {
+                const cards = this.state.workspaces[this.state.activeTabId] || [];
+                const projects = new Set(cards.map(c => c.project).filter(p => p && p.trim() !== ''));
+                
+                let html = `<div class="proj-badge" onclick="app.setFilter('project', null)">清除過濾</div>`;
+                projects.forEach(p => {
+                    const active = this.state.filters.activeProject === p ? 'active' : '';
+                    html += `<div class="proj-badge ${active}" onclick="app.setFilter('project', '${p}')">${p}</div>`;
+                });
+                document.getElementById('project-bar').innerHTML = html;
+            },
+
+            renderTimeline() {
+                const cards = this.getActiveCards();
+                const html = cards.map(card => {
+                    const dateHtml = card.dateMode === 'single' 
+                        ? `<input type="date" class="input-date" value="${card.dateSingle}" onchange="app.actions.updateCard('${card.id}', 'dateSingle', this.value)">`
+                        : `<span style="font-size:0.8rem;color:#64748b;">起</span><input type="date" class="input-date" value="${card.dateStart}" onchange="app.actions.updateCard('${card.id}', 'dateStart', this.value)">
+                           <span style="font-size:0.8rem;color:#64748b;">迄</span><input type="date" class="input-date" value="${card.dateEnd}" onchange="app.actions.updateCard('${card.id}', 'dateEnd', this.value)">`;
+
+                    return `
+                    <div class="card-wrapper" draggable="true" 
+                         ondragstart="app.actions.onDragStart(event, '${card.id}')"
+                         ondragover="app.actions.onDragOver(event)"
+                         ondrop="app.actions.onDrop(event, '${card.id}')">
+                        <div class="card-dot"></div>
+                        <div class="card ${card.isMemo ? 'memo-mode' : ''}" data-color="${card.color}">
+                            
+                            <div class="card-header">
+                                <div style="display:flex; align-items:center; gap:10px;">
+                                    <div class="status-dot status-${card.status}" onclick="app.actions.cycleStatus('${card.id}')" title="點擊切換狀態"></div>
+                                    <button class="icon-btn" onclick="app.actions.toggleMemo('${card.id}')" title="切換備忘錄模式">${card.isMemo ? '♾️' : '📅'}</button>
+                                    ${dateHtml}
+                                </div>
+                                <div style="display:flex; gap:5px;">
+                                    <button class="icon-btn" onclick="app.actions.toggleDateMode('${card.id}')" title="單日/區間切換">↔️</button>
+                                    <button class="icon-btn" onclick="app.actions.cycleColor('${card.id}')" title="換色">🎨</button>
+                                </div>
+                            </div>
+                            
+                            <div class="card-body">
+                                <input type="text" class="input-title" value="${card.title}" placeholder="🏷️ 標題..." onchange="app.actions.updateCard('${card.id}', 'title', this.value)">
+                                <textarea class="input-content" placeholder="📝 寫下卡片細節..." 
+                                    oninput="this.style.height=''; this.style.height=this.scrollHeight+'px';" 
+                                    onchange="app.actions.updateCard('${card.id}', 'content', this.value)">${card.content}</textarea>
+                            </div>
+                            
+                            <div class="card-footer">
+                                <input type="text" class="input-project" value="${card.project}" placeholder="#專案名稱" onchange="app.actions.updateCard('${card.id}', 'project', this.value)">
+                                <button class="icon-btn" onclick="app.actions.deleteCard('${card.id}')" style="color:#ef4444; border-color:#fca5a5;" title="刪除此卡片">🗑️</button>
+                            </div>
+                        </div>
+                    </div>`;
+                }).join('');
+                document.getElementById('timeline-render-target').innerHTML = html;
+            },
+
+            renderChronicle() {
+                const cards = this.getActiveCards().filter(c => !c.isMemo && (c.dateSingle || c.dateStart));
+                if (cards.length === 0) { document.getElementById('chronicle-render-target').innerHTML = '<p style="text-align:center; color:#94a3b8;">無有效日期之卡片</p>'; return; }
+                
+                const sorted = cards.sort((a, b) => {
+                    const d1 = new Date(a.dateMode === 'range' ? a.dateStart : a.dateSingle).getTime() || 0;
+                    const d2 = new Date(b.dateMode === 'range' ? b.dateStart : b.dateSingle).getTime() || 0;
+                    return d1 - d2;
+                });
+
+                const html = sorted.map(c => {
+                    const dStr = c.dateMode === 'range' ? `${c.dateStart} ~ ${c.dateEnd}` : c.dateSingle;
+                    const pTag = c.project ? `<span style="background:#e2e8f0; padding:2px 6px; border-radius:4px; font-size:0.8rem; margin-right:8px;">#${c.project}</span>` : '';
+                    return `
+                        <div class="chronicle-row">
+                            <div class="chronicle-date">${dStr}</div>
+                            <div class="chronicle-info">
+                                <div style="display:flex; align-items:center; margin-bottom:5px;">
+                                    <div class="status-dot status-${c.status}" style="margin-right:8px;"></div>
+                                    <div class="chronicle-title">${pTag}${c.title || '未命名'}</div>
+                                </div>
+                                <div style="color:#475569; font-size:0.95rem; white-space:pre-wrap;">${c.content}</div>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+                document.getElementById('chronicle-render-target').innerHTML = html;
+            },
+
+            renderGantt() {
+                const cards = this.getActiveCards().filter(c => !c.isMemo && c.dateMode === 'range' && c.dateStart && c.dateEnd);
+                if (cards.length === 0) { document.getElementById('gantt-render-target').innerHTML = '<p style="text-align:center; color:#94a3b8;">請將卡片切換為「區間模式 (↔️)」並設定起迄日期</p>'; return; }
+                
+                let html = '<div style="display:flex; flex-direction:column; gap:10px;">';
+                cards.forEach(c => {
+                    const s = new Date(c.dateStart).getTime(); const e = new Date(c.dateEnd).getTime();
+                    const days = Math.max(1, (e - s) / (1000 * 60 * 60 * 24));
+                    const widthPct = Math.min(100, days * 3); 
+                    
+                    html += `
+                    <div style="background:#f1f5f9; border-radius:6px; padding:10px;">
+                        <div style="font-weight:bold; margin-bottom:5px; font-size:0.9rem;">${c.project ? '['+c.project+']' : ''} ${c.title || '未命名'} (${days}天)</div>
+                        <div style="height:10px; background:#e2e8f0; border-radius:5px; width:100%;">
+                            <div style="height:100%; border-radius:5px; background:var(--primary); width:${widthPct}%;"></div>
+                        </div>
+                    </div>`;
+                });
+                html += '</div>';
+                document.getElementById('gantt-render-target').innerHTML = html;
+            },
+
+            renderCalendar() {
+                const allCards = this.getAllCardsAcrossTabs().filter(c => !c.isMemo && (c.dateSingle || c.dateStart));
+                if (allCards.length === 0) { document.getElementById('calendar-render-target').innerHTML = '<p style="text-align:center; color:#94a3b8;">全部分頁中皆無有效日期資料</p>'; return; }
+                
+                const grouped = {};
+                allCards.forEach(c => {
+                    const d = c.dateMode === 'range' ? c.dateStart : c.dateSingle;
+                    if(d) { if(!grouped[d]) grouped[d] = []; grouped[d].push(c); }
+                });
+
+                let html = '<div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap:15px;">';
+                Object.keys(grouped).sort().forEach(dateStr => {
+                    html += `<div style="border:1px solid #e2e8f0; border-radius:8px; padding:10px; background:#f8fafc;">
+                        <div style="font-weight:bold; color:var(--primary); border-bottom:1px solid #cbd5e1; margin-bottom:8px; padding-bottom:4px;">${dateStr}</div>`;
+                    grouped[dateStr].forEach(c => {
+                        html += `<div style="font-size:0.85rem; background:white; padding:4px 8px; border-radius:4px; margin-bottom:4px; box-shadow:0 1px 2px rgba(0,0,0,0.05); border-left:3px solid ${c.color}">
+                            <span style="color:#64748b; font-size:0.7rem;">[${c.tabName}]</span> ${c.title || '未命名'}
+                        </div>`;
+                    });
+                    html += `</div>`;
+                });
+                html += '</div>';
+                document.getElementById('calendar-render-target').innerHTML = html;
+            },
+
+            renderNotebookArea() {
+                const d = this.state.globalNotebook;
+                let html = '';
+                if (d.template === 'free') {
+                    html = `<textarea class="nb-textarea" onchange="app.actions.updateNotebook('free', this.value)" placeholder="自由筆記...">${d.free || ''}</textarea>`;
+                } else if (d.template === 'matrix') {
+                    const m = d.matrix || {};
+                    html = `
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+                        <div><span style="color:#ef4444; font-weight:bold; font-size:0.9rem;">🔥 重要緊急</span><textarea class="nb-textarea" style="height:150px;" onchange="app.actions.updateNotebook('matrix.q1', this.value)">${m.q1 || ''}</textarea></div>
+                        <div><span style="color:#3b82f6; font-weight:bold; font-size:0.9rem;">📅 重要不急</span><textarea class="nb-textarea" style="height:150px;" onchange="app.actions.updateNotebook('matrix.q2', this.value)">${m.q2 || ''}</textarea></div>
+                        <div><span style="color:#f59e0b; font-weight:bold; font-size:0.9rem;">⚡ 緊急不重</span><textarea class="nb-textarea" style="height:150px;" onchange="app.actions.updateNotebook('matrix.q3', this.value)">${m.q3 || ''}</textarea></div>
+                        <div><span style="color:#10b981; font-weight:bold; font-size:0.9rem;">☕ 不重不急</span><textarea class="nb-textarea" style="height:150px;" onchange="app.actions.updateNotebook('matrix.q4', this.value)">${m.q4 || ''}</textarea></div>
+                    </div>`;
+                }
+                document.getElementById('notebook-render-target').innerHTML = html;
+            },
+
+            // 8. 番茄鐘
+            pomoInterval: null,
+            pomoTime: 25 * 60,
+            isPomoRunning: false,
+            togglePomodoro() {
+                const btn = document.getElementById('pomodoro-btn');
+                const display = document.getElementById('pomo-time');
+                if (this.isPomoRunning) {
+                    clearInterval(this.pomoInterval);
+                    this.isPomoRunning = false;
+                    btn.classList.remove('active');
+                } else {
+                    this.isPomoRunning = true;
+                    btn.classList.add('active');
+                    this.pomoInterval = setInterval(() => {
+                        this.pomoTime--;
+                        const m = Math.floor(this.pomoTime / 60).toString().padStart(2, '0');
+                        const s = (this.pomoTime % 60).toString().padStart(2, '0');
+                        display.innerText = `${m}:${s}`;
+                        if (this.pomoTime <= 0) {
+                            clearInterval(this.pomoInterval);
+                            this.isPomoRunning = false;
+                            this.pomoTime = 25 * 60;
+                            display.innerText = "25:00";
+                            btn.classList.remove('active');
+                            alert("🍅 番茄鐘時間到！休息一下吧。");
+                        }
+                    }, 1000);
+                }
+            }
+        };
+
+        app.init();
+
+    </script>
+</body>
+</html>
