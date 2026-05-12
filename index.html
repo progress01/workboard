@@ -3,9 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>戰術白板系統 2.0 (手動雲端版)</title>
+    <title>白板</title>
     
-    <!-- Firebase Compat -->
     <script src="https://www.gstatic.com/firebasejs/10.8.1/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.8.1/firebase-auth-compat.js"></script>
@@ -13,191 +12,294 @@
     <style>
         :root { --primary: #4f46e5; --bg: #f8fafc; --text: #1f2937; --font-stack: "Microsoft JhengHei", sans-serif; }
         * { box-sizing: border-box; font-family: var(--font-stack); }
-        body { background: var(--bg); color: var(--text); margin: 0; padding: 0; min-height: 100vh; padding-top: 80px; overflow-x: hidden; }
+        body { background: var(--bg); color: var(--text); margin: 0; padding: 0; min-height: 100vh; padding-top: 60px; overflow-x: hidden; }
         
         #login-screen { position: fixed; top:0; left:0; right:0; bottom:0; background: radial-gradient(circle at center, #1e293b 0%, #0f172a 100%); display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 10000; color: white; }
         
         /* 頂部工具列 */
-        .toolbar { position: fixed; top: 0; left: 0; right: 0; background: #1e293b; color: white; padding: 10px 20px; display: flex; justify-content: space-between; align-items: center; z-index: 2000; height: 60px; box-shadow: 0 2px 10px rgba(0,0,0,0.2); }
-        .tool-left, .tool-right { display: flex; align-items: center; gap: 8px; }
-        .tool-title { font-weight: bold; font-size: 1.2rem; margin-right: 15px; }
-        .btn { background: transparent; border: 1px solid #475569; color: #e2e8f0; padding: 6px 12px; border-radius: 4px; cursor: pointer; transition: 0.2s; white-space: nowrap; font-size: 0.9rem; }
+        .toolbar { position: fixed; top: 0; left: 0; right: 0; background: #1e293b; color: white; padding: 10px 15px; display: flex; justify-content: space-between; align-items: center; z-index: 2000; height: 60px; box-shadow: 0 2px 10px rgba(0,0,0,0.2); }
+        .tool-left, .tool-right { display: flex; align-items: center; gap: 8px; flex-wrap: nowrap; }
+        .tool-title { font-weight: bold; font-size: 1.2rem; margin-right: 15px; white-space: nowrap; }
+        .btn { background: transparent; border: 1px solid #475569; color: #e2e8f0; padding: 6px 12px; border-radius: 4px; cursor: pointer; transition: 0.2s; white-space: nowrap; font-size: 0.9rem; display: flex; align-items: center; gap: 4px; }
         .btn:hover { background: rgba(255,255,255,0.1); border-color: white; color: white; }
         .btn.active { background: var(--primary); border-color: var(--primary); color: white; }
         .btn-danger { border-color: #f87171; color: #f87171; }
         .btn-danger:hover { background: #f87171; color: white; }
         
-        /* 雲端按鈕特別樣式 */
         .btn-cloud-save { background: #10b981; border-color: #059669; color: white; font-weight: bold; }
         .btn-cloud-save:hover { background: #059669; }
         .btn-cloud-load { background: #f59e0b; border-color: #d97706; color: white; font-weight: bold; }
         .btn-cloud-load:hover { background: #d97706; }
 
-        .search-input { background: #334155; border: 1px solid #475569; color: white; padding: 6px 10px; border-radius: 20px; outline: none; width: 120px; }
-        
-        /* 左側分頁列 */
-        #tab-bar { position: fixed; top: 60px; left: 0; bottom: 0; width: 45px; background: #e2e8f0; z-index: 1900; display: flex; flex-direction: column; align-items: center; padding: 10px 0; gap: 8px; box-shadow: 2px 0 5px rgba(0,0,0,0.05); }
-        .tab-item { padding: 15px 4px; background: #cbd5e1; color: #64748b; cursor: pointer; font-size: 0.9rem; font-weight: bold; writing-mode: vertical-lr; text-orientation: upright; letter-spacing: 2px; border-radius: 0 8px 8px 0; width: 100%; display: flex; align-items: center; justify-content: center; border-left: 3px solid transparent; transition: 0.2s; user-select: none; }
-        .tab-item:hover { background: #d1d5db; }
-        .tab-item.active { background: var(--bg); color: var(--primary); border-left: 3px solid var(--primary); }
-        .tab-add { width: 32px; height: 32px; border-radius: 50%; background: white; border: 1px solid #cbd5e1; display: flex; align-items: center; justify-content: center; cursor: pointer; color: #64748b; font-weight: bold; }
-        
-        /* 主區域佈局 */
-        .main-area { margin-left: 60px; padding: 20px; max-width: 1000px; margin-right: auto; }
-        .view-container { display: none; background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); border: 1px solid #e2e8f0; margin-bottom: 40px; overflow-x: auto; }
-        .view-container.active { display: block; }
-        
-        /* 時間軸 & 卡片 (Timeline View) */
-        .timeline { position: relative; padding: 20px 0; }
-        .timeline::before { content: ''; position: absolute; top: 0; bottom: 0; left: 20px; width: 4px; background: #e5e7eb; border-radius: 2px; }
-        .card-wrapper { display: flex; margin-bottom: 30px; position: relative; padding-left: 45px; cursor: grab; }
-        .card-wrapper.dragging { opacity: 0.5; }
-        .card-dot { position: absolute; left: 16px; top: 20px; width: 12px; height: 12px; background: white; border: 4px solid var(--primary); border-radius: 50%; z-index: 2; }
-        
-        .card { flex: 1; background: white; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); border-top: 5px solid var(--primary); position: relative; transition: 0.2s; }
-        .card[data-color="blue"] { border-top-color: #4f46e5; }
-        .card[data-color="green"] { border-top-color: #10b981; background: #f0fdf4; }
-        .card[data-color="red"] { border-top-color: #ef4444; background: #fef2f2; }
-        .card[data-color="yellow"] { border-top-color: #f59e0b; background: #fffbeb; }
-        .card.memo-mode { border-top-style: dashed; }
-        
-        .card-header { padding: 10px 15px; border-bottom: 1px dashed #e2e8f0; display: flex; justify-content: space-between; align-items: center; background: rgba(255,255,255,0.5); }
-        .status-dot { width: 14px; height: 14px; border-radius: 50%; cursor: pointer; border: 2px solid rgba(0,0,0,0.1); display: inline-block; }
-        .status-0 { background: #9ca3af; } .status-1 { background: #f59e0b; } .status-2 { background: #10b981; } .status-3 { background: #ef4444; }
-        
-        .card-body { padding: 15px; display: flex; flex-direction: column; gap: 8px; }
-        .input-title { font-size: 1.25rem; font-weight: bold; color: var(--primary); border: none; border-bottom: 1px dashed #cbd5e1; padding: 5px 0; outline: none; background: transparent; width: 100%; }
-        .input-date { border: 1px solid #cbd5e1; padding: 4px; border-radius: 4px; font-size: 0.9rem; outline: none; background: white; }
-        .input-content { min-height: 80px; padding: 10px; border: 1px solid transparent; border-radius: 6px; font-size: 1rem; line-height: 1.6; resize: vertical; outline: none; background: transparent; color: #475569; }
-        .input-content:focus { border-color: #cbd5e1; background: rgba(255,255,255,0.8); }
-        
-        .card-footer { background: #cbd5e1; padding: 5px 15px; display: flex; justify-content: flex-end; border-radius: 0 0 12px 12px; }
-        .card[data-color="blue"] .card-footer { background: #4f46e5; } .card[data-color="green"] .card-footer { background: #10b981; }
-        .card[data-color="red"] .card-footer { background: #ef4444; } .card[data-color="yellow"] .card-footer { background: #f59e0b; }
-        .input-project { background: transparent; border: none; color: white; font-weight: bold; text-align: right; outline: none; }
-        .input-project::placeholder { color: rgba(255,255,255,0.7); }
-        
-        .icon-btn { background: white; border: 1px solid #cbd5e1; border-radius: 4px; width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; color: #64748b; font-size: 14px; }
-        .icon-btn:hover { background: #f1f5f9; color: var(--primary); }
-        
         /* 專案過濾列 */
-        #project-bar { position: fixed; top: 60px; left: 45px; right: 0; background: white; border-bottom: 1px solid #e2e8f0; padding: 10px 20px; z-index: 1800; display: flex; gap: 10px; overflow-x: auto; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
-        .proj-badge { padding: 4px 12px; border-radius: 20px; border: 1px solid #cbd5e1; background: white; color: #64748b; font-size: 0.85rem; cursor: pointer; white-space: nowrap; }
+        #project-bar { position: fixed; top: 60px; left: 50px; right: 0; background: white; border-bottom: 1px solid #e2e8f0; padding: 10px 20px; z-index: 1800; display: flex; gap: 10px; overflow-x: auto; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
+        .proj-badge { padding: 4px 12px; border-radius: 20px; border: 1px solid #cbd5e1; background: white; color: #64748b; font-size: 0.85rem; cursor: pointer; white-space: nowrap; transition: 0.2s; }
+        .proj-badge:hover { background: #f1f5f9; }
         .proj-badge.active { background: #dbeafe; border-color: #3b82f6; color: #2563eb; font-weight: bold; }
 
-        /* 大事記 (Chronicle) */
-        .chronicle-row { display: flex; margin-bottom: 20px; border-left: 3px solid #e2e8f0; padding-left: 15px; position: relative; }
-        .chronicle-row::before { content: ''; position: absolute; left: -7px; top: 5px; width: 11px; height: 11px; border-radius: 50%; background: var(--primary); }
-        .chronicle-date { font-weight: bold; width: 100px; flex-shrink: 0; color: #64748b; }
-        .chronicle-info { flex: 1; }
+        /* 左側分頁列 */
+        #tab-bar { position: fixed; top: 60px; left: 0; bottom: 0; width: 50px; background: #e2e8f0; z-index: 1900; display: flex; flex-direction: column; align-items: center; padding: 10px 0; gap: 8px; box-shadow: 2px 0 5px rgba(0,0,0,0.05); overflow-y: auto; overflow-x: hidden; }
+        .tab-item { width: 100%; display: flex; flex-direction: column; align-items: center; padding: 15px 0; background: #cbd5e1; color: #64748b; cursor: pointer; border-radius: 0 8px 8px 0; border-left: 3px solid transparent; transition: 0.2s; user-select: none; }
+        .tab-item:hover { background: #d1d5db; }
+        .tab-item.active { background: var(--bg); color: var(--primary); border-left: 3px solid var(--primary); }
+        .tab-name { writing-mode: vertical-lr; text-orientation: upright; letter-spacing: 2px; font-weight: bold; font-size: 0.95rem; }
+        .tab-add { width: 36px; height: 36px; margin-top: 10px; border-radius: 50%; background: white; border: 1px solid #cbd5e1; display: flex; align-items: center; justify-content: center; cursor: pointer; color: #64748b; font-weight: bold; font-size: 1.2rem; flex-shrink: 0; }
+        
+        /* 響應式主區域佈局 */
+        .main-area { margin-left: 50px; padding: 20px; width: calc(100% - 50px); transition: margin-top 0.3s; }
+        body.has-project-bar .main-area { margin-top: 50px; }
+        
+        .view-container { display: none; background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); border: 1px solid #e2e8f0; margin-bottom: 40px; width: 100%; overflow-x: auto; }
+        .view-container.active { display: block; }
+        
+        /* 發想矩陣 (19路棋盤設計) */
+        .matrix-input-bar { display: flex; gap: 10px; margin-bottom: 15px; flex-wrap: wrap; }
+        .matrix-input { flex: 1; min-width: 200px; padding: 10px 15px; border: 2px solid #cbd5e1; border-radius: 8px; font-size: 1rem; outline: none; transition: 0.2s; }
+        .matrix-input:focus { border-color: var(--primary); }
+        
+        .matrix-board { 
+            position: relative; width: 100%; height: calc(100vh - 220px); min-height: 500px; 
+            background-color: #f1ebd7;
+            background-image: linear-gradient(#9ca3af 1px, transparent 1px), linear-gradient(90deg, #9ca3af 1px, transparent 1px);
+            background-size: calc(100% / 18) calc(100% / 18); background-position: 0 0;
+            border: 3px solid #78350f; border-radius: 4px; overflow: hidden; touch-action: none; 
+            box-shadow: inset 0 0 20px rgba(0,0,0,0.1);
+        }
+        body.has-project-bar .matrix-board { height: calc(100vh - 270px); }
+        .matrix-axis-x { position: absolute; top: 50%; left: 0; right: 0; height: 3px; background: #ef4444; pointer-events: none; opacity: 0.7; }
+        .matrix-axis-y { position: absolute; top: 0; bottom: 0; left: 50%; width: 3px; background: #ef4444; pointer-events: none; opacity: 0.7; }
+        .matrix-quadrant-label { position: absolute; font-size: 2rem; font-weight: bold; color: rgba(0, 0, 0, 0.1); pointer-events: none; user-select: none; }
+        
+        .matrix-node { 
+            position: absolute; padding: 10px 15px; border: 2px solid #94a3b8; border-radius: 20px; 
+            box-shadow: 0 6px 12px rgba(0,0,0,0.15); cursor: grab; font-size: 0.95rem; font-weight: bold; display: flex; 
+            align-items: flex-start; gap: 10px; user-select: none; transition: transform 0.1s, box-shadow 0.1s;
+            max-width: 240px; word-break: break-word; line-height: 1.4; transform: translate(-50%, -50%);
+        }
+        .matrix-node:active { cursor: grabbing; transform: translate(-50%, -50%) scale(1.05); z-index: 100 !important; box-shadow: 0 10px 20px rgba(0,0,0,0.3); }
+        .matrix-node-text { flex: 1; }
+        .node-action-group { display: flex; flex-direction: column; gap: 4px; flex-shrink: 0; }
+        .node-action-btn { background: rgba(0,0,0,0.05); border: none; border-radius: 4px; padding: 4px; font-size: 0.8rem; cursor: pointer; white-space: nowrap; font-weight: bold; }
+        .node-action-btn:hover { background: rgba(0,0,0,0.1); }
+        .stone-white { background: #ffffff; color: #1e293b; border-color: #cbd5e1; }
+        .stone-white .node-action-btn { color: #3b82f6; } .stone-white .node-action-btn.del { color: #ef4444; }
+        .stone-black { background: #1e293b; color: #f8fafc; border-color: #0f172a; box-shadow: inset -2px -2px 6px rgba(0,0,0,0.5), 0 6px 12px rgba(0,0,0,0.3); }
+        .stone-black .node-action-btn { color: #93c5fd; background: rgba(255,255,255,0.1); }
+        .stone-black .node-action-btn:hover { background: rgba(255,255,255,0.2); } .stone-black .node-action-btn.del { color: #fca5a5; }
+
+        /* 🔥 獨立浮動詰棋視窗 */
+        #tsumego-widget-btn { position: fixed; bottom: 30px; right: 30px; z-index: 8500; width: 56px; height: 56px; border-radius: 28px; background: #1e293b; color: white; font-size: 1.8rem; display: flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 6px 16px rgba(0,0,0,0.3); border: 2px solid #cbd5e1; transition: transform 0.2s; user-select: none; }
+        #tsumego-widget-btn:hover { transform: scale(1.1); background: #334155; }
+        
+        .tsumego-panel { 
+            position: fixed; top: 10vh; left: 10vw; /* 初始位置 */
+            width: auto; background: white; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.3); 
+            border: 1px solid #cbd5e1; overflow: hidden; display: none; z-index: 9500;
+        }
+        .tsumego-header { background: #f8fafc; padding: 12px 15px; font-weight: bold; border-bottom: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center; color: #1e293b; cursor: move; /* 拖曳把手 */ user-select: none; }
+        
+        /* 容器加上捲動，避免 19x19 在手機上爆掉 */
+        .tsumego-board-container { padding: 15px; background: #f1ebd7; display: flex; justify-content: center; align-items: center; border-bottom: 1px solid #e2e8f0; max-width: 90vw; max-height: 60vh; overflow: auto; overscroll-behavior: contain; }
+        
+        /* 升級：19x19 迷你棋盤 */
+        .tsumego-board { 
+            position: relative; 
+            width: 570px; height: 570px; /* 18 gaps * 30px + 30px padding = 570px */
+            background-image: linear-gradient(#9ca3af 2px, transparent 2px), linear-gradient(90deg, #9ca3af 2px, transparent 2px); 
+            background-size: 30px 30px; background-position: 14px 14px; 
+            border: 4px solid #78350f; border-radius: 2px; cursor: crosshair; touch-action: none; flex-shrink: 0;
+        }
+        .tsumego-stone { position: absolute; width: 28px; height: 28px; border-radius: 50%; transform: translate(-50%, -50%); box-shadow: 1px 2px 4px rgba(0,0,0,0.4); pointer-events: none; }
+        .tsumego-stone.black { background: radial-gradient(circle at 30% 30%, #475569, #0f172a); border: 1px solid #020617; }
+        .tsumego-stone.white { background: radial-gradient(circle at 30% 30%, #ffffff, #e2e8f0); border: 1px solid #cbd5e1; }
+        
+        .tsumego-controls { padding: 10px 15px; display: flex; justify-content: space-between; background: white; gap: 5px; flex-wrap: wrap; }
+        .tsumego-tool-btn { flex: 1; padding: 6px 10px; border: 1px solid #cbd5e1; border-radius: 6px; background: white; cursor: pointer; font-size: 0.85rem; transition: 0.2s; font-weight: bold; color: #475569; text-align: center; }
+        .tsumego-tool-btn.active { background: #e0e7ff; border-color: #4f46e5; color: #4338ca; }
+
+        /* 時間軸 & 卡片 (Timeline View) */
+        .timeline { position: relative; padding: 20px 0; max-width: 1200px; margin: 0 auto; }
+        .timeline::before { content: ''; position: absolute; top: 0; bottom: 0; left: 20px; width: 4px; background: #e5e7eb; border-radius: 2px; }
+        .card-wrapper { display: flex; margin-bottom: 30px; position: relative; padding-left: 45px; }
+        .card-dot { position: absolute; left: 16px; top: 20px; width: 12px; height: 12px; background: white; border: 4px solid var(--primary); border-radius: 50%; z-index: 2; }
+        .card { flex: 1; background: white; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); border-top: 5px solid var(--primary); position: relative; transition: 0.2s; }
+        .card[data-color="blue"] { border-top-color: #4f46e5; } .card[data-color="green"] { border-top-color: #10b981; background: #f0fdf4; } .card[data-color="red"] { border-top-color: #ef4444; background: #fef2f2; } .card[data-color="yellow"] { border-top-color: #f59e0b; background: #fffbeb; }
+        .card.memo-mode { border-top-style: dashed; }
+        .card-header { padding: 10px 15px; border-bottom: 1px dashed #e2e8f0; display: flex; justify-content: space-between; align-items: center; background: rgba(255,255,255,0.5); flex-wrap: wrap; gap: 10px; }
+        .status-dot { width: 16px; height: 16px; border-radius: 50%; cursor: pointer; border: 2px solid rgba(0,0,0,0.1); display: inline-block; }
+        .status-0 { background: #9ca3af; } .status-1 { background: #f59e0b; } .status-2 { background: #10b981; } .status-3 { background: #ef4444; }
+        .card-body { padding: 15px; display: flex; flex-direction: column; gap: 8px; }
+        .input-title { font-size: 1.25rem; font-weight: bold; color: var(--primary); border: none; border-bottom: 1px dashed #cbd5e1; padding: 5px 0; outline: none; background: transparent; width: 100%; transition: 0.2s; }
+        .input-title:focus { border-bottom-color: var(--primary); }
+        .input-date { border: 1px solid #cbd5e1; padding: 4px; border-radius: 4px; font-size: 0.9rem; outline: none; background: white; color: #475569; }
+        .input-content { padding: 10px; border: 1px solid transparent; border-radius: 6px; font-size: 1.05rem; line-height: 1.6; resize: none; outline: none; background: transparent; color: #334155; overflow: hidden; transition: background 0.2s, border 0.2s; }
+        .input-content:focus { border-color: #cbd5e1; background: rgba(255,255,255,0.8); }
+        .card-footer { background: #cbd5e1; padding: 8px 15px; display: flex; justify-content: flex-end; border-radius: 0 0 12px 12px; }
+        .card[data-color="blue"] .card-footer { background: #4f46e5; } .card[data-color="green"] .card-footer { background: #10b981; } .card[data-color="red"] .card-footer { background: #ef4444; } .card[data-color="yellow"] .card-footer { background: #f59e0b; }
+        .input-project { background: transparent; border: none; color: white; font-weight: bold; text-align: right; outline: none; font-size: 0.95rem; width: 100%; max-width: 200px; }
+        .input-project::placeholder { color: rgba(255,255,255,0.7); }
+        .icon-btn { background: white; border: 1px solid #cbd5e1; border-radius: 4px; width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; color: #64748b; font-size: 14px; transition: 0.2s; }
+        .icon-btn:hover { background: #f1f5f9; color: var(--primary); border-color: #94a3b8; }
+
+        /* 其他視圖樣式 */
+        #chronicle-render-target { max-width: 1000px; margin: 0 auto; }
+        .chronicle-row { display: flex; margin-bottom: 25px; border-left: 3px solid #e2e8f0; padding-left: 20px; position: relative; }
+        .chronicle-row::before { content: ''; position: absolute; left: -8px; top: 6px; width: 13px; height: 13px; border-radius: 50%; background: var(--primary); border: 2px solid white; }
+        .chronicle-date { font-weight: bold; width: 120px; flex-shrink: 0; color: #64748b; font-size: 0.95rem; }
+        .chronicle-info { flex: 1; background: #f8fafc; padding: 10px 15px; border-radius: 8px; border: 1px solid #e2e8f0; }
         .chronicle-title { font-weight: bold; font-size: 1.1rem; color: #1e293b; }
 
-        /* 模態彈窗 */
         .modal-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); z-index: 9000; align-items: center; justify-content: center; backdrop-filter: blur(2px); }
-        .modal-content { background: white; padding: 20px; border-radius: 12px; width: 90%; max-width: 800px; max-height: 90vh; overflow-y: auto; box-shadow: 0 10px 25px rgba(0,0,0,0.2); }
-        .nb-textarea { width: 100%; height: 300px; resize: vertical; padding: 15px; border: 1px solid #cbd5e1; border-radius: 8px; outline: none; font-size: 1rem; line-height: 1.6; }
+        .modal-content { background: white; padding: 25px; border-radius: 12px; width: 95%; max-width: 900px; max-height: 90vh; overflow-y: auto; box-shadow: 0 10px 25px rgba(0,0,0,0.2); display: flex; flex-direction: column; }
+        .nb-textarea { width: 100%; height: 400px; resize: vertical; padding: 15px; border: 1px solid #cbd5e1; border-radius: 8px; outline: none; font-size: 1.05rem; line-height: 1.6; }
+        .nb-textarea:focus { border-color: var(--primary); }
         
-        .add-main-btn { display: block; width: 100%; max-width: 400px; margin: 30px auto; padding: 15px; background: white; border: 2px dashed #cbd5e1; border-radius: 12px; text-align: center; color: #64748b; font-weight: bold; cursor: pointer; font-size: 1.1rem; }
-        .add-main-btn:hover { border-color: var(--primary); color: var(--primary); background: #eff6ff; }
+        .add-main-btn { display: block; width: 100%; max-width: 500px; margin: 40px auto; padding: 15px; background: white; border: 2px dashed #cbd5e1; border-radius: 12px; text-align: center; color: #64748b; font-weight: bold; cursor: pointer; font-size: 1.1rem; transition: 0.2s; box-shadow: 0 2px 4px rgba(0,0,0,0.02); }
+        .add-main-btn:hover { border-color: var(--primary); color: var(--primary); background: #eff6ff; box-shadow: 0 4px 6px rgba(0,0,0,0.05); transform: translateY(-2px); }
         
         @media (max-width: 768px) {
             .tool-title, .mobile-hidden { display: none !important; }
-            .tool-right { margin-left: auto; }
-            .btn-cloud-save::before { content: "☁️"; } .btn-cloud-save { font-size: 0; }
-            .btn-cloud-load::before { content: "📥"; } .btn-cloud-load { font-size: 0; }
+            .tool-right { margin-left: auto; width: 100%; justify-content: flex-end; }
+            .toolbar { flex-wrap: wrap; height: auto; min-height: 60px; padding: 8px 10px; }
+            #project-bar { top: auto; bottom: 0; left: 0; right: 0; border-bottom: none; border-top: 1px solid #e2e8f0; box-shadow: 0 -2px 5px rgba(0,0,0,0.05); z-index: 3000; padding: 8px 10px; }
+            #tab-bar { width: 45px; z-index: 1900; }
+            .main-area { margin-left: 45px; padding: 10px; width: calc(100% - 45px); }
+            body.has-project-bar .main-area { margin-top: 0; padding-bottom: 60px; }
+            body.has-project-bar .matrix-board { height: calc(100vh - 220px); }
+            .card-wrapper { padding-left: 30px; margin-bottom: 20px; }
+            .timeline::before { left: 10px; }
+            .card-dot { left: 5px; width: 10px; height: 10px; border-width: 3px; }
+            .chronicle-row { flex-direction: column; padding-left: 15px; border-left-width: 2px; }
+            .chronicle-row::before { left: -6px; width: 10px; height: 10px; }
+            .chronicle-date { width: auto; margin-bottom: 5px; }
+            .btn-cloud-save::before { content: "☁️"; } .btn-cloud-save { font-size: 0; padding: 8px; }
+            .btn-cloud-load::before { content: "📥"; } .btn-cloud-load { font-size: 0; padding: 8px; }
             .btn-clear-local::before { content: "🧹"; } .btn-clear-local { font-size: 0; padding: 6px; }
+            #pomodoro-btn span { display: none; }
+            
+            #tsumego-widget-btn { bottom: 80px; right: 15px; width: 48px; height: 48px; font-size: 1.5rem; }
         }
     </style>
 </head>
 <body>
 
-    <!-- 🔑 登入畫面 -->
     <div id="login-screen">
         <h1 style="font-size: 2.5rem; margin-bottom: 10px;">🧠 戰術白板 2.0</h1>
-        <p style="color: #94a3b8; margin-bottom: 30px;">(本地優先・手動雲端備份版)</p>
-        <button onclick="app.login()" style="padding: 12px 24px; font-size: 1.1rem; border-radius: 30px; border: none; background: #3b82f6; color: white; font-weight: bold; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.3);">
+        <p style="color: #94a3b8; margin-bottom: 30px;">(全螢幕響應・手動雲端版)</p>
+        <button onclick="app.login()" style="padding: 12px 24px; font-size: 1.1rem; border-radius: 30px; border: none; background: #3b82f6; color: white; font-weight: bold; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.3); transition: transform 0.2s;">
             使用 Google 登入
         </button>
     </div>
 
-    <!-- 🛠️ 應用程式內容 -->
     <div id="app-content" style="display: none;">
-        <!-- 頂部工具列 -->
         <div class="toolbar">
             <div class="tool-left">
                 <div class="tool-title">🧠 戰術白板</div>
-                
                 <button class="btn" onclick="app.toggleProjectBar()">📁 專案</button>
                 <button class="btn" onclick="app.switchView('timeline')" id="btn-view-timeline">📜 時間軸</button>
+                <button class="btn" onclick="app.switchView('matrix')" id="btn-view-matrix">💡 發想棋盤</button>
                 <button class="btn mobile-hidden" onclick="app.switchView('chronicle')" id="btn-view-chronicle">⚡ 大事記</button>
                 <button class="btn mobile-hidden" onclick="app.switchView('gantt')" id="btn-view-gantt">📊 甘特圖</button>
                 <button class="btn mobile-hidden" onclick="app.switchView('calendar')" id="btn-view-calendar">📅 日曆</button>
             </div>
             <div class="tool-right">
-                <button class="btn btn-cloud-save" onclick="app.saveToCloudManual()" title="將目前進度覆蓋到雲端">☁️ 存上雲端</button>
-                <button class="btn btn-cloud-load" onclick="app.loadFromCloudManual()" title="從雲端抓取最新進度">📥 載入雲端</button>
-                
-                <div style="width:1px; height:20px; background:#475569; margin:0 5px;"></div>
-                
-                <button class="btn btn-danger btn-clear-local" onclick="app.clearLocalData()" title="清空這台裝置的暫存 (不會影響雲端)">🧹 清空本機</button>
-                
+                <button class="btn btn-cloud-save" onclick="app.saveToCloudManual()" title="將目前進度覆蓋到雲端">☁️ 存雲端</button>
+                <button class="btn btn-cloud-load" onclick="app.loadFromCloudManual()" title="從雲端抓取最新進度">📥 載雲端</button>
+                <div style="width:1px; height:20px; background:#475569; margin:0 2px;"></div>
+                <button class="btn btn-danger btn-clear-local" onclick="app.clearLocalData()" title="清空這台裝置的暫存">🧹 清本機</button>
                 <button class="btn" id="pomodoro-btn" onclick="app.togglePomodoro()" title="番茄鐘">🍅 <span id="pomo-time">25:00</span></button>
                 <button class="btn" onclick="app.openNotebook()">📖 筆記</button>
                 <button class="btn btn-danger mobile-hidden" onclick="app.logout()">登出</button>
             </div>
         </div>
 
-        <!-- 專案過濾列 -->
         <div id="project-bar" style="display: none;"></div>
-
-        <!-- 左側分頁工作區 -->
         <div id="tab-bar"></div>
 
-        <!-- 主視圖區域 -->
         <div class="main-area">
-            <!-- 1. 時間軸 (Timeline) -->
-            <div id="view-timeline" class="view-container active">
-                <div style="text-align:right; font-size:0.8rem; color:#94a3b8; margin-bottom:10px;">目前狀態：<span id="local-save-status">✅ 已存於本機瀏覽器</span></div>
-                <div class="timeline" id="timeline-render-target"></div>
-                <button class="add-main-btn" onclick="app.actions.addCard()">＋ 新增節點</button>
+            <div id="view-matrix" class="view-container">
+                <div style="text-align:center; font-size:0.9rem; color:#64748b; margin-bottom:15px; line-height: 1.5;">
+                    💡 點擊「📁 專案」切換專屬資料夾。節點拖放會自動吸附於 19 路網格交點。<br>
+                    點擊 ☯️ 切換黑白子狀態。成熟後點擊「📄 排程」送入時間軸。
+                </div>
+                
+                <div class="matrix-input-bar">
+                    <input type="text" id="matrix-quick-input" class="matrix-input" placeholder="💡 靈光一閃... (按 Enter 落子)" onkeypress="if(event.key === 'Enter') app.actions.addMatrixNode()">
+                    <button class="btn btn-cloud-save" style="padding: 10px 20px; font-size: 1rem;" onclick="app.actions.addMatrixNode()">＋ 落下白子</button>
+                </div>
+                
+                <div class="matrix-board" id="matrix-board">
+                    <div class="matrix-axis-x"></div>
+                    <div class="matrix-axis-y"></div>
+                    <div class="matrix-quadrant-label" style="top:20px; left:20px;">Q1 重要・緊急</div>
+                    <div class="matrix-quadrant-label" style="top:20px; right:20px;">Q2 重要・不急</div>
+                    <div class="matrix-quadrant-label" style="bottom:20px; left:20px;">Q3 緊急・不重</div>
+                    <div class="matrix-quadrant-label" style="bottom:20px; right:20px;">Q4 不重・不急</div>
+                    
+                    <div id="matrix-nodes-container"></div>
+                </div>
             </div>
 
-            <!-- 2. 大事記 (Chronicle) -->
+            <div id="view-timeline" class="view-container active">
+                <div style="text-align:right; font-size:0.85rem; color:#94a3b8; margin-bottom:15px; font-weight: bold;">
+                    <span id="local-save-status">✅ 已存於本機</span>
+                </div>
+                <div class="timeline" id="timeline-render-target"></div>
+                <button class="add-main-btn" onclick="app.actions.addCard()">＋ 新增正式排程卡片</button>
+            </div>
+
             <div id="view-chronicle" class="view-container">
-                <h3 style="text-align: center; color: #475569;">⚡ 大事記與衝突偵測</h3>
+                <h3 style="text-align: center; color: #475569; margin-top: 0;">⚡ 大事記與衝突偵測</h3>
                 <div id="chronicle-render-target"></div>
             </div>
 
-            <!-- 3. 甘特圖 (Gantt) -->
             <div id="view-gantt" class="view-container">
-                <h3 style="text-align: center; color: #475569;">📊 專案甘特圖 (唯讀)</h3>
+                <h3 style="text-align: center; color: #475569; margin-top: 0;">📊 專案甘特圖 (唯讀)</h3>
                 <div id="gantt-render-target" style="min-width: 600px;"></div>
             </div>
 
-            <!-- 4. 日曆 (Calendar) -->
             <div id="view-calendar" class="view-container">
-                <h3 style="text-align: center; color: #475569;">📅 全域日曆 (匯總所有分頁)</h3>
+                <h3 style="text-align: center; color: #475569; margin-top: 0;">📅 全域日曆 (匯總所有分頁)</h3>
                 <div id="calendar-render-target"></div>
             </div>
         </div>
 
-        <!-- 模態彈窗：全域筆記本 -->
         <div id="modal-notebook" class="modal-overlay">
             <div class="modal-content">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-                    <h3 style="margin: 0; color: #1e293b;">📖 全域共用筆記本</h3>
-                    <button class="icon-btn" onclick="app.closeNotebook()">×</button>
+                    <h3 style="margin: 0; color: #1e293b; font-size: 1.5rem;">📖 全域共用筆記本</h3>
+                    <button class="icon-btn" style="width:36px; height:36px; font-size:1.2rem;" onclick="app.closeNotebook()">×</button>
                 </div>
-                <select id="nb-template" onchange="app.actions.updateNotebookTemplate(this.value)" style="margin-bottom: 10px; padding: 5px; border-radius: 4px;">
-                    <option value="free">📝 自由筆記</option>
+                <select id="nb-template" onchange="app.actions.updateNotebookTemplate(this.value)" style="margin-bottom: 15px; padding: 8px 12px; border-radius: 6px; border: 1px solid #cbd5e1; font-size: 1rem; width: 100%; max-width: 300px;">
+                    <option value="free">📝 自由筆記區</option>
                     <option value="matrix">⚖️ 艾森豪四象限</option>
                 </select>
                 <div id="notebook-render-target"></div>
             </div>
         </div>
+
+        <div id="tsumego-widget-btn" onclick="app.toggleTsumego()" title="想思考但不想做事情的時候...">🎲</div>
+        
+        <div id="tsumego-panel" class="tsumego-panel">
+            <div class="tsumego-header" id="tsumego-header">
+                <span>🎲 休息區：19x19 詰棋</span>
+                <button class="icon-btn" style="width:24px; height:24px; border:none; background:transparent;" onclick="app.toggleTsumego()">×</button>
+            </div>
+            <div class="tsumego-board-container">
+                <div class="tsumego-board" id="tsumego-board" onclick="app.actions.placeTsumegoStone(event)">
+                    <div id="tsumego-stones-container"></div>
+                </div>
+            </div>
+            <div class="tsumego-controls">
+                <button class="tsumego-tool-btn active" id="ts-btn-black" onclick="app.actions.setTsumegoColor('black')">⚫ 黑子</button>
+                <button class="tsumego-tool-btn" id="ts-btn-white" onclick="app.actions.setTsumegoColor('white')">⚪ 白子</button>
+                <button class="tsumego-tool-btn" id="ts-btn-clear" onclick="app.actions.setTsumegoColor('clear')">🧹 移除</button>
+                <button class="tsumego-tool-btn" style="color:#ef4444; border-color:#fca5a5;" onclick="app.actions.resetTsumego()">🗑️ 清盤</button>
+            </div>
+        </div>
+
     </div>
 
-    <!-- 🌟 核心應用程式邏輯 🌟 -->
     <script>
         const firebaseConfig = {
             apiKey: "AIzaSyAIY9PU-bDLktkTpLSmFKRe1uepvWCKEiU",
@@ -214,14 +316,14 @@
 
         const app = {
             currentUser: null,
-            draggedCardId: null,
 
-            // 核心狀態
             state: {
                 tabs: [{ id: 'main', name: '主工作區' }],
                 activeTabId: 'main',
                 workspaces: { 'main': [] },
+                nodes: { 'main': [] }, 
                 globalNotebook: { template: 'free', free: '', matrix: { q1:'', q2:'', q3:'', q4:'' } },
+                tsumego: { isOpen: false, currentColor: 'black', stones: [] },
                 view: 'timeline',
                 filters: { keyword: '', activeProject: null },
                 showProjectBar: false
@@ -234,6 +336,8 @@
                         document.getElementById('login-screen').style.display = 'none';
                         document.getElementById('app-content').style.display = 'block';
                         this.loadFromLocal();
+                        this.setupMatrixDrag();
+                        this.setupTsumegoDrag(); // 初始化浮動視窗拖曳
                     } else {
                         this.currentUser = null;
                         document.getElementById('login-screen').style.display = 'flex';
@@ -243,28 +347,15 @@
             },
 
             login() { auth.signInWithPopup(provider).catch(err => alert("登入失敗: " + err.message)); },
-            
-            logout() { 
-                if(confirm('確定登出？\n\n(注意：登出不會自動清除這台裝置的暫存資料。若您不希望資料留在這台裝置上，請先點擊右上角的「🧹 清空本機」)')) {
-                    auth.signOut(); 
-                } 
-            },
+            logout() { if(confirm('確定登出？若不想留暫存請先點擊「🧹 清本機」')) auth.signOut(); },
 
-            // ==========================================
-            // 存檔策略：本地優先 + 手動雲端
-            // ==========================================
             saveToLocal() {
                 localStorage.setItem(`whiteboard_state_${this.currentUser.uid}`, JSON.stringify({
-                    tabs: this.state.tabs,
-                    workspaces: this.state.workspaces,
-                    globalNotebook: this.state.globalNotebook
+                    tabs: this.state.tabs, workspaces: this.state.workspaces, nodes: this.state.nodes, 
+                    globalNotebook: this.state.globalNotebook, tsumego: { stones: this.state.tsumego.stones }
                 }));
-                
                 const statusEl = document.getElementById('local-save-status');
-                if(statusEl) {
-                    statusEl.innerText = '💾 儲存中...';
-                    setTimeout(() => { statusEl.innerText = '✅ 已存於本機瀏覽器 (記得手動推上雲端)'; }, 500);
-                }
+                if(statusEl) { statusEl.innerText = '💾 儲存中...'; setTimeout(() => { statusEl.innerText = '✅ 已存於本機'; }, 500); }
             },
 
             loadFromLocal() {
@@ -273,63 +364,42 @@
                     const data = JSON.parse(localData);
                     this.state.tabs = data.tabs || [{ id: 'main', name: '主工作區' }];
                     this.state.workspaces = data.workspaces || { 'main': [] };
+                    this.state.nodes = data.nodes || { 'main': [] };
                     this.state.globalNotebook = data.globalNotebook || { template: 'free', free: '', matrix: {} };
-                    this.renderAll();
-                } else {
-                    if(confirm("本機沒有暫存資料。是否要從雲端下載最新進度？")) {
-                        this.loadFromCloudManual();
-                    } else {
-                        this.renderAll();
+                    if(data.tsumego && data.tsumego.stones) {
+                        this.state.tsumego.stones = data.tsumego.stones;
                     }
+                    if (!this.state.nodes[this.state.activeTabId]) this.state.nodes[this.state.activeTabId] = [];
+                    this.renderAll();
+                    this.renderTsumegoStones();
+                } else {
+                    if(confirm("本機沒有暫存資料。是否要從雲端下載最新進度？")) this.loadFromCloudManual(); else this.renderAll();
                 }
             },
 
             clearLocalData() {
                 if (!this.currentUser) return;
-                
-                if(!confirm("⚠️ 警告：這將會徹底清除「這台裝置」上的所有進度！\n\n如果您還沒點擊過「☁️ 存上雲端」，未上傳的資料將會永遠遺失。\n\n您確定要清空本機資料嗎？")) return;
-
+                if(!confirm("⚠️ 警告：這將會徹底清除「這台裝置」上的所有進度！確定嗎？")) return;
                 localStorage.removeItem(`whiteboard_state_${this.currentUser.uid}`);
-                
-                this.state.tabs = [{ id: 'main', name: '主工作區' }];
-                this.state.activeTabId = 'main';
-                this.state.workspaces = { 'main': [] };
+                this.state.tabs = [{ id: 'main', name: '主工作區' }]; this.state.activeTabId = 'main';
+                this.state.workspaces = { 'main': [] }; this.state.nodes = { 'main': [] };
                 this.state.globalNotebook = { template: 'free', free: '', matrix: { q1:'', q2:'', q3:'', q4:'' } };
-                
-                this.renderAll();
-                alert("🧹 本機資料已清空！\n畫面已重置。您可以點擊「📥 載入雲端」抓取雲端上的備份。");
+                this.state.tsumego.stones = [];
+                this.renderAll(); this.renderTsumegoStones(); alert("🧹 本機資料已清空！");
             },
 
             saveToCloudManual() {
                 if (!this.currentUser) return;
-                const btn = document.querySelector('.btn-cloud-save');
-                btn.innerText = "上傳中...";
-                
-                const payload = {
-                    tabs: this.state.tabs,
-                    workspaces: this.state.workspaces,
-                    globalNotebook: this.state.globalNotebook,
-                    updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-                };
-                
-                db.collection('Whiteboard_Data').doc(this.currentUser.uid)
-                  .set(payload, { merge: true })
-                  .then(() => {
-                      alert("✅ 成功！目前資料已備份至雲端。");
-                      btn.innerText = "☁️ 存上雲端";
-                  })
-                  .catch(err => {
-                      alert("上傳失敗：" + err.message);
-                      btn.innerText = "☁️ 存上雲端";
-                  });
+                const btn = document.querySelector('.btn-cloud-save'); const originalText = btn.innerText; btn.innerText = "上傳中...";
+                const payload = { tabs: this.state.tabs, workspaces: this.state.workspaces, nodes: this.state.nodes, globalNotebook: this.state.globalNotebook, updatedAt: firebase.firestore.FieldValue.serverTimestamp() };
+                db.collection('Whiteboard_Data').doc(this.currentUser.uid).set(payload, { merge: true })
+                  .then(() => alert("✅ 目前資料已備份至雲端。")).catch(err => alert("上傳失敗：" + err.message)).finally(() => btn.innerText = originalText);
             },
 
             loadFromCloudManual() {
                 if (!this.currentUser) return;
-                if(!confirm("⚠️ 警告：這將會使用雲端的資料「完全覆蓋」您目前畫面上的資料。確定要繼續嗎？")) return;
-
-                const btn = document.querySelector('.btn-cloud-load');
-                btn.innerText = "下載中...";
+                if(!confirm("⚠️ 將覆蓋目前畫面上的所有資料。確定繼續？")) return;
+                const btn = document.querySelector('.btn-cloud-load'); const originalText = btn.innerText; btn.innerText = "下載中...";
 
                 db.collection('Whiteboard_Data').doc(this.currentUser.uid).get()
                   .then((doc) => {
@@ -337,374 +407,318 @@
                           const data = doc.data();
                           this.state.tabs = data.tabs || [{ id: 'main', name: '主工作區' }];
                           this.state.workspaces = data.workspaces || { 'main': [] };
+                          this.state.nodes = data.nodes || { 'main': [] };
                           this.state.globalNotebook = data.globalNotebook || { template: 'free', free: '', matrix: {} };
-                          
-                          if (!this.state.tabs.find(t => t.id === this.state.activeTabId)) {
-                              this.state.activeTabId = this.state.tabs[0].id;
-                          }
-                          
-                          this.saveToLocal();
-                          this.renderAll();
-                          alert("📥 載入成功！畫面已更新為雲端最新版本。");
-                      } else {
-                          alert("雲端目前沒有任何備份資料喔！");
-                      }
+                          if (!this.state.tabs.find(t => t.id === this.state.activeTabId)) this.state.activeTabId = this.state.tabs[0].id;
+                          if (!this.state.nodes[this.state.activeTabId]) this.state.nodes[this.state.activeTabId] = [];
+                          this.saveToLocal(); this.renderAll(); alert("📥 載入成功！");
+                      } else { alert("雲端目前沒有任何備份資料喔！"); }
                   })
-                  .catch(err => alert("下載失敗：" + err.message))
-                  .finally(() => {
-                      btn.innerText = "📥 載入雲端";
-                  });
+                  .catch(err => alert("下載失敗：" + err.message)).finally(() => btn.innerText = originalText);
             },
 
-            // 4. 資料存取輔助函數
-            getActiveCards() {
-                let cards = this.state.workspaces[this.state.activeTabId] || [];
-                if (this.state.filters.activeProject) cards = cards.filter(c => c.project === this.state.filters.activeProject);
-                return cards;
-            },
-            getAllCardsAcrossTabs() {
-                let all = [];
-                for (let tabId in this.state.workspaces) {
-                    const tabName = this.state.tabs.find(t => t.id === tabId)?.name || '未知';
-                    this.state.workspaces[tabId].forEach(c => all.push({ ...c, tabId, tabName }));
-                }
-                return all;
-            },
+            // ==========================================
+            // 浮動視窗拖曳邏輯 (Tsumego Panel)
+            // ==========================================
+            setupTsumegoDrag() {
+                const panel = document.getElementById('tsumego-panel');
+                const header = document.getElementById('tsumego-header');
+                let isDragging = false, startX, startY, startLeft, startTop;
 
-            // 5. 使用者操作動作
-            actions: {
-                addCard() {
-                    const newCard = { id: 'card_' + Date.now(), title: '', content: '', project: '', dateMode: 'single', dateSingle: new Date().toISOString().split('T')[0], dateStart: '', dateEnd: '', color: 'blue', status: 0, isMemo: false };
-                    app.state.workspaces[app.state.activeTabId].unshift(newCard);
-                    app.saveToLocal(); app.renderAll();
-                },
-                updateCard(id, field, value) {
-                    const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id);
-                    if (card) { 
-                        card[field] = value; 
-                        app.saveToLocal(); 
-                        if(field === 'project') app.renderProjectBar();
-                    }
-                },
-                deleteCard(id) {
-                    if(confirm('確定移除此卡片？')) {
-                        app.state.workspaces[app.state.activeTabId] = app.state.workspaces[app.state.activeTabId].filter(c => c.id !== id);
-                        app.saveToLocal(); app.renderAll();
-                    }
-                },
-                cycleStatus(id) {
-                    const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id);
-                    if (card) { card.status = (card.status + 1) % 4; app.saveToLocal(); app.renderAll(); }
-                },
-                cycleColor(id) {
-                    const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id);
-                    const colors = ['blue', 'green', 'red', 'yellow'];
-                    if (card) { card.color = colors[(colors.indexOf(card.color) + 1) % colors.length]; app.saveToLocal(); app.renderAll(); }
-                },
-                toggleMemo(id) {
-                    const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id);
-                    if (card) { card.isMemo = !card.isMemo; app.saveToLocal(); app.renderAll(); }
-                },
-                toggleDateMode(id) {
-                    const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id);
-                    if (card) { card.dateMode = card.dateMode === 'single' ? 'range' : 'single'; app.saveToLocal(); app.renderAll(); }
-                },
-                
-                switchTab(id) { app.state.activeTabId = id; app.state.filters.activeProject = null; app.renderAll(); },
-                addTab() {
-                    const name = prompt("請輸入新工作區名稱：");
-                    if (name) {
-                        const id = 'tab_' + Date.now();
-                        app.state.tabs.push({ id, name });
-                        app.state.workspaces[id] = [];
-                        app.state.activeTabId = id;
-                        app.saveToLocal(); app.renderAll();
-                    }
-                },
-
-                // 🔥 新增：分頁管理機制 (右鍵重新命名與刪除)
-                manageTab(e, id) {
-                    e.preventDefault(); 
-                    if (id === 'main') {
-                        alert('「主工作區」為系統預設，無法修改或刪除！');
-                        return;
-                    }
+                const onMouseDown = (e) => {
+                    if (e.target.closest('button')) return; // 忽略關閉按鈕
+                    isDragging = true;
+                    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+                    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+                    startX = clientX; startY = clientY;
                     
-                    const tab = app.state.tabs.find(t => t.id === id);
-                    const action = prompt(`管理分頁：「${tab.name}」\n\n請輸入數字選擇動作：\n[1] 重新命名\n[2] 刪除分頁 (此分頁內的所有卡片將一併刪除)`);
+                    const rect = panel.getBoundingClientRect();
+                    startLeft = rect.left; startTop = rect.top;
                     
-                    if (action === '1') {
-                        const newName = prompt('請輸入新名稱：', tab.name);
-                        if (newName && newName.trim() !== '') {
-                            tab.name = newName.trim();
-                            app.saveToLocal(); app.renderAll();
-                        }
-                    } else if (action === '2') {
-                        if (confirm(`⚠️ 警告：確定要刪除「${tab.name}」嗎？\n裡面的所有卡片都會消失，且無法復原！`)) {
-                            app.state.tabs = app.state.tabs.filter(t => t.id !== id);
-                            delete app.state.workspaces[id];
-                            app.state.activeTabId = 'main';
-                            
-                            app.saveToLocal(); app.renderAll();
-                            alert('🗑️ 分頁已刪除');
-                        }
-                    }
-                },
+                    // 鎖定絕對位置，取消預設的 css transform 排版
+                    panel.style.transform = 'none';
+                    panel.style.left = startLeft + 'px';
+                    panel.style.top = startTop + 'px';
+                };
                 
-                updateNotebookTemplate(val) { app.state.globalNotebook.template = val; app.saveToLocal(); app.renderNotebookArea(); },
-                updateNotebook(field, val) {
-                    if (field === 'free') app.state.globalNotebook.free = val;
-                    else { const key = field.split('.')[1]; app.state.globalNotebook.matrix[key] = val; }
-                    app.saveToLocal();
-                },
-
-                onDragStart(e, id) { app.draggedCardId = id; e.target.classList.add('dragging'); },
-                onDragOver(e) { e.preventDefault(); },
-                onDrop(e, targetId) {
+                const onMouseMove = (e) => {
+                    if (!isDragging) return;
                     e.preventDefault();
-                    document.querySelectorAll('.card-wrapper').forEach(el => el.classList.remove('dragging'));
-                    if(!app.draggedCardId || app.draggedCardId === targetId) return;
+                    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+                    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+                    panel.style.left = startLeft + (clientX - startX) + 'px';
+                    panel.style.top = startTop + (clientY - startY) + 'px';
+                };
+                
+                const onMouseUp = () => { isDragging = false; };
+
+                header.addEventListener('mousedown', onMouseDown);
+                header.addEventListener('touchstart', onMouseDown, {passive: false});
+                document.addEventListener('mousemove', onMouseMove);
+                document.addEventListener('touchmove', onMouseMove, {passive: false});
+                document.addEventListener('mouseup', onMouseUp);
+                document.addEventListener('touchend', onMouseUp);
+            },
+
+            // ==========================================
+            // 發想矩陣拖曳邏輯
+            // ==========================================
+            dragState: { isDragging: false, nodeId: null, offsetX: 0, offsetY: 0 },
+            setupMatrixDrag() {
+                const board = document.getElementById('matrix-board');
+                const startDrag = (e) => {
+                    const nodeEl = e.target.closest('.matrix-node');
+                    if (!nodeEl || e.target.closest('button')) return;
+                    app.dragState.isDragging = true; app.dragState.nodeId = nodeEl.dataset.id;
+                    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+                    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+                    const rect = nodeEl.getBoundingClientRect();
+                    app.dragState.offsetX = clientX - (rect.left + rect.width / 2);
+                    app.dragState.offsetY = clientY - (rect.top + rect.height / 2);
+                };
+                const onDrag = (e) => {
+                    if (!app.dragState.isDragging) return; e.preventDefault(); 
+                    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+                    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+                    const boardRect = board.getBoundingClientRect();
+                    let x = clientX - boardRect.left - app.dragState.offsetX;
+                    let y = clientY - boardRect.top - app.dragState.offsetY;
+                    let pctX = (x / boardRect.width) * 100; let pctY = (y / boardRect.height) * 100;
+                    const nodeEl = document.querySelector(`.matrix-node[data-id="${app.dragState.nodeId}"]`);
+                    nodeEl.style.transition = 'none'; nodeEl.style.left = pctX + '%'; nodeEl.style.top = pctY + '%';
+                };
+                const endDrag = (e) => {
+                    if (!app.dragState.isDragging) return; app.dragState.isDragging = false;
+                    const nodeEl = document.querySelector(`.matrix-node[data-id="${app.dragState.nodeId}"]`);
+                    if(!nodeEl) return;
+                    nodeEl.style.transition = 'transform 0.1s, box-shadow 0.1s, left 0.2s ease-out, top 0.2s ease-out';
+                    let gridX = Math.round((parseFloat(nodeEl.style.left) / 100) * 18);
+                    let gridY = Math.round((parseFloat(nodeEl.style.top) / 100) * 18);
+                    gridX = Math.max(0, Math.min(18, gridX)); gridY = Math.max(0, Math.min(18, gridY));
+                    app.actions.updateMatrixNodePos(app.dragState.nodeId, gridX, gridY);
+                };
+                board.addEventListener('mousedown', startDrag); board.addEventListener('touchstart', startDrag, { passive: false });
+                document.addEventListener('mousemove', onDrag); document.addEventListener('touchmove', onDrag, { passive: false });
+                document.addEventListener('mouseup', endDrag); document.addEventListener('touchend', endDrag);
+            },
+
+            getActiveCards() { let cards = this.state.workspaces[this.state.activeTabId] || []; if (this.state.filters.activeProject) cards = cards.filter(c => c.project === this.state.filters.activeProject); return cards; },
+            getAllCardsAcrossTabs() { let all = []; for (let tabId in this.state.workspaces) { const tabName = this.state.tabs.find(t => t.id === tabId)?.name || '未知'; this.state.workspaces[tabId].forEach(c => all.push({ ...c, tabId, tabName })); } return all; },
+
+            actions: {
+                addCard() { const newCard = { id: 'card_' + Date.now(), title: '', content: '', project: app.state.filters.activeProject || '', dateMode: 'single', dateSingle: new Date().toISOString().split('T')[0], dateStart: '', dateEnd: '', color: 'blue', status: 0, isMemo: false }; app.state.workspaces[app.state.activeTabId].push(newCard); app.saveToLocal(); app.renderAll(); },
+                updateCard(id, field, value) { const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id); if (card) { card[field] = value; app.saveToLocal(); if(field === 'project') app.renderProjectBar(); if(field.startsWith('date')) app.renderTimeline(); } },
+                deleteCard(id) { if(confirm('確定移除此卡片？')) { app.state.workspaces[app.state.activeTabId] = app.state.workspaces[app.state.activeTabId].filter(c => c.id !== id); app.saveToLocal(); app.renderAll(); } },
+                cycleStatus(id) { const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id); if (card) { card.status = (card.status + 1) % 4; app.saveToLocal(); app.renderAll(); } },
+                cycleColor(id) { const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id); const colors = ['blue', 'green', 'red', 'yellow']; if (card) { card.color = colors[(colors.indexOf(card.color) + 1) % colors.length]; app.saveToLocal(); app.renderAll(); } },
+                toggleMemo(id) { const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id); if (card) { card.isMemo = !card.isMemo; app.saveToLocal(); app.renderAll(); } },
+                toggleDateMode(id) { const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id); if (card) { card.dateMode = card.dateMode === 'single' ? 'range' : 'single'; app.saveToLocal(); app.renderAll(); } },
+                
+                addMatrixNode() {
+                    const inputEl = document.getElementById('matrix-quick-input'); const text = inputEl.value.trim(); if(!text) return;
+                    if(!app.state.nodes[app.state.activeTabId]) app.state.nodes[app.state.activeTabId] = [];
+                    const gridX = Math.floor(Math.random() * 7) + 6; const gridY = Math.floor(Math.random() * 7) + 6;
+                    app.state.nodes[app.state.activeTabId].push({ id: 'node_' + Date.now(), text: text, gridX: gridX, gridY: gridY, stoneColor: 'white', project: app.state.filters.activeProject || '' });
+                    inputEl.value = ''; app.saveToLocal(); app.renderMatrix();
+                },
+                updateMatrixNodePos(id, gridX, gridY) { const node = app.state.nodes[app.state.activeTabId].find(n => n.id === id); if(node) { node.gridX = gridX; node.gridY = gridY; if(node.x !== undefined) delete node.x; if(node.y !== undefined) delete node.y; app.saveToLocal(); app.renderMatrix(); } },
+                toggleStoneColor(id) { const node = app.state.nodes[app.state.activeTabId].find(n => n.id === id); if(node) { node.stoneColor = node.stoneColor === 'black' ? 'white' : 'black'; app.saveToLocal(); app.renderMatrix(); } },
+                deleteMatrixNode(id) { app.state.nodes[app.state.activeTabId] = app.state.nodes[app.state.activeTabId].filter(n => n.id !== id); app.saveToLocal(); app.renderMatrix(); },
+                promoteToCard(id) {
+                    const nodes = app.state.nodes[app.state.activeTabId]; const idx = nodes.findIndex(n => n.id === id); if(idx === -1) return;
+                    const node = nodes[idx];
+                    const newCard = { id: 'card_' + Date.now(), title: node.text, content: '', project: node.project, dateMode: 'single', dateSingle: new Date().toISOString().split('T')[0], dateStart: '', dateEnd: '', color: node.stoneColor === 'black' ? 'red' : 'blue', status: 0, isMemo: false };
+                    app.state.workspaces[app.state.activeTabId].push(newCard); nodes.splice(idx, 1);
+                    app.saveToLocal(); app.renderAll(); alert(`🚀 已轉為正式卡片！`);
+                },
+
+                switchTab(id) { app.state.activeTabId = id; app.state.filters.activeProject = null; app.renderAll(); },
+                addTab() { const name = prompt("請輸入新工作區名稱："); if (name) { const id = 'tab_' + Date.now(); app.state.tabs.push({ id, name }); app.state.workspaces[id] = []; app.state.nodes[id] = []; app.state.activeTabId = id; app.saveToLocal(); app.renderAll(); } },
+                manageTab(e, id) {
+                    e.preventDefault(); if (id === 'main') { alert('「主工作區」無法修改或刪除！'); return; }
+                    const tab = app.state.tabs.find(t => t.id === id); const action = prompt(`管理分頁：「${tab.name}」\n[1] 重新命名\n[2] 刪除分頁`);
+                    if (action === '1') { const newName = prompt('請輸入新名稱：', tab.name); if (newName && newName.trim() !== '') { tab.name = newName.trim(); app.saveToLocal(); app.renderAll(); } } 
+                    else if (action === '2') { if (confirm(`⚠️ 確定刪除「${tab.name}」嗎？資料將消失！`)) { app.state.tabs = app.state.tabs.filter(t => t.id !== id); delete app.state.workspaces[id]; delete app.state.nodes[id]; app.state.activeTabId = 'main'; app.saveToLocal(); app.renderAll(); } }
+                },
+                updateNotebookTemplate(val) { app.state.globalNotebook.template = val; app.saveToLocal(); app.renderNotebookArea(); },
+                updateNotebook(field, val) { if (field === 'free') app.state.globalNotebook.free = val; else { const key = field.split('.')[1]; app.state.globalNotebook.matrix[key] = val; } app.saveToLocal(); },
+
+                // --- 🎲 19x19 詰棋盲盒操作 ---
+                setTsumegoColor(color) {
+                    if (color === 'clear') { app.state.tsumego.currentColor = 'clear'; } 
+                    else { app.state.tsumego.currentColor = color; }
+                    document.querySelectorAll('.tsumego-tool-btn').forEach(btn => btn.classList.remove('active'));
+                    document.getElementById('ts-btn-' + color).classList.add('active');
+                },
+                placeTsumegoStone(e) {
+                    const board = document.getElementById('tsumego-board');
+                    const rect = board.getBoundingClientRect();
+                    // 19x19 board: 18 gaps of 30px each. Padding 15px. Max X, Y is 18.
+                    let rawX = e.clientX - rect.left - 15;
+                    let rawY = e.clientY - rect.top - 15;
                     
-                    const list = app.state.workspaces[app.state.activeTabId];
-                    const fromIdx = list.findIndex(c => c.id === app.draggedCardId);
-                    const toIdx = list.findIndex(c => c.id === targetId);
+                    let gridX = Math.round(rawX / 30);
+                    let gridY = Math.round(rawY / 30);
                     
-                    const [movedItem] = list.splice(fromIdx, 1);
-                    list.splice(toIdx, 0, movedItem);
+                    if (gridX < 0 || gridX > 18 || gridY < 0 || gridY > 18) return;
                     
-                    app.draggedCardId = null;
-                    app.saveToLocal(); app.renderAll();
+                    const existingIdx = app.state.tsumego.stones.findIndex(s => s.x === gridX && s.y === gridY);
+                    
+                    if (app.state.tsumego.currentColor === 'clear') {
+                        if (existingIdx > -1) {
+                            app.state.tsumego.stones.splice(existingIdx, 1);
+                            app.saveToLocal(); app.renderTsumegoStones();
+                        }
+                    } else {
+                        if (existingIdx > -1) {
+                            app.state.tsumego.stones[existingIdx].color = app.state.tsumego.currentColor;
+                        } else {
+                            app.state.tsumego.stones.push({ x: gridX, y: gridY, color: app.state.tsumego.currentColor });
+                        }
+                        app.saveToLocal(); app.renderTsumegoStones();
+                    }
+                },
+                resetTsumego() {
+                    if(confirm("確定要清空詰棋盤面？")) {
+                        app.state.tsumego.stones = [];
+                        app.saveToLocal(); app.renderTsumegoStones();
+                    }
                 }
             },
 
-            // 6. UI 切換控制器
             switchView(viewName) {
                 this.state.view = viewName;
                 document.querySelectorAll('.view-container').forEach(el => el.classList.remove('active'));
                 document.querySelectorAll('.toolbar .btn').forEach(el => el.classList.remove('active'));
-                
                 document.getElementById('view-' + viewName).classList.add('active');
                 document.getElementById('btn-view-' + viewName).classList.add('active');
-                this.renderAll();
+                if(viewName === 'timeline') this.renderTimeline(); else this.renderAll();
             },
             toggleProjectBar() {
                 this.state.showProjectBar = !this.state.showProjectBar;
                 document.getElementById('project-bar').style.display = this.state.showProjectBar ? 'flex' : 'none';
+                if(this.state.showProjectBar) document.body.classList.add('has-project-bar'); else document.body.classList.remove('has-project-bar');
                 this.renderProjectBar();
             },
-            openNotebook() { 
-                document.getElementById('nb-template').value = this.state.globalNotebook.template;
-                this.renderNotebookArea();
-                document.getElementById('modal-notebook').style.display = 'flex'; 
-            },
+            openNotebook() { document.getElementById('nb-template').value = this.state.globalNotebook.template; this.renderNotebookArea(); document.getElementById('modal-notebook').style.display = 'flex'; },
             closeNotebook() { document.getElementById('modal-notebook').style.display = 'none'; },
+            
+            toggleTsumego() {
+                this.state.tsumego.isOpen = !this.state.tsumego.isOpen;
+                const panel = document.getElementById('tsumego-panel');
+                if(this.state.tsumego.isOpen) {
+                    panel.style.display = 'block';
+                    // 重新打開時如果沒有被拖曳過，給一個預設居中的位置
+                    if(panel.style.transform !== 'none') {
+                        panel.style.top = '10vh';
+                        panel.style.left = '10vw';
+                    }
+                } else {
+                    panel.style.display = 'none';
+                }
+            },
 
-            // 7. 渲染器
             renderAll() {
-                this.renderTabs();
-                if (this.state.showProjectBar) this.renderProjectBar();
-                
-                if (this.state.view === 'timeline') this.renderTimeline();
-                else if (this.state.view === 'chronicle') this.renderChronicle();
-                else if (this.state.view === 'gantt') this.renderGantt();
-                else if (this.state.view === 'calendar') this.renderCalendar();
+                this.renderTabs(); if (this.state.showProjectBar) this.renderProjectBar();
+                if (this.state.view === 'timeline') this.renderTimeline(); else if (this.state.view === 'matrix') this.renderMatrix(); else if (this.state.view === 'chronicle') this.renderChronicle(); else if (this.state.view === 'gantt') this.renderGantt(); else if (this.state.view === 'calendar') this.renderCalendar();
             },
 
             renderTabs() {
-                const html = this.state.tabs.map(t => `
-                    <div class="tab-item ${t.id === this.state.activeTabId ? 'active' : ''}" 
-                         onclick="app.actions.switchTab('${t.id}')"
-                         oncontextmenu="app.actions.manageTab(event, '${t.id}')"
-                         title="右鍵點擊可修改或刪除">${t.name}</div>
-                `).join('') + `<div class="tab-add" onclick="app.actions.addTab()" title="新增分頁">＋</div>`;
+                const html = this.state.tabs.map(t => {
+                    const isActive = t.id === this.state.activeTabId;
+                    const gearBtn = (isActive && t.id !== 'main') ? `<div style="margin-top:10px; font-size:1.1rem; cursor:pointer;" onclick="event.stopPropagation(); app.actions.manageTab(event, '${t.id}')">⚙️</div>` : '';
+                    return `<div class="tab-item ${isActive ? 'active' : ''}" onclick="app.actions.switchTab('${t.id}')" oncontextmenu="app.actions.manageTab(event, '${t.id}')"><div class="tab-name">${t.name}</div>${gearBtn}</div>`
+                }).join('') + `<div class="tab-add" onclick="app.actions.addTab()">＋</div>`;
                 document.getElementById('tab-bar').innerHTML = html;
             },
 
             renderProjectBar() {
-                const cards = this.state.workspaces[this.state.activeTabId] || [];
-                const projects = new Set(cards.map(c => c.project).filter(p => p && p.trim() !== ''));
-                
+                const cards = this.state.workspaces[this.state.activeTabId] || []; const nodes = this.state.nodes[this.state.activeTabId] || [];
+                const projects = new Set([...cards.map(c => c.project), ...nodes.map(n => n.project)].filter(p => p && p.trim() !== ''));
                 let html = `<div class="proj-badge" onclick="app.setFilter('project', null)">清除過濾</div>`;
-                projects.forEach(p => {
-                    const active = this.state.filters.activeProject === p ? 'active' : '';
-                    html += `<div class="proj-badge ${active}" onclick="app.setFilter('project', '${p}')">${p}</div>`;
-                });
+                projects.forEach(p => { const active = this.state.filters.activeProject === p ? 'active' : ''; html += `<div class="proj-badge ${active}" onclick="app.setFilter('project', '${p}')">${p}</div>`; });
                 document.getElementById('project-bar').innerHTML = html;
             },
 
-            renderTimeline() {
-                const cards = this.getActiveCards();
-                const html = cards.map(card => {
-                    const dateHtml = card.dateMode === 'single' 
-                        ? `<input type="date" class="input-date" value="${card.dateSingle}" onchange="app.actions.updateCard('${card.id}', 'dateSingle', this.value)">`
-                        : `<span style="font-size:0.8rem;color:#64748b;">起</span><input type="date" class="input-date" value="${card.dateStart}" onchange="app.actions.updateCard('${card.id}', 'dateStart', this.value)">
-                           <span style="font-size:0.8rem;color:#64748b;">迄</span><input type="date" class="input-date" value="${card.dateEnd}" onchange="app.actions.updateCard('${card.id}', 'dateEnd', this.value)">`;
+            renderMatrix() {
+                let nodes = this.state.nodes[this.state.activeTabId] || []; if (this.state.filters.activeProject) nodes = nodes.filter(n => n.project === this.state.filters.activeProject);
+                const container = document.getElementById('matrix-nodes-container');
+                container.innerHTML = nodes.map(n => {
+                    const gridX = n.gridX !== undefined ? n.gridX : 9; const gridY = n.gridY !== undefined ? n.gridY : 9;
+                    const stoneClass = n.stoneColor === 'black' ? 'stone-black' : 'stone-white';
+                    const leftPct = (gridX / 18) * 100; const topPct = (gridY / 18) * 100;
+                    return `<div class="matrix-node ${stoneClass}" data-id="${n.id}" style="left:${leftPct}%; top:${topPct}%;"><div class="matrix-node-text">${n.text}</div><div class="node-action-group"><button class="node-action-btn" onclick="app.actions.toggleStoneColor('${n.id}')">☯️ 狀態</button><button class="node-action-btn" onclick="app.actions.promoteToCard('${n.id}')">📄 排程</button><button class="node-action-btn del" onclick="app.actions.deleteMatrixNode('${n.id}')">刪除</button></div></div>`
+                }).join('');
+            },
 
-                    return `
-                    <div class="card-wrapper" draggable="true" 
-                         ondragstart="app.actions.onDragStart(event, '${card.id}')"
-                         ondragover="app.actions.onDragOver(event)"
-                         ondrop="app.actions.onDrop(event, '${card.id}')">
-                        <div class="card-dot"></div>
-                        <div class="card ${card.isMemo ? 'memo-mode' : ''}" data-color="${card.color}">
-                            
-                            <div class="card-header">
-                                <div style="display:flex; align-items:center; gap:10px;">
-                                    <div class="status-dot status-${card.status}" onclick="app.actions.cycleStatus('${card.id}')" title="點擊切換狀態"></div>
-                                    <button class="icon-btn" onclick="app.actions.toggleMemo('${card.id}')" title="切換備忘錄模式">${card.isMemo ? '♾️' : '📅'}</button>
-                                    ${dateHtml}
-                                </div>
-                                <div style="display:flex; gap:5px;">
-                                    <button class="icon-btn" onclick="app.actions.toggleDateMode('${card.id}')" title="單日/區間切換">↔️</button>
-                                    <button class="icon-btn" onclick="app.actions.cycleColor('${card.id}')" title="換色">🎨</button>
-                                </div>
-                            </div>
-                            
-                            <div class="card-body">
-                                <input type="text" class="input-title" value="${card.title}" placeholder="🏷️ 標題..." onchange="app.actions.updateCard('${card.id}', 'title', this.value)">
-                                <textarea class="input-content" placeholder="📝 寫下卡片細節..." 
-                                    oninput="this.style.height=''; this.style.height=this.scrollHeight+'px';" 
-                                    onchange="app.actions.updateCard('${card.id}', 'content', this.value)">${card.content}</textarea>
-                            </div>
-                            
-                            <div class="card-footer">
-                                <input type="text" class="input-project" value="${card.project}" placeholder="#專案名稱" onchange="app.actions.updateCard('${card.id}', 'project', this.value)">
-                                <button class="icon-btn" onclick="app.actions.deleteCard('${card.id}')" style="color:#ef4444; border-color:#fca5a5;" title="刪除此卡片">🗑️</button>
-                            </div>
-                        </div>
-                    </div>`;
+            renderTimeline() {
+                let cards = this.getActiveCards();
+                cards = cards.sort((a, b) => { const dateA = a.dateMode === 'range' ? a.dateStart : a.dateSingle; const dateB = b.dateMode === 'range' ? b.dateStart : b.dateSingle; if(!dateA) return 1; if(!dateB) return -1; return new Date(dateA) - new Date(dateB); });
+                const html = cards.map(card => {
+                    const dateHtml = card.dateMode === 'single' ? `<input type="date" class="input-date" value="${card.dateSingle}" onchange="app.actions.updateCard('${card.id}', 'dateSingle', this.value)">` : `<span style="font-size:0.8rem;color:#64748b;">起</span><input type="date" class="input-date" value="${card.dateStart}" onchange="app.actions.updateCard('${card.id}', 'dateStart', this.value)"><span style="font-size:0.8rem;color:#64748b;">迄</span><input type="date" class="input-date" value="${card.dateEnd}" onchange="app.actions.updateCard('${card.id}', 'dateEnd', this.value)">`;
+                    return `<div class="card-wrapper"><div class="card-dot"></div><div class="card ${card.isMemo ? 'memo-mode' : ''}" data-color="${card.color}"><div class="card-header"><div style="display:flex; align-items:center; gap:10px;"><div class="status-dot status-${card.status}" onclick="app.actions.cycleStatus('${card.id}')"></div><button class="icon-btn" onclick="app.actions.toggleMemo('${card.id}')">${card.isMemo ? '♾️' : '📅'}</button>${dateHtml}</div><div style="display:flex; gap:5px;"><button class="icon-btn" onclick="app.actions.toggleDateMode('${card.id}')">↔️</button><button class="icon-btn" onclick="app.actions.cycleColor('${card.id}')">🎨</button></div></div><div class="card-body"><input type="text" class="input-title" value="${card.title}" placeholder="🏷️ 標題..." onchange="app.actions.updateCard('${card.id}', 'title', this.value)"><textarea class="input-content" placeholder="📝 寫下卡片細節..." oninput="this.style.height='auto'; this.style.height=this.scrollHeight+'px';" onchange="app.actions.updateCard('${card.id}', 'content', this.value)">${card.content}</textarea></div><div class="card-footer"><input type="text" class="input-project" value="${card.project}" placeholder="#專案名稱" onchange="app.actions.updateCard('${card.id}', 'project', this.value)"><button class="icon-btn" onclick="app.actions.deleteCard('${card.id}')" style="color:#ef4444; border-color:#fca5a5;">🗑️</button></div></div></div>`;
                 }).join('');
                 document.getElementById('timeline-render-target').innerHTML = html;
+                setTimeout(() => { document.querySelectorAll('.input-content').forEach(el => { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; }); }, 10);
             },
 
             renderChronicle() {
-                const cards = this.getActiveCards().filter(c => !c.isMemo && (c.dateSingle || c.dateStart));
-                if (cards.length === 0) { document.getElementById('chronicle-render-target').innerHTML = '<p style="text-align:center; color:#94a3b8;">無有效日期之卡片</p>'; return; }
-                
-                const sorted = cards.sort((a, b) => {
-                    const d1 = new Date(a.dateMode === 'range' ? a.dateStart : a.dateSingle).getTime() || 0;
-                    const d2 = new Date(b.dateMode === 'range' ? b.dateStart : b.dateSingle).getTime() || 0;
-                    return d1 - d2;
-                });
-
-                const html = sorted.map(c => {
-                    const dStr = c.dateMode === 'range' ? `${c.dateStart} ~ ${c.dateEnd}` : c.dateSingle;
-                    const pTag = c.project ? `<span style="background:#e2e8f0; padding:2px 6px; border-radius:4px; font-size:0.8rem; margin-right:8px;">#${c.project}</span>` : '';
-                    return `
-                        <div class="chronicle-row">
-                            <div class="chronicle-date">${dStr}</div>
-                            <div class="chronicle-info">
-                                <div style="display:flex; align-items:center; margin-bottom:5px;">
-                                    <div class="status-dot status-${c.status}" style="margin-right:8px;"></div>
-                                    <div class="chronicle-title">${pTag}${c.title || '未命名'}</div>
-                                </div>
-                                <div style="color:#475569; font-size:0.95rem; white-space:pre-wrap;">${c.content}</div>
-                            </div>
-                        </div>
-                    `;
-                }).join('');
+                const cards = this.getActiveCards().filter(c => !c.isMemo && (c.dateSingle || c.dateStart)); if (cards.length === 0) { document.getElementById('chronicle-render-target').innerHTML = '<p style="text-align:center; color:#94a3b8;">無有效日期之卡片</p>'; return; }
+                const sorted = cards.sort((a, b) => { const d1 = new Date(a.dateMode === 'range' ? a.dateStart : a.dateSingle).getTime() || 0; const d2 = new Date(b.dateMode === 'range' ? b.dateStart : b.dateSingle).getTime() || 0; return d1 - d2; });
+                const html = sorted.map(c => { const dStr = c.dateMode === 'range' ? `${c.dateStart} ~ ${c.dateEnd}` : c.dateSingle; const pTag = c.project ? `<span style="background:#e2e8f0; padding:2px 6px; border-radius:4px; font-size:0.8rem; margin-right:8px;">#${c.project}</span>` : ''; return `<div class="chronicle-row"><div class="chronicle-date">${dStr}</div><div class="chronicle-info"><div style="display:flex; align-items:center; margin-bottom:5px;"><div class="status-dot status-${c.status}" style="margin-right:8px;"></div><div class="chronicle-title">${pTag}${c.title || '未命名'}</div></div><div style="color:#475569; font-size:0.95rem; white-space:pre-wrap;">${c.content}</div></div></div>`; }).join('');
                 document.getElementById('chronicle-render-target').innerHTML = html;
             },
 
             renderGantt() {
-                const cards = this.getActiveCards().filter(c => !c.isMemo && c.dateMode === 'range' && c.dateStart && c.dateEnd);
-                if (cards.length === 0) { document.getElementById('gantt-render-target').innerHTML = '<p style="text-align:center; color:#94a3b8;">請將卡片切換為「區間模式 (↔️)」並設定起迄日期</p>'; return; }
-                
+                const cards = this.getActiveCards().filter(c => !c.isMemo && c.dateMode === 'range' && c.dateStart && c.dateEnd); if (cards.length === 0) { document.getElementById('gantt-render-target').innerHTML = '<p style="text-align:center; color:#94a3b8;">請將卡片切換為「區間模式 (↔️)」並設定起迄日期</p>'; return; }
                 let html = '<div style="display:flex; flex-direction:column; gap:10px;">';
-                cards.forEach(c => {
-                    const s = new Date(c.dateStart).getTime(); const e = new Date(c.dateEnd).getTime();
-                    const days = Math.max(1, (e - s) / (1000 * 60 * 60 * 24));
-                    const widthPct = Math.min(100, days * 3); 
-                    
-                    html += `
-                    <div style="background:#f1f5f9; border-radius:6px; padding:10px;">
-                        <div style="font-weight:bold; margin-bottom:5px; font-size:0.9rem;">${c.project ? '['+c.project+']' : ''} ${c.title || '未命名'} (${days}天)</div>
-                        <div style="height:10px; background:#e2e8f0; border-radius:5px; width:100%;">
-                            <div style="height:100%; border-radius:5px; background:var(--primary); width:${widthPct}%;"></div>
-                        </div>
-                    </div>`;
-                });
-                html += '</div>';
-                document.getElementById('gantt-render-target').innerHTML = html;
+                cards.forEach(c => { const s = new Date(c.dateStart).getTime(); const e = new Date(c.dateEnd).getTime(); const days = Math.max(1, (e - s) / (1000 * 60 * 60 * 24)); const widthPct = Math.min(100, days * 3); html += `<div style="background:#f1f5f9; border-radius:6px; padding:10px; border: 1px solid #e2e8f0;"><div style="font-weight:bold; margin-bottom:5px; font-size:0.95rem; color:#1e293b;">${c.project ? '['+c.project+']' : ''} ${c.title || '未命名'} <span style="font-size:0.8rem; color:#64748b; font-weight:normal;">(${days}天)</span></div><div style="height:12px; background:#e2e8f0; border-radius:6px; width:100%;"><div style="height:100%; border-radius:6px; background:var(--primary); width:${widthPct}%;"></div></div></div>`; });
+                document.getElementById('gantt-render-target').innerHTML = html + '</div>';
             },
 
             renderCalendar() {
-                const allCards = this.getAllCardsAcrossTabs().filter(c => !c.isMemo && (c.dateSingle || c.dateStart));
-                if (allCards.length === 0) { document.getElementById('calendar-render-target').innerHTML = '<p style="text-align:center; color:#94a3b8;">全部分頁中皆無有效日期資料</p>'; return; }
-                
-                const grouped = {};
-                allCards.forEach(c => {
-                    const d = c.dateMode === 'range' ? c.dateStart : c.dateSingle;
-                    if(d) { if(!grouped[d]) grouped[d] = []; grouped[d].push(c); }
-                });
-
-                let html = '<div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap:15px;">';
-                Object.keys(grouped).sort().forEach(dateStr => {
-                    html += `<div style="border:1px solid #e2e8f0; border-radius:8px; padding:10px; background:#f8fafc;">
-                        <div style="font-weight:bold; color:var(--primary); border-bottom:1px solid #cbd5e1; margin-bottom:8px; padding-bottom:4px;">${dateStr}</div>`;
-                    grouped[dateStr].forEach(c => {
-                        html += `<div style="font-size:0.85rem; background:white; padding:4px 8px; border-radius:4px; margin-bottom:4px; box-shadow:0 1px 2px rgba(0,0,0,0.05); border-left:3px solid ${c.color}">
-                            <span style="color:#64748b; font-size:0.7rem;">[${c.tabName}]</span> ${c.title || '未命名'}
-                        </div>`;
-                    });
-                    html += `</div>`;
-                });
-                html += '</div>';
-                document.getElementById('calendar-render-target').innerHTML = html;
+                const allCards = this.getAllCardsAcrossTabs().filter(c => !c.isMemo && (c.dateSingle || c.dateStart)); if (allCards.length === 0) { document.getElementById('calendar-render-target').innerHTML = '<p style="text-align:center; color:#94a3b8;">全部分頁中皆無有效日期資料</p>'; return; }
+                const grouped = {}; allCards.forEach(c => { const d = c.dateMode === 'range' ? c.dateStart : c.dateSingle; if(d) { if(!grouped[d]) grouped[d] = []; grouped[d].push(c); } });
+                let html = '<div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap:15px;">';
+                Object.keys(grouped).sort().forEach(dateStr => { html += `<div style="border:1px solid #e2e8f0; border-radius:8px; padding:12px; background:#f8fafc; box-shadow: 0 2px 4px rgba(0,0,0,0.02);"><div style="font-weight:bold; color:var(--primary); border-bottom:1px solid #cbd5e1; margin-bottom:10px; padding-bottom:6px; font-size:1.1rem;">${dateStr}</div>`; grouped[dateStr].forEach(c => { html += `<div style="font-size:0.9rem; background:white; padding:6px 10px; border-radius:6px; margin-bottom:6px; box-shadow:0 1px 3px rgba(0,0,0,0.05); border-left:4px solid ${c.color}"><div style="color:#64748b; font-size:0.75rem; margin-bottom:2px; font-weight:bold;">${c.tabName}</div><div style="color:#1e293b;">${c.title || '未命名'}</div></div>`; }); html += `</div>`; });
+                document.getElementById('calendar-render-target').innerHTML = html + '</div>';
             },
 
             renderNotebookArea() {
-                const d = this.state.globalNotebook;
-                let html = '';
-                if (d.template === 'free') {
-                    html = `<textarea class="nb-textarea" onchange="app.actions.updateNotebook('free', this.value)" placeholder="自由筆記...">${d.free || ''}</textarea>`;
-                } else if (d.template === 'matrix') {
-                    const m = d.matrix || {};
-                    html = `
-                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
-                        <div><span style="color:#ef4444; font-weight:bold; font-size:0.9rem;">🔥 重要緊急</span><textarea class="nb-textarea" style="height:150px;" onchange="app.actions.updateNotebook('matrix.q1', this.value)">${m.q1 || ''}</textarea></div>
-                        <div><span style="color:#3b82f6; font-weight:bold; font-size:0.9rem;">📅 重要不急</span><textarea class="nb-textarea" style="height:150px;" onchange="app.actions.updateNotebook('matrix.q2', this.value)">${m.q2 || ''}</textarea></div>
-                        <div><span style="color:#f59e0b; font-weight:bold; font-size:0.9rem;">⚡ 緊急不重</span><textarea class="nb-textarea" style="height:150px;" onchange="app.actions.updateNotebook('matrix.q3', this.value)">${m.q3 || ''}</textarea></div>
-                        <div><span style="color:#10b981; font-weight:bold; font-size:0.9rem;">☕ 不重不急</span><textarea class="nb-textarea" style="height:150px;" onchange="app.actions.updateNotebook('matrix.q4', this.value)">${m.q4 || ''}</textarea></div>
-                    </div>`;
-                }
+                const d = this.state.globalNotebook; let html = '';
+                if (d.template === 'free') { html = `<textarea class="nb-textarea" onchange="app.actions.updateNotebook('free', this.value)" placeholder="在這裡傾倒您的思緒...">${d.free || ''}</textarea>`; } 
+                else if (d.template === 'matrix') { const m = d.matrix || {}; html = `<div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap:15px;"><div style="background:#fef2f2; padding:15px; border-radius:8px; border:1px solid #fca5a5;"><span style="color:#ef4444; font-weight:bold; font-size:1.1rem; display:block; margin-bottom:10px;">🔥 重要・緊急</span><textarea class="nb-textarea" style="height:200px; background:white;" onchange="app.actions.updateNotebook('matrix.q1', this.value)">${m.q1 || ''}</textarea></div><div style="background:#eff6ff; padding:15px; border-radius:8px; border:1px solid #bfdbfe;"><span style="color:#3b82f6; font-weight:bold; font-size:1.1rem; display:block; margin-bottom:10px;">📅 重要・不急</span><textarea class="nb-textarea" style="height:200px; background:white;" onchange="app.actions.updateNotebook('matrix.q2', this.value)">${m.q2 || ''}</textarea></div><div style="background:#fffbeb; padding:15px; border-radius:8px; border:1px solid #fde68a;"><span style="color:#f59e0b; font-weight:bold; font-size:1.1rem; display:block; margin-bottom:10px;">⚡ 緊急・不重</span><textarea class="nb-textarea" style="height:200px; background:white;" onchange="app.actions.updateNotebook('matrix.q3', this.value)">${m.q3 || ''}</textarea></div><div style="background:#f0fdf4; padding:15px; border-radius:8px; border:1px solid #bbf7d0;"><span style="color:#10b981; font-weight:bold; font-size:1.1rem; display:block; margin-bottom:10px;">☕ 不重・不急</span><textarea class="nb-textarea" style="height:200px; background:white;" onchange="app.actions.updateNotebook('matrix.q4', this.value)">${m.q4 || ''}</textarea></div></div>`; }
                 document.getElementById('notebook-render-target').innerHTML = html;
             },
 
+            // 繪製詰棋盤面的棋子
+            renderTsumegoStones() {
+                const container = document.getElementById('tsumego-stones-container');
+                container.innerHTML = this.state.tsumego.stones.map(s => {
+                    // 19x19 board: 0~18 intervals, 30px each. Padding 15px.
+                    const left = 15 + s.x * 30;
+                    const top = 15 + s.y * 30;
+                    return `<div class="tsumego-stone ${s.color}" style="left:${left}px; top:${top}px;"></div>`;
+                }).join('');
+            },
+
             // 8. 番茄鐘
-            pomoInterval: null,
-            pomoTime: 25 * 60,
-            isPomoRunning: false,
+            pomoInterval: null, pomoTime: 25 * 60, isPomoRunning: false,
             togglePomodoro() {
-                const btn = document.getElementById('pomodoro-btn');
-                const display = document.getElementById('pomo-time');
-                if (this.isPomoRunning) {
-                    clearInterval(this.pomoInterval);
-                    this.isPomoRunning = false;
-                    btn.classList.remove('active');
-                } else {
-                    this.isPomoRunning = true;
-                    btn.classList.add('active');
+                const btn = document.getElementById('pomodoro-btn'); const display = document.getElementById('pomo-time');
+                if (this.isPomoRunning) { clearInterval(this.pomoInterval); this.isPomoRunning = false; btn.classList.remove('active'); } 
+                else {
+                    this.isPomoRunning = true; btn.classList.add('active');
                     this.pomoInterval = setInterval(() => {
-                        this.pomoTime--;
-                        const m = Math.floor(this.pomoTime / 60).toString().padStart(2, '0');
-                        const s = (this.pomoTime % 60).toString().padStart(2, '0');
+                        this.pomoTime--; const m = Math.floor(this.pomoTime / 60).toString().padStart(2, '0'); const s = (this.pomoTime % 60).toString().padStart(2, '0');
                         display.innerText = `${m}:${s}`;
-                        if (this.pomoTime <= 0) {
-                            clearInterval(this.pomoInterval);
-                            this.isPomoRunning = false;
-                            this.pomoTime = 25 * 60;
-                            display.innerText = "25:00";
-                            btn.classList.remove('active');
-                            alert("🍅 番茄鐘時間到！休息一下吧。");
-                        }
+                        if (this.pomoTime <= 0) { clearInterval(this.pomoInterval); this.isPomoRunning = false; this.pomoTime = 25 * 60; display.innerText = "25:00"; btn.classList.remove('active'); alert("🍅 番茄鐘時間到！休息一下吧。"); }
                     }, 1000);
                 }
             }
         };
 
         app.init();
-
     </script>
 </body>
 </html>
