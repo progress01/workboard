@@ -3,8 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>白板</title>
+    <title>戰術白板系統 2.0 (標籤棋盤版)</title>
     
+    <!-- Firebase Compat -->
     <script src="https://www.gstatic.com/firebasejs/10.8.1/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.8.1/firebase-auth-compat.js"></script>
@@ -46,93 +47,90 @@
         .view-container { display: none; background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); border: 1px solid #e2e8f0; margin-bottom: 40px; width: 100%; overflow-x: auto; }
         .view-container.active { display: block; }
         
-        /* 🔥 完美 19 路棋盤 (共用視覺模組) */
+        /* 🔥 發想矩陣控制列 (新增標籤選擇器) */
+        .matrix-input-bar { display: flex; gap: 10px; margin-bottom: 15px; flex-wrap: wrap; }
+        .matrix-input { flex: 1; min-width: 200px; padding: 10px 15px; border: 2px solid #cbd5e1; border-radius: 8px; font-size: 1rem; outline: none; transition: 0.2s; }
+        .matrix-input:focus { border-color: var(--primary); }
+        .matrix-select { padding: 10px; border: 2px solid #cbd5e1; border-radius: 8px; font-weight: bold; color: #475569; outline: none; cursor: pointer; }
+        
+        /* 🔥 完美 19 路棋盤 (結構優化) */
         .go-board-surface {
-            background-color: #e5cc98; /* 經典日式原木色 */
+            background-color: #e5cc98; 
             border: 6px solid #5a3d2b; border-radius: 6px;
             box-shadow: inset 0 0 20px rgba(0,0,0,0.15), 0 10px 20px rgba(0,0,0,0.2);
             position: relative; 
-            aspect-ratio: 1 / 1; /* 保證絕對的正方形，永不變形 */
+            aspect-ratio: 1 / 1; /* 保持絕對正方形 */
             margin: 0 auto;
+            width: 100%; max-width: 800px; /* 限制最大寬度，大螢幕不會過大 */
             touch-action: none;
         }
+        
+        /* 內部網格，真正的座標系統 */
         .go-grid-lines {
             position: absolute;
-            top: 15px; left: 15px; right: 15px; bottom: 15px; /* 四周留白邊 */
+            top: 4%; left: 4%; right: 4%; bottom: 4%; /* 棋盤四邊的留白 */
             border-right: 1px solid #333; border-bottom: 1px solid #333;
-            /* 將內部精準切分為 18 等分 */
             background-image: 
                 linear-gradient(#333 1px, transparent 1px),
                 linear-gradient(90deg, #333 1px, transparent 1px);
             background-size: calc(100% / 18) calc(100% / 18);
         }
-        .star-point {
-            position: absolute; width: 8px; height: 8px; background: #222; border-radius: 50%; transform: translate(-50%, -50%);
-        }
-        /* 發想矩陣背景字 */
-        .matrix-quadrant-label { position: absolute; font-size: 2.5rem; font-weight: bold; color: rgba(90, 61, 43, 0.1); pointer-events: none; user-select: none; }
+        .star-point { position: absolute; width: 8px; height: 8px; background: #222; border-radius: 50%; transform: translate(-50%, -50%); }
         
-        /* 🔥 磁鐵與便利貼 (Magnetic Pinned Notes) */
+        /* 🔥 磁鐵與標籤便利貼 */
         .matrix-node {
             position: absolute; z-index: 10;
             display: flex; flex-direction: column; align-items: center;
-            /* 讓節點的錨點對齊在棋子的中心 (棋子高 24px，一半是 12px) */
-            transform: translate(-50%, -12px);
+            transform: translate(-50%, -12px); /* 12px 是 24px 棋子的一半，確保棋子中心精準對齊交點 */
         }
         .matrix-node:active { z-index: 100 !important; }
         
         /* 實體 3D 棋子 */
         .node-stone {
-            width: 24px; height: 24px; border-radius: 50%;
-            box-shadow: 2px 4px 6px rgba(0,0,0,0.4);
-            position: relative; z-index: 2; cursor: grab; transition: transform 0.1s;
+            width: 24px; height: 24px; border-radius: 50%; flex-shrink: 0;
+            box-shadow: 2px 4px 6px rgba(0,0,0,0.4); cursor: grab; transition: transform 0.1s;
+            position: relative; z-index: 2;
         }
-        .matrix-node:active .node-stone { cursor: grabbing; transform: scale(1.1); box-shadow: 4px 8px 12px rgba(0,0,0,0.5); }
-        .stone-black .node-stone { background: radial-gradient(circle at 30% 30%, #475569, #0f172a); border: 1px solid #020617; }
-        .stone-white .node-stone { background: radial-gradient(circle at 30% 30%, #ffffff, #cbd5e1); border: 1px solid #94a3b8; }
+        .matrix-node:active .node-stone { cursor: grabbing; transform: scale(1.2); box-shadow: 4px 8px 12px rgba(0,0,0,0.5); }
+        .stone-white .node-stone { background: radial-gradient(circle at 30% 30%, #ffffff, #d1d5db); border: 1px solid #94a3b8; }
+        .stone-black .node-stone { background: radial-gradient(circle at 30% 30%, #64748b, #0f172a); border: 1px solid #020617; }
         
-        /* 懸掛在下方的便利貼小卡 */
+        /* 文字標籤小卡 */
         .node-paper {
-            background: #fffdf0; padding: 8px 12px; border-radius: 2px;
+            background: #fffdf0; padding: 6px 10px; border-radius: 4px;
             box-shadow: 1px 3px 6px rgba(0,0,0,0.2);
-            margin-top: -6px; /* 微幅上移，讓棋子壓住紙張 */
+            margin-top: -6px; /* 微上移，讓棋子壓住紙張 */
             position: relative; z-index: 1;
-            max-width: 160px; display: flex; flex-direction: column; gap: 6px;
+            max-width: 180px; display: flex; flex-direction: column; gap: 4px;
+            opacity: 0.9; transition: opacity 0.2s;
         }
-        /* 加入微小的隨機旋轉，增加有機感 */
-        .matrix-node:nth-child(even) .node-paper { transform: rotate(2deg); }
-        .matrix-node:nth-child(odd) .node-paper { transform: rotate(-1.5deg); }
-        .matrix-node:nth-child(3n) .node-paper { transform: rotate(0.5deg); }
+        .matrix-node:hover .node-paper, .matrix-node:active .node-paper { opacity: 1; box-shadow: 0 6px 12px rgba(0,0,0,0.15); }
+        .matrix-node:nth-child(even) .node-paper { transform: rotate(1.5deg); }
+        .matrix-node:nth-child(odd) .node-paper { transform: rotate(-1deg); }
 
-        .matrix-node-text { font-size: 0.9rem; font-weight: bold; color: #334155; word-break: break-word; line-height: 1.4; }
-        .node-action-group { display: flex; gap: 4px; justify-content: center; }
-        .node-action-btn { background: rgba(0,0,0,0.05); border: none; border-radius: 4px; padding: 4px 6px; font-size: 0.75rem; cursor: pointer; color: #475569; font-weight: bold; }
+        /* 屬性標籤 (Q1, Q2等) */
+        .node-tag { font-size: 0.7rem; font-weight: bold; padding: 2px 6px; border-radius: 12px; align-self: center; white-space: nowrap; }
+        .tag-q1 { background: #fee2e2; color: #ef4444; border: 1px solid #fca5a5; }
+        .tag-q2 { background: #dbeafe; color: #3b82f6; border: 1px solid #93c5fd; }
+        .tag-q3 { background: #fef3c7; color: #f59e0b; border: 1px solid #fcd34d; }
+        .tag-q4 { background: #f1f5f9; color: #64748b; border: 1px solid #cbd5e1; }
+
+        .matrix-node-text { font-size: 0.9rem; font-weight: bold; color: #334155; text-align: center; word-break: break-word; line-height: 1.4; }
+        .node-action-group { display: flex; gap: 4px; justify-content: center; margin-top: 2px; }
+        .node-action-btn { background: rgba(0,0,0,0.05); border: none; border-radius: 4px; padding: 2px 6px; font-size: 0.75rem; cursor: pointer; color: #475569; font-weight: bold; }
         .node-action-btn:hover { background: rgba(0,0,0,0.1); color: var(--primary); }
         .node-action-btn.del:hover { color: #ef4444; }
 
-        /* 輸入列 */
-        .matrix-input-bar { display: flex; gap: 10px; margin-bottom: 15px; }
-        .matrix-input { flex: 1; padding: 10px 15px; border: 2px solid #cbd5e1; border-radius: 8px; font-size: 1rem; outline: none; }
-        .matrix-input:focus { border-color: var(--primary); }
-
-        /* 🎲 獨立浮動詰棋視窗 */
+        /* 🎲 獨立浮動詰棋視窗 (同理修正) */
         #tsumego-widget-btn { position: fixed; bottom: 30px; right: 30px; z-index: 8500; width: 56px; height: 56px; border-radius: 28px; background: #1e293b; color: white; font-size: 1.8rem; display: flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 6px 16px rgba(0,0,0,0.3); border: 2px solid #cbd5e1; transition: 0.2s; }
         #tsumego-widget-btn:hover { transform: scale(1.1); background: #334155; }
         
-        .tsumego-panel { 
-            position: fixed; top: 10vh; left: 10vw; width: 90vw; max-width: 500px; 
-            background: white; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.3); 
-            border: 1px solid #cbd5e1; overflow: hidden; display: none; z-index: 9500;
-        }
-        .tsumego-header { background: #f8fafc; padding: 12px 15px; font-weight: bold; border-bottom: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center; cursor: move; }
-        .tsumego-board-container { padding: 15px; background: #334155; display: flex; justify-content: center; align-items: center; }
-        .tsumego-board-surface { width: 100%; max-width: 450px; } /* 限制詰棋盤最大尺寸 */
+        .tsumego-panel { position: fixed; top: 10vh; left: 10vw; width: auto; background: white; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.3); border: 1px solid #cbd5e1; overflow: hidden; display: none; z-index: 9500; }
+        .tsumego-header { background: #f8fafc; padding: 12px 15px; font-weight: bold; border-bottom: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center; cursor: move; user-select: none; }
+        .tsumego-board-container { padding: 15px; background: #334155; display: flex; justify-content: center; align-items: center; max-width: 90vw; max-height: 60vh; overflow: auto; overscroll-behavior: contain; }
         
-        /* 詰棋盤面的單純落子 */
-        .pure-stone {
-            position: absolute; width: 22px; height: 22px; border-radius: 50%; transform: translate(-50%, -50%);
-            box-shadow: 2px 4px 6px rgba(0,0,0,0.4); pointer-events: none;
-        }
+        .tsumego-board-surface { width: 500px; height: 500px; flex-shrink: 0; }
+        .pure-stone { position: absolute; width: 22px; height: 22px; border-radius: 50%; transform: translate(-50%, -50%); box-shadow: 2px 4px 6px rgba(0,0,0,0.4); pointer-events: none; }
         .pure-stone.black { background: radial-gradient(circle at 30% 30%, #475569, #0f172a); border: 1px solid #020617; }
         .pure-stone.white { background: radial-gradient(circle at 30% 30%, #ffffff, #cbd5e1); border: 1px solid #94a3b8; }
         
@@ -140,7 +138,7 @@
         .tsumego-tool-btn { flex: 1; padding: 8px; border: 1px solid #cbd5e1; border-radius: 6px; background: white; cursor: pointer; font-size: 0.9rem; font-weight: bold; color: #475569; }
         .tsumego-tool-btn.active { background: #e0e7ff; border-color: #4f46e5; color: #4338ca; }
 
-        /* 時間軸 & 其他常規檢視 (簡化 CSS 以節省空間) */
+        /* 時間軸與其他常規視圖保持原樣... */
         .timeline { position: relative; padding: 20px 0; max-width: 1200px; margin: 0 auto; }
         .timeline::before { content: ''; position: absolute; top: 0; bottom: 0; left: 20px; width: 4px; background: #e5e7eb; border-radius: 2px; }
         .card-wrapper { display: flex; margin-bottom: 30px; position: relative; padding-left: 45px; }
@@ -159,6 +157,12 @@
         .icon-btn { background: white; border: 1px solid #cbd5e1; border-radius: 4px; width: 28px; height: 28px; display: inline-flex; justify-content: center; align-items: center; cursor: pointer; color: #64748b; font-size: 14px; }
         .add-main-btn { display: block; width: 100%; max-width: 500px; margin: 40px auto; padding: 15px; background: white; border: 2px dashed #cbd5e1; border-radius: 12px; text-align: center; color: #64748b; font-weight: bold; cursor: pointer; font-size: 1.1rem; }
         
+        #chronicle-render-target { max-width: 1000px; margin: 0 auto; }
+        .chronicle-row { display: flex; margin-bottom: 25px; border-left: 3px solid #e2e8f0; padding-left: 20px; position: relative; }
+        .chronicle-row::before { content: ''; position: absolute; left: -8px; top: 6px; width: 13px; height: 13px; border-radius: 50%; background: var(--primary); border: 2px solid white; }
+        .chronicle-date { font-weight: bold; width: 120px; flex-shrink: 0; color: #64748b; font-size: 0.95rem; }
+        .chronicle-info { flex: 1; background: #f8fafc; padding: 10px 15px; border-radius: 8px; border: 1px solid #e2e8f0; }
+
         .modal-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); z-index: 9000; align-items: center; justify-content: center; backdrop-filter: blur(2px); }
         .modal-content { background: white; padding: 25px; border-radius: 12px; width: 95%; max-width: 900px; max-height: 90vh; overflow-y: auto; box-shadow: 0 10px 25px rgba(0,0,0,0.2); display: flex; flex-direction: column; }
         .nb-textarea { width: 100%; height: 400px; resize: vertical; padding: 15px; border: 1px solid #cbd5e1; border-radius: 8px; outline: none; font-size: 1.05rem; line-height: 1.6; }
@@ -172,10 +176,6 @@
             .main-area { margin-left: 45px; padding: 10px; width: calc(100% - 45px); }
             body.has-project-bar .main-area { margin-top: 0; padding-bottom: 60px; }
             
-            /* 手機板的矩陣微調 */
-            .matrix-board { height: calc(100vh - 200px); border-width: 4px; }
-            .go-grid-lines { top: 10px; left: 10px; right: 10px; bottom: 10px; }
-            
             .btn-cloud-save::before { content: "☁️"; } .btn-cloud-save { font-size: 0; padding: 8px; }
             .btn-cloud-load::before { content: "📥"; } .btn-cloud-load { font-size: 0; padding: 8px; }
             .btn-clear-local::before { content: "🧹"; } .btn-clear-local { font-size: 0; padding: 6px; }
@@ -186,18 +186,20 @@
 </head>
 <body>
 
+    <!-- 🔑 登入畫面 -->
     <div id="login-screen">
-        <h1 style="font-size: 2.5rem; margin-bottom: 10px;">白板</h1>
-        <p style="color: #94a3b8; margin-bottom: 30px;">(磁鐵便利貼・完美 19 路版)</p>
+        <h1 style="font-size: 2.5rem; margin-bottom: 10px;">🧠 戰術白板 2.0</h1>
+        <p style="color: #94a3b8; margin-bottom: 30px;">(實體棋子・標籤矩陣版)</p>
         <button onclick="app.login()" style="padding: 12px 24px; font-size: 1.1rem; border-radius: 30px; border: none; background: #3b82f6; color: white; font-weight: bold; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.3); transition: transform 0.2s;">
             使用 Google 登入
         </button>
     </div>
 
+    <!-- 🛠️ 應用程式內容 -->
     <div id="app-content" style="display: none;">
         <div class="toolbar">
             <div class="tool-left">
-                <div class="tool-title">白板</div>
+                <div class="tool-title">🧠 戰術白板</div>
                 <button class="btn" onclick="app.toggleProjectBar()">📁 專案</button>
                 <button class="btn" onclick="app.switchView('timeline')" id="btn-view-timeline">📜 時間軸</button>
                 <button class="btn" onclick="app.switchView('matrix')" id="btn-view-matrix">💡 發想棋盤</button>
@@ -218,26 +220,28 @@
         <div id="tab-bar"></div>
 
         <div class="main-area">
+            <!-- 0. 發想矩陣 -->
             <div id="view-matrix" class="view-container">
                 <div class="matrix-input-bar">
                     <input type="text" id="matrix-quick-input" class="matrix-input" placeholder="💡 輸入靈感... (按 Enter 落子)" onkeypress="if(event.key === 'Enter') app.actions.addMatrixNode()">
-                    <button class="btn btn-cloud-save" style="padding: 10px 20px; font-size: 1rem;" onclick="app.actions.addMatrixNode()">＋ 落下磁鐵</button>
+                    <select id="matrix-tag-select" class="matrix-select">
+                        <option value="">無標籤</option>
+                        <option value="q1">🔥 重要・緊急</option>
+                        <option value="q2">📅 重要・不急</option>
+                        <option value="q3">⚡ 緊急・不重</option>
+                        <option value="q4">☕ 不重・不急</option>
+                    </select>
+                    <button class="btn btn-cloud-save" style="padding: 10px 20px; font-size: 1rem;" onclick="app.actions.addMatrixNode()">＋ 落下棋子</button>
                 </div>
                 
-                <div style="width: 100%; max-width: 900px; margin: 0 auto;">
-                    <div class="go-board-surface matrix-board" id="matrix-board">
-                        <div class="go-grid-lines" id="matrix-grid-lines">
-                            </div>
-                        <div class="matrix-quadrant-label" style="top:5%; left:5%;">Q1 重要・緊急</div>
-                        <div class="matrix-quadrant-label" style="top:5%; right:5%;">Q2 重要・不急</div>
-                        <div class="matrix-quadrant-label" style="bottom:5%; left:5%;">Q3 緊急・不重</div>
-                        <div class="matrix-quadrant-label" style="bottom:5%; right:5%;">Q4 不重・不急</div>
-                        
-                        <div id="matrix-nodes-container"></div>
+                <div class="go-board-surface matrix-board" id="matrix-board">
+                    <div class="go-grid-lines" id="matrix-grid-lines">
+                        <!-- 節點會產生在這裡，與網格同一層級確保100%對齊 -->
                     </div>
                 </div>
             </div>
 
+            <!-- 1. 時間軸 (Timeline) -->
             <div id="view-timeline" class="view-container active">
                 <div style="text-align:right; font-size:0.85rem; color:#94a3b8; margin-bottom:15px; font-weight: bold;">
                     <span id="local-save-status">✅ 已存於本機</span>
@@ -246,12 +250,14 @@
                 <button class="add-main-btn" onclick="app.actions.addCard()">＋ 新增正式排程卡片</button>
             </div>
 
+            <!-- 4. 日曆 (Calendar) -->
             <div id="view-calendar" class="view-container">
                 <h3 style="text-align: center; color: #475569; margin-top: 0;">📅 全域日曆</h3>
                 <div id="calendar-render-target"></div>
             </div>
         </div>
 
+        <!-- 模態彈窗：全域筆記本 -->
         <div id="modal-notebook" class="modal-overlay">
             <div class="modal-content">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
@@ -266,6 +272,7 @@
             </div>
         </div>
 
+        <!-- 🎲 獨立浮動詰棋視窗 -->
         <div id="tsumego-widget-btn" onclick="app.toggleTsumego()">🎲</div>
         <div id="tsumego-panel" class="tsumego-panel">
             <div class="tsumego-header" id="tsumego-header">
@@ -275,7 +282,6 @@
             <div class="tsumego-board-container">
                 <div class="go-board-surface tsumego-board-surface" id="tsumego-board" onclick="app.actions.placeTsumegoStone(event)">
                     <div class="go-grid-lines" id="tsumego-grid-lines"></div>
-                    <div id="tsumego-stones-container"></div>
                 </div>
             </div>
             <div class="tsumego-controls">
@@ -288,6 +294,7 @@
 
     </div>
 
+    <!-- 🌟 核心應用程式邏輯 🌟 -->
     <script>
         const firebaseConfig = {
             apiKey: "AIzaSyAIY9PU-bDLktkTpLSmFKRe1uepvWCKEiU",
@@ -323,7 +330,7 @@
                         this.currentUser = user;
                         document.getElementById('login-screen').style.display = 'none';
                         document.getElementById('app-content').style.display = 'block';
-                        this.injectStarPoints(); // 生成棋盤星位
+                        this.injectStarPoints(); // 繪製 9 個標準星位
                         this.loadFromLocal();
                         this.setupMatrixDrag();
                         this.setupTsumegoDrag();
@@ -335,18 +342,17 @@
                 });
             },
             
-            // 繪製 19 路棋盤的 9 個星位
             injectStarPoints() {
-                const starPositions = [3, 9, 15];
+                const starPositions = [3, 9, 15]; // 19路的星位座標 (0-18)
                 let html = '';
                 starPositions.forEach(x => {
                     starPositions.forEach(y => {
-                        // 在 18 個間隔中，星位百分比座標
                         const pctX = (x / 18) * 100;
                         const pctY = (y / 18) * 100;
                         html += `<div class="star-point" style="left: ${pctX}%; top: ${pctY}%;"></div>`;
                     });
                 });
+                // 先寫入星位，後續的節點會 attach 在同一個 container 中
                 document.getElementById('matrix-grid-lines').innerHTML = html;
                 document.getElementById('tsumego-grid-lines').innerHTML = html;
             },
@@ -398,7 +404,7 @@
 
             loadFromCloudManual() {
                 if (!this.currentUser) return;
-                if(!confirm("⚠️ 將覆蓋目前畫面上所有資料。確定？")) return;
+                if(!confirm("⚠️ 將覆蓋目前畫面上所有資料。確定繼續？")) return;
                 const btn = document.querySelector('.btn-cloud-load'); const orig = btn.innerText; btn.innerText = "下載中...";
                 db.collection('Whiteboard_Data').doc(this.currentUser.uid).get().then((doc) => {
                       if (doc.exists) {
@@ -433,54 +439,69 @@
                 document.addEventListener('mouseup', onMouseUp); document.addEventListener('touchend', onMouseUp);
             },
 
+            // ==========================================
+            // 完美 19 路：發想矩陣拖曳邏輯
+            // ==========================================
             dragState: { isDragging: false, nodeId: null, offsetX: 0, offsetY: 0 },
             setupMatrixDrag() {
-                const board = document.getElementById('matrix-board');
+                const gridLinesContainer = document.getElementById('matrix-grid-lines');
                 const startDrag = (e) => {
                     const nodeEl = e.target.closest('.matrix-node');
                     if (!nodeEl || e.target.closest('button')) return;
                     app.dragState.isDragging = true; app.dragState.nodeId = nodeEl.dataset.id;
+                    
                     const clientX = e.touches ? e.touches[0].clientX : e.clientX;
                     const clientY = e.touches ? e.touches[0].clientY : e.clientY;
                     
-                    const rect = nodeEl.getBoundingClientRect();
-                    // 為了抓住頂部的磁鐵實體
-                    app.dragState.offsetX = clientX - (rect.left + rect.width / 2);
-                    app.dragState.offsetY = clientY - (rect.top + 12); 
+                    // 取得目前棋子的中心點座標 (這正是它掛在 gridLines 上的精確位置)
+                    const gridRect = gridLinesContainer.getBoundingClientRect();
+                    const currentPctX = parseFloat(nodeEl.style.left) / 100;
+                    const currentPctY = parseFloat(nodeEl.style.top) / 100;
+                    
+                    const stoneCenterX = gridRect.left + (gridRect.width * currentPctX);
+                    const stoneCenterY = gridRect.top + (gridRect.height * currentPctY);
+                    
+                    app.dragState.offsetX = clientX - stoneCenterX;
+                    app.dragState.offsetY = clientY - stoneCenterY;
                 };
+                
                 const onDrag = (e) => {
                     if (!app.dragState.isDragging) return; e.preventDefault(); 
                     const clientX = e.touches ? e.touches[0].clientX : e.clientX;
                     const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-                    const gridBox = document.getElementById('matrix-grid-lines').getBoundingClientRect();
+                    const gridRect = gridLinesContainer.getBoundingClientRect();
                     
-                    let x = clientX - gridBox.left - app.dragState.offsetX;
-                    let y = clientY - gridBox.top - app.dragState.offsetY;
+                    let x = clientX - gridRect.left - app.dragState.offsetX;
+                    let y = clientY - gridRect.top - app.dragState.offsetY;
                     
-                    let pctX = (x / gridBox.width) * 100; let pctY = (y / gridBox.height) * 100;
+                    let pctX = (x / gridRect.width) * 100; 
+                    let pctY = (y / gridRect.height) * 100;
+                    
                     const nodeEl = document.querySelector(`.matrix-node[data-id="${app.dragState.nodeId}"]`);
-                    // 因為內層是網格，外層有 padding，需要把定位偏移量加上去
-                    nodeEl.style.left = `calc(15px + ${pctX}%)`;
-                    nodeEl.style.top = `calc(15px + ${pctY}%)`;
+                    nodeEl.style.transition = 'none'; 
+                    nodeEl.style.left = pctX + '%'; 
+                    nodeEl.style.top = pctY + '%';
                 };
+                
                 const endDrag = (e) => {
                     if (!app.dragState.isDragging) return; app.dragState.isDragging = false;
                     const nodeEl = document.querySelector(`.matrix-node[data-id="${app.dragState.nodeId}"]`);
                     if(!nodeEl) return;
                     
-                    const gridBox = document.getElementById('matrix-grid-lines').getBoundingClientRect();
-                    const stoneRect = nodeEl.querySelector('.node-stone').getBoundingClientRect();
+                    // 網格吸附：算出最接近的交點 (0-18)
+                    let pctX = parseFloat(nodeEl.style.left);
+                    let pctY = parseFloat(nodeEl.style.top);
                     
-                    // 取得放開時，磁鐵中心點相對於網格區的座標
-                    let x = stoneRect.left + stoneRect.width / 2 - gridBox.left;
-                    let y = stoneRect.top + stoneRect.height / 2 - gridBox.top;
-                    
-                    let gridX = Math.round((x / gridBox.width) * 18);
-                    let gridY = Math.round((y / gridBox.height) * 18);
-                    gridX = Math.max(0, Math.min(18, gridX)); gridY = Math.max(0, Math.min(18, gridY));
+                    let gridX = Math.round((pctX / 100) * 18);
+                    let gridY = Math.round((pctY / 100) * 18);
+                    gridX = Math.max(0, Math.min(18, gridX)); 
+                    gridY = Math.max(0, Math.min(18, gridY));
                     
                     app.actions.updateMatrixNodePos(app.dragState.nodeId, gridX, gridY);
                 };
+                
+                // 綁定在外層 board 上，確保拖出範圍也能捕捉事件
+                const board = document.getElementById('matrix-board');
                 board.addEventListener('mousedown', startDrag); board.addEventListener('touchstart', startDrag, { passive: false });
                 document.addEventListener('mousemove', onDrag); document.addEventListener('touchmove', onDrag, { passive: false });
                 document.addEventListener('mouseup', endDrag); document.addEventListener('touchend', endDrag);
@@ -498,11 +519,23 @@
                 toggleMemo(id) { const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id); if (card) { card.isMemo = !card.isMemo; app.saveToLocal(); app.renderAll(); } },
                 toggleDateMode(id) { const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id); if (card) { card.dateMode = card.dateMode === 'single' ? 'range' : 'single'; app.saveToLocal(); app.renderAll(); } },
                 
+                // --- 發想矩陣 ---
                 addMatrixNode() {
-                    const inputEl = document.getElementById('matrix-quick-input'); const text = inputEl.value.trim(); if(!text) return;
+                    const inputEl = document.getElementById('matrix-quick-input'); 
+                    const tagEl = document.getElementById('matrix-tag-select');
+                    const text = inputEl.value.trim(); 
+                    if(!text) return;
+                    
                     if(!app.state.nodes[app.state.activeTabId]) app.state.nodes[app.state.activeTabId] = [];
                     const gridX = Math.floor(Math.random() * 7) + 6; const gridY = Math.floor(Math.random() * 7) + 6;
-                    app.state.nodes[app.state.activeTabId].push({ id: 'node_' + Date.now(), text: text, gridX: gridX, gridY: gridY, stoneColor: 'white', project: app.state.filters.activeProject || '' });
+                    
+                    app.state.nodes[app.state.activeTabId].push({ 
+                        id: 'node_' + Date.now(), 
+                        text: text, 
+                        tag: tagEl.value, // 儲存標籤 (q1, q2, ...)
+                        gridX: gridX, gridY: gridY, stoneColor: 'white', project: app.state.filters.activeProject || '' 
+                    });
+                    
                     inputEl.value = ''; app.saveToLocal(); app.renderMatrix();
                 },
                 updateMatrixNodePos(id, gridX, gridY) { const node = app.state.nodes[app.state.activeTabId].find(n => n.id === id); if(node) { node.gridX = gridX; node.gridY = gridY; app.saveToLocal(); app.renderMatrix(); } },
@@ -511,9 +544,14 @@
                 promoteToCard(id) {
                     const nodes = app.state.nodes[app.state.activeTabId]; const idx = nodes.findIndex(n => n.id === id); if(idx === -1) return;
                     const node = nodes[idx];
-                    const newCard = { id: 'card_' + Date.now(), title: node.text, content: '', project: node.project, dateMode: 'single', dateSingle: new Date().toISOString().split('T')[0], dateStart: '', dateEnd: '', color: node.stoneColor === 'black' ? 'red' : 'blue', status: 0, isMemo: false };
+                    let cardColor = 'blue';
+                    if (node.tag === 'q1') cardColor = 'red';
+                    else if (node.tag === 'q3') cardColor = 'yellow';
+                    else if (node.tag === 'q2') cardColor = 'green';
+                    
+                    const newCard = { id: 'card_' + Date.now(), title: node.text, content: '', project: node.project, dateMode: 'single', dateSingle: new Date().toISOString().split('T')[0], dateStart: '', dateEnd: '', color: cardColor, status: 0, isMemo: false };
                     app.state.workspaces[app.state.activeTabId].push(newCard); nodes.splice(idx, 1);
-                    app.saveToLocal(); app.renderAll(); alert(`🚀 已轉為正式卡片！`);
+                    app.saveToLocal(); app.renderAll(); alert(`🚀 已轉為正式排程卡片！`);
                 },
 
                 switchTab(id) { app.state.activeTabId = id; app.state.filters.activeProject = null; app.renderAll(); },
@@ -528,7 +566,8 @@
                 updateNotebook(field, val) { if (field === 'free') app.state.globalNotebook.free = val; else { const key = field.split('.')[1]; app.state.globalNotebook.matrix[key] = val; } app.saveToLocal(); },
 
                 setTsumegoColor(color) {
-                    app.state.tsumego.currentColor = color;
+                    if (color === 'clear') { app.state.tsumego.currentColor = 'clear'; } 
+                    else { app.state.tsumego.currentColor = color; }
                     document.querySelectorAll('.tsumego-tool-btn').forEach(btn => btn.classList.remove('active'));
                     document.getElementById('ts-btn-' + color).classList.add('active');
                 },
@@ -554,7 +593,7 @@
                     }
                 },
                 resetTsumego() {
-                    if(confirm("確定要清空詰棋盤面？")) { app.state.tsumego.stones = []; app.saveToLocal(); app.renderTsumegoStones(); }
+                    if(confirm("確定要清空盤面？")) { app.state.tsumego.stones = []; app.saveToLocal(); app.renderTsumegoStones(); }
                 }
             },
 
@@ -608,26 +647,46 @@
 
             renderMatrix() {
                 let nodes = this.state.nodes[this.state.activeTabId] || []; if (this.state.filters.activeProject) nodes = nodes.filter(n => n.project === this.state.filters.activeProject);
-                const container = document.getElementById('matrix-nodes-container');
                 
-                container.innerHTML = nodes.map(n => {
+                const getTagHtml = (tagVal) => {
+                    if (tagVal === 'q1') return `<div class="node-tag tag-q1">🔥 重要・緊急</div>`;
+                    if (tagVal === 'q2') return `<div class="node-tag tag-q2">📅 重要・不急</div>`;
+                    if (tagVal === 'q3') return `<div class="node-tag tag-q3">⚡ 緊急・不重</div>`;
+                    if (tagVal === 'q4') return `<div class="node-tag tag-q4">☕ 不重・不急</div>`;
+                    return '';
+                };
+
+                // 將內容渲染到 grid-lines 中，確保 0%~100% 精準對齊
+                let html = '';
+                // 保留原有的星位
+                const starPositions = [3, 9, 15];
+                starPositions.forEach(x => {
+                    starPositions.forEach(y => {
+                        html += `<div class="star-point" style="left: ${(x/18)*100}%; top: ${(y/18)*100}%;"></div>`;
+                    });
+                });
+
+                html += nodes.map(n => {
                     const gridX = n.gridX !== undefined ? n.gridX : 9; const gridY = n.gridY !== undefined ? n.gridY : 9;
                     const stoneClass = n.stoneColor === 'black' ? 'stone-black' : 'stone-white';
                     const leftPct = (gridX / 18) * 100; const topPct = (gridY / 18) * 100;
                     
                     return `
-                    <div class="matrix-node ${stoneClass}" data-id="${n.id}" style="left:calc(15px + ${leftPct}%); top:calc(15px + ${topPct}%);">
+                    <div class="matrix-node ${stoneClass}" data-id="${n.id}" style="left:${leftPct}%; top:${topPct}%;">
                         <div class="node-stone"></div>
                         <div class="node-paper">
+                            ${getTagHtml(n.tag)}
                             <div class="matrix-node-text">${n.text}</div>
                             <div class="node-action-group">
-                                <button class="node-action-btn" onclick="app.actions.toggleStoneColor('${n.id}')" title="切換狀態">☯️</button>
-                                <button class="node-action-btn" onclick="app.actions.promoteToCard('${n.id}')" title="轉為卡片">📄</button>
+                                <button class="node-action-btn" onclick="app.actions.toggleStoneColor('${n.id}')" title="標記警戒">☯️</button>
+                                <button class="node-action-btn" onclick="app.actions.promoteToCard('${n.id}')" title="轉為排程卡片">📄</button>
                                 <button class="node-action-btn del" onclick="app.actions.deleteMatrixNode('${n.id}')" title="刪除">×</button>
                             </div>
                         </div>
                     </div>`
                 }).join('');
+                
+                document.getElementById('matrix-grid-lines').innerHTML = html;
             },
 
             renderTimeline() {
@@ -657,11 +716,15 @@
             },
 
             renderTsumegoStones() {
-                const container = document.getElementById('tsumego-stones-container');
-                container.innerHTML = this.state.tsumego.stones.map(s => {
+                let html = '';
+                const starPositions = [3, 9, 15];
+                starPositions.forEach(x => { starPositions.forEach(y => { html += `<div class="star-point" style="left: ${(x/18)*100}%; top: ${(y/18)*100}%;"></div>`; }); });
+                
+                html += this.state.tsumego.stones.map(s => {
                     const left = (s.x / 18) * 100; const top = (s.y / 18) * 100;
-                    return `<div class="pure-stone ${s.color}" style="left:calc(15px + ${left}%); top:calc(15px + ${top}%);"></div>`;
+                    return `<div class="pure-stone ${s.color}" style="left:${left}%; top:${top}%;"></div>`;
                 }).join('');
+                document.getElementById('tsumego-grid-lines').innerHTML = html;
             },
 
             pomoInterval: null, pomoTime: 25 * 60, isPomoRunning: false,
