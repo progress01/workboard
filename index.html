@@ -47,68 +47,40 @@
         .view-container { display: none; background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); border: 1px solid #e2e8f0; margin-bottom: 40px; width: 100%; overflow-x: auto; }
         .view-container.active { display: block; }
         
-        /* 🔥 發想矩陣控制列 (新增標籤選擇器) */
+        /* 發想矩陣控制列 (標籤選擇器) */
         .matrix-input-bar { display: flex; gap: 10px; margin-bottom: 15px; flex-wrap: wrap; }
         .matrix-input { flex: 1; min-width: 200px; padding: 10px 15px; border: 2px solid #cbd5e1; border-radius: 8px; font-size: 1rem; outline: none; transition: 0.2s; }
         .matrix-input:focus { border-color: var(--primary); }
         .matrix-select { padding: 10px; border: 2px solid #cbd5e1; border-radius: 8px; font-weight: bold; color: #475569; outline: none; cursor: pointer; }
         
-        /* 🔥 完美 19 路棋盤 (結構優化) */
+        /* 完美 19 路棋盤 (結構優化) */
         .go-board-surface {
-            background-color: #e5cc98; 
-            border: 6px solid #5a3d2b; border-radius: 6px;
+            background-color: #e5cc98; border: 6px solid #5a3d2b; border-radius: 6px;
             box-shadow: inset 0 0 20px rgba(0,0,0,0.15), 0 10px 20px rgba(0,0,0,0.2);
-            position: relative; 
-            aspect-ratio: 1 / 1; /* 保持絕對正方形 */
-            margin: 0 auto;
-            width: 100%; max-width: 800px; /* 限制最大寬度，大螢幕不會過大 */
-            touch-action: none;
+            position: relative; aspect-ratio: 1 / 1; margin: 0 auto;
+            width: 100%; max-width: 800px; touch-action: none;
         }
-        
-        /* 內部網格，真正的座標系統 */
         .go-grid-lines {
-            position: absolute;
-            top: 4%; left: 4%; right: 4%; bottom: 4%; /* 棋盤四邊的留白 */
+            position: absolute; top: 4%; left: 4%; right: 4%; bottom: 4%;
             border-right: 1px solid #333; border-bottom: 1px solid #333;
-            background-image: 
-                linear-gradient(#333 1px, transparent 1px),
-                linear-gradient(90deg, #333 1px, transparent 1px);
+            background-image: linear-gradient(#333 1px, transparent 1px), linear-gradient(90deg, #333 1px, transparent 1px);
             background-size: calc(100% / 18) calc(100% / 18);
         }
         .star-point { position: absolute; width: 8px; height: 8px; background: #222; border-radius: 50%; transform: translate(-50%, -50%); }
         
-        /* 🔥 磁鐵與標籤便利貼 */
-        .matrix-node {
-            position: absolute; z-index: 10;
-            display: flex; flex-direction: column; align-items: center;
-            transform: translate(-50%, -12px); /* 12px 是 24px 棋子的一半，確保棋子中心精準對齊交點 */
-        }
+        /* 磁鐵與標籤便利貼 */
+        .matrix-node { position: absolute; z-index: 10; display: flex; flex-direction: column; align-items: center; transform: translate(-50%, -12px); }
         .matrix-node:active { z-index: 100 !important; }
         
-        /* 實體 3D 棋子 */
-        .node-stone {
-            width: 24px; height: 24px; border-radius: 50%; flex-shrink: 0;
-            box-shadow: 2px 4px 6px rgba(0,0,0,0.4); cursor: grab; transition: transform 0.1s;
-            position: relative; z-index: 2;
-        }
+        .node-stone { width: 24px; height: 24px; border-radius: 50%; flex-shrink: 0; box-shadow: 2px 4px 6px rgba(0,0,0,0.4); cursor: grab; transition: transform 0.1s; position: relative; z-index: 2; }
         .matrix-node:active .node-stone { cursor: grabbing; transform: scale(1.2); box-shadow: 4px 8px 12px rgba(0,0,0,0.5); }
         .stone-white .node-stone { background: radial-gradient(circle at 30% 30%, #ffffff, #d1d5db); border: 1px solid #94a3b8; }
         .stone-black .node-stone { background: radial-gradient(circle at 30% 30%, #64748b, #0f172a); border: 1px solid #020617; }
         
-        /* 文字標籤小卡 */
-        .node-paper {
-            background: #fffdf0; padding: 6px 10px; border-radius: 4px;
-            box-shadow: 1px 3px 6px rgba(0,0,0,0.2);
-            margin-top: -6px; /* 微上移，讓棋子壓住紙張 */
-            position: relative; z-index: 1;
-            max-width: 180px; display: flex; flex-direction: column; gap: 4px;
-            opacity: 0.9; transition: opacity 0.2s;
-        }
+        .node-paper { background: #fffdf0; padding: 6px 10px; border-radius: 4px; box-shadow: 1px 3px 6px rgba(0,0,0,0.2); margin-top: -6px; position: relative; z-index: 1; max-width: 180px; display: flex; flex-direction: column; gap: 4px; opacity: 0.9; transition: opacity 0.2s; }
         .matrix-node:hover .node-paper, .matrix-node:active .node-paper { opacity: 1; box-shadow: 0 6px 12px rgba(0,0,0,0.15); }
-        .matrix-node:nth-child(even) .node-paper { transform: rotate(1.5deg); }
-        .matrix-node:nth-child(odd) .node-paper { transform: rotate(-1deg); }
+        .matrix-node:nth-child(even) .node-paper { transform: rotate(1.5deg); } .matrix-node:nth-child(odd) .node-paper { transform: rotate(-1deg); }
 
-        /* 屬性標籤 (Q1, Q2等) */
         .node-tag { font-size: 0.7rem; font-weight: bold; padding: 2px 6px; border-radius: 12px; align-self: center; white-space: nowrap; }
         .tag-q1 { background: #fee2e2; color: #ef4444; border: 1px solid #fca5a5; }
         .tag-q2 { background: #dbeafe; color: #3b82f6; border: 1px solid #93c5fd; }
@@ -118,27 +90,24 @@
         .matrix-node-text { font-size: 0.9rem; font-weight: bold; color: #334155; text-align: center; word-break: break-word; line-height: 1.4; }
         .node-action-group { display: flex; gap: 4px; justify-content: center; margin-top: 2px; }
         .node-action-btn { background: rgba(0,0,0,0.05); border: none; border-radius: 4px; padding: 2px 6px; font-size: 0.75rem; cursor: pointer; color: #475569; font-weight: bold; }
-        .node-action-btn:hover { background: rgba(0,0,0,0.1); color: var(--primary); }
-        .node-action-btn.del:hover { color: #ef4444; }
+        .node-action-btn:hover { background: rgba(0,0,0,0.1); color: var(--primary); } .node-action-btn.del:hover { color: #ef4444; }
 
-        /* 🎲 獨立浮動詰棋視窗 (同理修正) */
+        /* 獨立浮動詰棋視窗 */
         #tsumego-widget-btn { position: fixed; bottom: 30px; right: 30px; z-index: 8500; width: 56px; height: 56px; border-radius: 28px; background: #1e293b; color: white; font-size: 1.8rem; display: flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 6px 16px rgba(0,0,0,0.3); border: 2px solid #cbd5e1; transition: 0.2s; }
         #tsumego-widget-btn:hover { transform: scale(1.1); background: #334155; }
         
         .tsumego-panel { position: fixed; top: 10vh; left: 10vw; width: auto; background: white; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.3); border: 1px solid #cbd5e1; overflow: hidden; display: none; z-index: 9500; }
         .tsumego-header { background: #f8fafc; padding: 12px 15px; font-weight: bold; border-bottom: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center; cursor: move; user-select: none; }
         .tsumego-board-container { padding: 15px; background: #334155; display: flex; justify-content: center; align-items: center; max-width: 90vw; max-height: 60vh; overflow: auto; overscroll-behavior: contain; }
-        
         .tsumego-board-surface { width: 500px; height: 500px; flex-shrink: 0; }
         .pure-stone { position: absolute; width: 22px; height: 22px; border-radius: 50%; transform: translate(-50%, -50%); box-shadow: 2px 4px 6px rgba(0,0,0,0.4); pointer-events: none; }
         .pure-stone.black { background: radial-gradient(circle at 30% 30%, #475569, #0f172a); border: 1px solid #020617; }
         .pure-stone.white { background: radial-gradient(circle at 30% 30%, #ffffff, #cbd5e1); border: 1px solid #94a3b8; }
-        
         .tsumego-controls { padding: 10px 15px; display: flex; gap: 5px; }
         .tsumego-tool-btn { flex: 1; padding: 8px; border: 1px solid #cbd5e1; border-radius: 6px; background: white; cursor: pointer; font-size: 0.9rem; font-weight: bold; color: #475569; }
         .tsumego-tool-btn.active { background: #e0e7ff; border-color: #4f46e5; color: #4338ca; }
 
-        /* 時間軸與其他常規視圖保持原樣... */
+        /* 時間軸 & 卡片 (鋒利極簡版) */
         .timeline { position: relative; padding: 20px 0; max-width: 1200px; margin: 0 auto; }
         .timeline::before { content: ''; position: absolute; top: 0; bottom: 0; left: 20px; width: 4px; background: #e5e7eb; border-radius: 2px; }
         .card-wrapper { display: flex; margin-bottom: 30px; position: relative; padding-left: 45px; }
@@ -162,6 +131,7 @@
         .chronicle-row::before { content: ''; position: absolute; left: -8px; top: 6px; width: 13px; height: 13px; border-radius: 50%; background: var(--primary); border: 2px solid white; }
         .chronicle-date { font-weight: bold; width: 120px; flex-shrink: 0; color: #64748b; font-size: 0.95rem; }
         .chronicle-info { flex: 1; background: #f8fafc; padding: 10px 15px; border-radius: 8px; border: 1px solid #e2e8f0; }
+        .chronicle-title { font-weight: bold; font-size: 1.1rem; color: #1e293b; }
 
         .modal-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); z-index: 9000; align-items: center; justify-content: center; backdrop-filter: blur(2px); }
         .modal-content { background: white; padding: 25px; border-radius: 12px; width: 95%; max-width: 900px; max-height: 90vh; overflow-y: auto; box-shadow: 0 10px 25px rgba(0,0,0,0.2); display: flex; flex-direction: column; }
@@ -186,16 +156,14 @@
 </head>
 <body>
 
-    <!-- 🔑 登入畫面 -->
     <div id="login-screen">
         <h1 style="font-size: 2.5rem; margin-bottom: 10px;">白板</h1>
-        <p style="color: #94a3b8; margin-bottom: 30px;">(實體棋子・標籤矩陣版)</p>
+        <p style="color: #94a3b8; margin-bottom: 30px;">(極簡鋒利・標籤矩陣版)</p>
         <button onclick="app.login()" style="padding: 12px 24px; font-size: 1.1rem; border-radius: 30px; border: none; background: #3b82f6; color: white; font-weight: bold; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.3); transition: transform 0.2s;">
             使用 Google 登入
         </button>
     </div>
 
-    <!-- 🛠️ 應用程式內容 -->
     <div id="app-content" style="display: none;">
         <div class="toolbar">
             <div class="tool-left">
@@ -203,6 +171,8 @@
                 <button class="btn" onclick="app.toggleProjectBar()">📁 專案</button>
                 <button class="btn" onclick="app.switchView('timeline')" id="btn-view-timeline">📜 時間軸</button>
                 <button class="btn" onclick="app.switchView('matrix')" id="btn-view-matrix">💡 發想棋盤</button>
+                <button class="btn mobile-hidden" onclick="app.switchView('chronicle')" id="btn-view-chronicle">⚡ 大事記</button>
+                <button class="btn mobile-hidden" onclick="app.switchView('gantt')" id="btn-view-gantt">📊 甘特圖</button>
                 <button class="btn mobile-hidden" onclick="app.switchView('calendar')" id="btn-view-calendar">📅 日曆</button>
             </div>
             <div class="tool-right">
@@ -236,7 +206,7 @@
                 
                 <div class="go-board-surface matrix-board" id="matrix-board">
                     <div class="go-grid-lines" id="matrix-grid-lines">
-                        <!-- 節點會產生在這裡，與網格同一層級確保100%對齊 -->
+                        <!-- 節點會產生在這裡 -->
                     </div>
                 </div>
             </div>
@@ -248,6 +218,18 @@
                 </div>
                 <div class="timeline" id="timeline-render-target"></div>
                 <button class="add-main-btn" onclick="app.actions.addCard()">＋ 新增正式排程卡片</button>
+            </div>
+
+            <!-- 2. 大事記 (Chronicle) 鋒利極簡版 -->
+            <div id="view-chronicle" class="view-container">
+                <h3 style="text-align: center; color: #475569; margin-top: 0;">⚡ 大事記</h3>
+                <div id="chronicle-render-target"></div>
+            </div>
+
+            <!-- 3. 甘特圖 (Gantt) -->
+            <div id="view-gantt" class="view-container">
+                <h3 style="text-align: center; color: #475569; margin-top: 0;">📊 專案甘特圖</h3>
+                <div id="gantt-render-target" style="min-width: 600px;"></div>
             </div>
 
             <!-- 4. 日曆 (Calendar) -->
@@ -291,7 +273,6 @@
                 <button class="tsumego-tool-btn" style="color:#ef4444; border-color:#fca5a5;" onclick="app.actions.resetTsumego()">🗑️ 清盤</button>
             </div>
         </div>
-
     </div>
 
     <!-- 🌟 核心應用程式邏輯 🌟 -->
@@ -330,7 +311,7 @@
                         this.currentUser = user;
                         document.getElementById('login-screen').style.display = 'none';
                         document.getElementById('app-content').style.display = 'block';
-                        this.injectStarPoints(); // 繪製 9 個標準星位
+                        this.injectStarPoints(); 
                         this.loadFromLocal();
                         this.setupMatrixDrag();
                         this.setupTsumegoDrag();
@@ -343,7 +324,7 @@
             },
             
             injectStarPoints() {
-                const starPositions = [3, 9, 15]; // 19路的星位座標 (0-18)
+                const starPositions = [3, 9, 15]; 
                 let html = '';
                 starPositions.forEach(x => {
                     starPositions.forEach(y => {
@@ -352,7 +333,6 @@
                         html += `<div class="star-point" style="left: ${pctX}%; top: ${pctY}%;"></div>`;
                     });
                 });
-                // 先寫入星位，後續的節點會 attach 在同一個 container 中
                 document.getElementById('matrix-grid-lines').innerHTML = html;
                 document.getElementById('tsumego-grid-lines').innerHTML = html;
             },
@@ -418,6 +398,16 @@
                   }).catch(err => alert("下載失敗：" + err.message)).finally(() => btn.innerText = orig);
             },
 
+            // ==========================================
+            // 🔥 全局狀態篩選系統修復 (The Sharp Filter)
+            // ==========================================
+            setFilter(type, value) {
+                if (type === 'project') {
+                    this.state.filters.activeProject = value;
+                }
+                this.renderAll();
+            },
+
             setupTsumegoDrag() {
                 const panel = document.getElementById('tsumego-panel'); const header = document.getElementById('tsumego-header');
                 let isDragging = false, startX, startY, startLeft, startTop;
@@ -439,9 +429,6 @@
                 document.addEventListener('mouseup', onMouseUp); document.addEventListener('touchend', onMouseUp);
             },
 
-            // ==========================================
-            // 完美 19 路：發想矩陣拖曳邏輯
-            // ==========================================
             dragState: { isDragging: false, nodeId: null, offsetX: 0, offsetY: 0 },
             setupMatrixDrag() {
                 const gridLinesContainer = document.getElementById('matrix-grid-lines');
@@ -453,11 +440,9 @@
                     const clientX = e.touches ? e.touches[0].clientX : e.clientX;
                     const clientY = e.touches ? e.touches[0].clientY : e.clientY;
                     
-                    // 取得目前棋子的中心點座標 (這正是它掛在 gridLines 上的精確位置)
                     const gridRect = gridLinesContainer.getBoundingClientRect();
                     const currentPctX = parseFloat(nodeEl.style.left) / 100;
                     const currentPctY = parseFloat(nodeEl.style.top) / 100;
-                    
                     const stoneCenterX = gridRect.left + (gridRect.width * currentPctX);
                     const stoneCenterY = gridRect.top + (gridRect.height * currentPctY);
                     
@@ -479,8 +464,7 @@
                     
                     const nodeEl = document.querySelector(`.matrix-node[data-id="${app.dragState.nodeId}"]`);
                     nodeEl.style.transition = 'none'; 
-                    nodeEl.style.left = pctX + '%'; 
-                    nodeEl.style.top = pctY + '%';
+                    nodeEl.style.left = pctX + '%'; nodeEl.style.top = pctY + '%';
                 };
                 
                 const endDrag = (e) => {
@@ -488,29 +472,40 @@
                     const nodeEl = document.querySelector(`.matrix-node[data-id="${app.dragState.nodeId}"]`);
                     if(!nodeEl) return;
                     
-                    // 網格吸附：算出最接近的交點 (0-18)
                     let pctX = parseFloat(nodeEl.style.left);
                     let pctY = parseFloat(nodeEl.style.top);
                     
                     let gridX = Math.round((pctX / 100) * 18);
                     let gridY = Math.round((pctY / 100) * 18);
-                    gridX = Math.max(0, Math.min(18, gridX)); 
-                    gridY = Math.max(0, Math.min(18, gridY));
+                    gridX = Math.max(0, Math.min(18, gridX)); gridY = Math.max(0, Math.min(18, gridY));
                     
                     app.actions.updateMatrixNodePos(app.dragState.nodeId, gridX, gridY);
                 };
                 
-                // 綁定在外層 board 上，確保拖出範圍也能捕捉事件
                 const board = document.getElementById('matrix-board');
                 board.addEventListener('mousedown', startDrag); board.addEventListener('touchstart', startDrag, { passive: false });
                 document.addEventListener('mousemove', onDrag); document.addEventListener('touchmove', onDrag, { passive: false });
                 document.addEventListener('mouseup', endDrag); document.addEventListener('touchend', endDrag);
             },
 
-            getActiveCards() { let cards = this.state.workspaces[this.state.activeTabId] || []; if (this.state.filters.activeProject) cards = cards.filter(c => c.project === this.state.filters.activeProject); return cards; },
-            getAllCardsAcrossTabs() { let all = []; for (let tabId in this.state.workspaces) { const tabName = this.state.tabs.find(t => t.id === tabId)?.name || '未知'; this.state.workspaces[tabId].forEach(c => all.push({ ...c, tabId, tabName })); } return all; },
+            getActiveCards() { 
+                let cards = this.state.workspaces[this.state.activeTabId] || []; 
+                if (this.state.filters.activeProject) {
+                    cards = cards.filter(c => c.project === this.state.filters.activeProject); 
+                }
+                return cards; 
+            },
+            getAllCardsAcrossTabs() { 
+                let all = []; 
+                for (let tabId in this.state.workspaces) { 
+                    const tabName = this.state.tabs.find(t => t.id === tabId)?.name || '未知'; 
+                    this.state.workspaces[tabId].forEach(c => all.push({ ...c, tabId, tabName })); 
+                } 
+                return all; 
+            },
 
             actions: {
+                // --- 時間軸卡片 (回歸簡潔) ---
                 addCard() { const newCard = { id: 'card_' + Date.now(), title: '', content: '', project: app.state.filters.activeProject || '', dateMode: 'single', dateSingle: new Date().toISOString().split('T')[0], dateStart: '', dateEnd: '', color: 'blue', status: 0, isMemo: false }; app.state.workspaces[app.state.activeTabId].push(newCard); app.saveToLocal(); app.renderAll(); },
                 updateCard(id, field, value) { const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id); if (card) { card[field] = value; app.saveToLocal(); if(field === 'project') app.renderProjectBar(); if(field.startsWith('date')) app.renderTimeline(); } },
                 deleteCard(id) { if(confirm('確定移除此卡片？')) { app.state.workspaces[app.state.activeTabId] = app.state.workspaces[app.state.activeTabId].filter(c => c.id !== id); app.saveToLocal(); app.renderAll(); } },
@@ -530,10 +525,7 @@
                     const gridX = Math.floor(Math.random() * 7) + 6; const gridY = Math.floor(Math.random() * 7) + 6;
                     
                     app.state.nodes[app.state.activeTabId].push({ 
-                        id: 'node_' + Date.now(), 
-                        text: text, 
-                        tag: tagEl.value, // 儲存標籤 (q1, q2, ...)
-                        gridX: gridX, gridY: gridY, stoneColor: 'white', project: app.state.filters.activeProject || '' 
+                        id: 'node_' + Date.now(), text: text, tag: tagEl.value, gridX: gridX, gridY: gridY, stoneColor: 'white', project: app.state.filters.activeProject || '' 
                     });
                     
                     inputEl.value = ''; app.saveToLocal(); app.renderMatrix();
@@ -545,9 +537,7 @@
                     const nodes = app.state.nodes[app.state.activeTabId]; const idx = nodes.findIndex(n => n.id === id); if(idx === -1) return;
                     const node = nodes[idx];
                     let cardColor = 'blue';
-                    if (node.tag === 'q1') cardColor = 'red';
-                    else if (node.tag === 'q3') cardColor = 'yellow';
-                    else if (node.tag === 'q2') cardColor = 'green';
+                    if (node.tag === 'q1') cardColor = 'red'; else if (node.tag === 'q3') cardColor = 'yellow'; else if (node.tag === 'q2') cardColor = 'green';
                     
                     const newCard = { id: 'card_' + Date.now(), title: node.text, content: '', project: node.project, dateMode: 'single', dateSingle: new Date().toISOString().split('T')[0], dateStart: '', dateEnd: '', color: cardColor, status: 0, isMemo: false };
                     app.state.workspaces[app.state.activeTabId].push(newCard); nodes.splice(idx, 1);
@@ -625,7 +615,7 @@
 
             renderAll() {
                 this.renderTabs(); if (this.state.showProjectBar) this.renderProjectBar();
-                if (this.state.view === 'timeline') this.renderTimeline(); else if (this.state.view === 'matrix') this.renderMatrix(); else if (this.state.view === 'calendar') this.renderCalendar();
+                if (this.state.view === 'timeline') this.renderTimeline(); else if (this.state.view === 'matrix') this.renderMatrix(); else if (this.state.view === 'chronicle') this.renderChronicle(); else if (this.state.view === 'gantt') this.renderGantt(); else if (this.state.view === 'calendar') this.renderCalendar();
             },
 
             renderTabs() {
@@ -646,7 +636,10 @@
             },
 
             renderMatrix() {
-                let nodes = this.state.nodes[this.state.activeTabId] || []; if (this.state.filters.activeProject) nodes = nodes.filter(n => n.project === this.state.filters.activeProject);
+                let nodes = this.state.nodes[this.state.activeTabId] || []; 
+                if (this.state.filters.activeProject) {
+                    nodes = nodes.filter(n => n.project === this.state.filters.activeProject);
+                }
                 
                 const getTagHtml = (tagVal) => {
                     if (tagVal === 'q1') return `<div class="node-tag tag-q1">🔥 重要・緊急</div>`;
@@ -656,9 +649,7 @@
                     return '';
                 };
 
-                // 將內容渲染到 grid-lines 中，確保 0%~100% 精準對齊
                 let html = '';
-                // 保留原有的星位
                 const starPositions = [3, 9, 15];
                 starPositions.forEach(x => {
                     starPositions.forEach(y => {
@@ -694,10 +685,48 @@
                 cards = cards.sort((a, b) => { const dateA = a.dateMode === 'range' ? a.dateStart : a.dateSingle; const dateB = b.dateMode === 'range' ? b.dateStart : b.dateSingle; if(!dateA) return 1; if(!dateB) return -1; return new Date(dateA) - new Date(dateB); });
                 const html = cards.map(card => {
                     const dateHtml = card.dateMode === 'single' ? `<input type="date" class="input-date" value="${card.dateSingle}" onchange="app.actions.updateCard('${card.id}', 'dateSingle', this.value)">` : `<span style="font-size:0.8rem;color:#64748b;">起</span><input type="date" class="input-date" value="${card.dateStart}" onchange="app.actions.updateCard('${card.id}', 'dateStart', this.value)"><span style="font-size:0.8rem;color:#64748b;">迄</span><input type="date" class="input-date" value="${card.dateEnd}" onchange="app.actions.updateCard('${card.id}', 'dateEnd', this.value)">`;
-                    return `<div class="card-wrapper"><div class="card-dot"></div><div class="card ${card.isMemo ? 'memo-mode' : ''}" data-color="${card.color}"><div class="card-header"><div style="display:flex; align-items:center; gap:10px;"><div class="status-dot status-${card.status}" onclick="app.actions.cycleStatus('${card.id}')"></div><button class="icon-btn" onclick="app.actions.toggleMemo('${card.id}')">${card.isMemo ? '♾️' : '📅'}</button>${dateHtml}</div><div style="display:flex; gap:5px;"><button class="icon-btn" onclick="app.actions.toggleDateMode('${card.id}')">↔️</button><button class="icon-btn" onclick="app.actions.cycleColor('${card.id}')">🎨</button></div></div><div class="card-body"><input type="text" class="input-title" value="${card.title}" placeholder="🏷️ 標題..." onchange="app.actions.updateCard('${card.id}', 'title', this.value)"><textarea class="input-content" placeholder="📝 寫下卡片細節..." oninput="this.style.height='auto'; this.style.height=this.scrollHeight+'px';" onchange="app.actions.updateCard('${card.id}', 'content', this.value)">${card.content}</textarea></div><div class="card-footer"><input type="text" class="input-project" value="${card.project}" placeholder="#專案名稱" onchange="app.actions.updateCard('${card.id}', 'project', this.value)"><button class="icon-btn" onclick="app.actions.deleteCard('${card.id}')" style="color:#ef4444; border-color:#fca5a5;">🗑️</button></div></div></div>`;
+                    return `
+                    <div class="card-wrapper">
+                        <div class="card-dot"></div>
+                        <div class="card ${card.isMemo ? 'memo-mode' : ''}" data-color="${card.color}">
+                            <div class="card-header">
+                                <div style="display:flex; align-items:center; gap:10px;">
+                                    <div class="status-dot status-${card.status}" onclick="app.actions.cycleStatus('${card.id}')"></div>
+                                    <button class="icon-btn" onclick="app.actions.toggleMemo('${card.id}')">${card.isMemo ? '♾️' : '📅'}</button>
+                                    ${dateHtml}
+                                </div>
+                                <div style="display:flex; gap:5px;">
+                                    <button class="icon-btn" onclick="app.actions.toggleDateMode('${card.id}')">↔️</button>
+                                    <button class="icon-btn" onclick="app.actions.cycleColor('${card.id}')">🎨</button>
+                                </div>
+                            </div>
+                            <div class="card-body">
+                                <input type="text" class="input-title" value="${card.title}" placeholder="🏷️ 標題..." onchange="app.actions.updateCard('${card.id}', 'title', this.value)">
+                                <textarea class="input-content" placeholder="📝 寫下卡片細節..." oninput="this.style.height='auto'; this.style.height=this.scrollHeight+'px';" onchange="app.actions.updateCard('${card.id}', 'content', this.value)">${card.content}</textarea>
+                            </div>
+                            <div class="card-footer">
+                                <input type="text" class="input-project" value="${card.project}" placeholder="#專案名稱" onchange="app.actions.updateCard('${card.id}', 'project', this.value)">
+                                <button class="icon-btn" onclick="app.actions.deleteCard('${card.id}')" style="color:#ef4444; border-color:#fca5a5;">🗑️</button>
+                            </div>
+                        </div>
+                    </div>`;
                 }).join('');
                 document.getElementById('timeline-render-target').innerHTML = html;
                 setTimeout(() => { document.querySelectorAll('.input-content').forEach(el => { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; }); }, 10);
+            },
+
+            renderChronicle() {
+                const cards = this.getActiveCards().filter(c => !c.isMemo && (c.dateSingle || c.dateStart)); if (cards.length === 0) { document.getElementById('chronicle-render-target').innerHTML = '<p style="text-align:center; color:#94a3b8;">無有效日期之卡片</p>'; return; }
+                const sorted = cards.sort((a, b) => { const d1 = new Date(a.dateMode === 'range' ? a.dateStart : a.dateSingle).getTime() || 0; const d2 = new Date(b.dateMode === 'range' ? b.dateStart : b.dateSingle).getTime() || 0; return d1 - d2; });
+                const html = sorted.map(c => { const dStr = c.dateMode === 'range' ? `${c.dateStart} ~ ${c.dateEnd}` : c.dateSingle; const pTag = c.project ? `<span style="background:#e2e8f0; padding:2px 6px; border-radius:4px; font-size:0.8rem; margin-right:8px;">#${c.project}</span>` : ''; return `<div class="chronicle-row"><div class="chronicle-date">${dStr}</div><div class="chronicle-info"><div style="display:flex; align-items:center; margin-bottom:5px;"><div class="status-dot status-${c.status}" style="margin-right:8px;"></div><div class="chronicle-title">${pTag}${c.title || '未命名'}</div></div><div style="color:#475569; font-size:0.95rem; white-space:pre-wrap;">${c.content}</div></div></div>`; }).join('');
+                document.getElementById('chronicle-render-target').innerHTML = html;
+            },
+
+            renderGantt() {
+                const cards = this.getActiveCards().filter(c => !c.isMemo && c.dateMode === 'range' && c.dateStart && c.dateEnd); if (cards.length === 0) { document.getElementById('gantt-render-target').innerHTML = '<p style="text-align:center; color:#94a3b8;">請將卡片切換為「區間模式 (↔️)」並設定起迄日期</p>'; return; }
+                let html = '<div style="display:flex; flex-direction:column; gap:10px;">';
+                cards.forEach(c => { const s = new Date(c.dateStart).getTime(); const e = new Date(c.dateEnd).getTime(); const days = Math.max(1, (e - s) / (1000 * 60 * 60 * 24)); const widthPct = Math.min(100, days * 3); html += `<div style="background:#f1f5f9; border-radius:6px; padding:10px; border: 1px solid #e2e8f0;"><div style="font-weight:bold; margin-bottom:5px; font-size:0.95rem; color:#1e293b;">${c.project ? '['+c.project+']' : ''} ${c.title || '未命名'} <span style="font-size:0.8rem; color:#64748b; font-weight:normal;">(${days}天)</span></div><div style="height:12px; background:#e2e8f0; border-radius:6px; width:100%;"><div style="height:100%; border-radius:6px; background:var(--primary); width:${widthPct}%;"></div></div></div>`; });
+                document.getElementById('gantt-render-target').innerHTML = html + '</div>';
             },
 
             renderCalendar() {
