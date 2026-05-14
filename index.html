@@ -176,6 +176,9 @@
                 <button class="btn mobile-hidden" onclick="app.switchView('calendar')" id="btn-view-calendar">📅 日曆</button>
             </div>
             <div class="tool-right">
+                <!-- 🔥 新增的雲端時間顯示 -->
+                <span id="cloud-time-display" style="font-size: 0.8rem; color: #94a3b8; margin-right: 10px; display: none;" class="mobile-hidden"></span>
+                
                 <button class="btn btn-cloud-save" onclick="app.saveToCloudManual()">☁️ 存雲端</button>
                 <button class="btn btn-cloud-load" onclick="app.loadFromCloudManual()">📥 載雲端</button>
                 <div style="width:1px; height:20px; background:#475569; margin:0 2px;"></div>
@@ -220,7 +223,7 @@
                 <button class="add-main-btn" onclick="app.actions.addCard()">＋ 新增正式排程卡片</button>
             </div>
 
-            <!-- 2. 大事記 (Chronicle) 鋒利極簡版 -->
+            <!-- 2. 大事記 (Chronicle) -->
             <div id="view-chronicle" class="view-container">
                 <h3 style="text-align: center; color: #475569; margin-top: 0;">⚡ 大事記</h3>
                 <div id="chronicle-render-target"></div>
@@ -315,12 +318,30 @@
                         this.loadFromLocal();
                         this.setupMatrixDrag();
                         this.setupTsumegoDrag();
+                        this.fetchCloudTime(); // 🔥 登入後抓取雲端時間
                     } else {
                         this.currentUser = null;
                         document.getElementById('login-screen').style.display = 'flex';
                         document.getElementById('app-content').style.display = 'none';
                     }
                 });
+            },
+
+            // 🔥 新增：擷取雲端存檔時間的函式
+            fetchCloudTime() {
+                if (!this.currentUser) return;
+                db.collection('Whiteboard_Data').doc(this.currentUser.uid).get().then(doc => {
+                    const displayEl = document.getElementById('cloud-time-display');
+                    if (doc.exists && doc.data().updatedAt) {
+                        const d = doc.data().updatedAt.toDate();
+                        const timeStr = `${d.getMonth() + 1}/${d.getDate()} ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
+                        displayEl.innerText = `☁️ 雲端紀錄: ${timeStr}`;
+                        displayEl.style.display = 'inline-block';
+                    } else {
+                        displayEl.innerText = `☁️ 尚無雲端紀錄`;
+                        displayEl.style.display = 'inline-block';
+                    }
+                }).catch(err => console.log("無法取得雲端時間", err));
             },
             
             injectStarPoints() {
@@ -379,7 +400,10 @@
                 if (!this.currentUser) return;
                 const btn = document.querySelector('.btn-cloud-save'); const orig = btn.innerText; btn.innerText = "上傳中...";
                 const payload = { tabs: this.state.tabs, workspaces: this.state.workspaces, nodes: this.state.nodes, globalNotebook: this.state.globalNotebook, updatedAt: firebase.firestore.FieldValue.serverTimestamp() };
-                db.collection('Whiteboard_Data').doc(this.currentUser.uid).set(payload, { merge: true }).then(() => alert("✅ 備份至雲端。")).catch(err => alert("失敗：" + err.message)).finally(() => btn.innerText = orig);
+                db.collection('Whiteboard_Data').doc(this.currentUser.uid).set(payload, { merge: true }).then(() => {
+                    alert("✅ 備份至雲端。");
+                    this.fetchCloudTime(); // 🔥 存檔成功，更新右上角時間
+                }).catch(err => alert("失敗：" + err.message)).finally(() => btn.innerText = orig);
             },
 
             loadFromCloudManual() {
@@ -393,14 +417,13 @@
                           this.state.globalNotebook = data.globalNotebook || { template: 'free', free: '', matrix: {} };
                           if (!this.state.tabs.find(t => t.id === this.state.activeTabId)) this.state.activeTabId = this.state.tabs[0].id;
                           if (!this.state.nodes[this.state.activeTabId]) this.state.nodes[this.state.activeTabId] = [];
-                          this.saveToLocal(); this.renderAll(); alert("📥 載入成功！");
+                          this.saveToLocal(); this.renderAll(); 
+                          this.fetchCloudTime(); // 🔥 載入成功，更新右上角時間
+                          alert("📥 載入成功！");
                       } else { alert("雲端目前沒有備份資料喔！"); }
                   }).catch(err => alert("下載失敗：" + err.message)).finally(() => btn.innerText = orig);
             },
 
-            // ==========================================
-            // 🔥 全局狀態篩選系統修復 (The Sharp Filter)
-            // ==========================================
             setFilter(type, value) {
                 if (type === 'project') {
                     this.state.filters.activeProject = value;
@@ -505,7 +528,6 @@
             },
 
             actions: {
-                // --- 時間軸卡片 (回歸簡潔) ---
                 addCard() { const newCard = { id: 'card_' + Date.now(), title: '', content: '', project: app.state.filters.activeProject || '', dateMode: 'single', dateSingle: new Date().toISOString().split('T')[0], dateStart: '', dateEnd: '', color: 'blue', status: 0, isMemo: false }; app.state.workspaces[app.state.activeTabId].push(newCard); app.saveToLocal(); app.renderAll(); },
                 updateCard(id, field, value) { const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id); if (card) { card[field] = value; app.saveToLocal(); if(field === 'project') app.renderProjectBar(); if(field.startsWith('date')) app.renderTimeline(); } },
                 deleteCard(id) { if(confirm('確定移除此卡片？')) { app.state.workspaces[app.state.activeTabId] = app.state.workspaces[app.state.activeTabId].filter(c => c.id !== id); app.saveToLocal(); app.renderAll(); } },
@@ -514,7 +536,6 @@
                 toggleMemo(id) { const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id); if (card) { card.isMemo = !card.isMemo; app.saveToLocal(); app.renderAll(); } },
                 toggleDateMode(id) { const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id); if (card) { card.dateMode = card.dateMode === 'single' ? 'range' : 'single'; app.saveToLocal(); app.renderAll(); } },
                 
-                // --- 發想矩陣 ---
                 addMatrixNode() {
                     const inputEl = document.getElementById('matrix-quick-input'); 
                     const tagEl = document.getElementById('matrix-tag-select');
