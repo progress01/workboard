@@ -2,7 +2,8 @@
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <!-- 加入 viewport-fit=cover 支援手機瀏海螢幕邊界 -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>白板系統</title>
     
     <!-- Firebase Compat -->
@@ -13,15 +14,16 @@
     <style>
         :root { --primary: #4f46e5; --bg: #f8fafc; --text: #1f2937; --font-stack: "Microsoft JhengHei", sans-serif; }
         * { box-sizing: border-box; font-family: var(--font-stack); }
-        body { background: var(--bg); color: var(--text); margin: 0; padding: 0; min-height: 100vh; padding-top: 60px; overflow-x: hidden; }
+        /* 加入 safe-area-inset 避免被手機底部 Home 條擋住 */
+        body { background: var(--bg); color: var(--text); margin: 0; padding: 0; min-height: 100vh; padding-top: 60px; overflow-x: hidden; padding-bottom: env(safe-area-inset-bottom); }
         
-        #login-screen { position: fixed; top:0; left:0; right:0; bottom:0; background: radial-gradient(circle at center, #1e293b 0%, #0f172a 100%); display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 10000; color: white; }
+        #login-screen { position: fixed; top:0; left:0; right:0; bottom:0; background: radial-gradient(circle at center, #1e293b 0%, #0f172a 100%); display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 10000; color: white; padding: 20px; text-align: center; }
         
         /* 頂部工具列 */
         .toolbar { position: fixed; top: 0; left: 0; right: 0; background: #1e293b; color: white; padding: 10px 15px; display: flex; justify-content: space-between; align-items: center; z-index: 2000; height: 60px; box-shadow: 0 2px 10px rgba(0,0,0,0.2); }
         .tool-left, .tool-right { display: flex; align-items: center; gap: 8px; flex-wrap: nowrap; }
         .tool-title { font-weight: bold; font-size: 1.2rem; margin-right: 15px; white-space: nowrap; }
-        .btn { background: transparent; border: 1px solid #475569; color: #e2e8f0; padding: 6px 12px; border-radius: 4px; cursor: pointer; transition: 0.2s; white-space: nowrap; font-size: 0.9rem; display: flex; align-items: center; gap: 4px; }
+        .btn { background: transparent; border: 1px solid #475569; color: #e2e8f0; padding: 8px 12px; border-radius: 6px; cursor: pointer; transition: 0.2s; white-space: nowrap; font-size: 0.95rem; display: flex; align-items: center; gap: 4px; }
         .btn:hover { background: rgba(255,255,255,0.1); border-color: white; color: white; }
         .btn.active { background: var(--primary); border-color: var(--primary); color: white; }
         .btn-danger { border-color: #f87171; color: #f87171; }
@@ -32,33 +34,37 @@
         .btn-cloud-load { background: #f59e0b; border-color: #d97706; color: white; font-weight: bold; }
         .btn-cloud-load:hover { background: #d97706; }
 
-        /* 專案與分頁列 */
+        /* 專案列 */
         #project-bar { position: fixed; top: 60px; left: 50px; right: 0; background: white; border-bottom: 1px solid #e2e8f0; padding: 10px 20px; z-index: 1800; display: flex; gap: 10px; overflow-x: auto; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
-        .proj-badge { padding: 4px 12px; border-radius: 20px; border: 1px solid #cbd5e1; background: white; color: #64748b; font-size: 0.85rem; cursor: pointer; white-space: nowrap; transition: 0.2s; }
+        /* 隱藏原生捲軸但保留滑動功能 */
+        #project-bar::-webkit-scrollbar, .toolbar::-webkit-scrollbar { display: none; }
+        .proj-badge { padding: 6px 14px; border-radius: 20px; border: 1px solid #cbd5e1; background: white; color: #64748b; font-size: 0.9rem; cursor: pointer; white-space: nowrap; transition: 0.2s; }
         .proj-badge.active { background: #dbeafe; border-color: #3b82f6; color: #2563eb; font-weight: bold; }
         
+        /* 分頁列 (Desktop) */
         #tab-bar { position: fixed; top: 60px; left: 0; bottom: 0; width: 50px; background: #e2e8f0; z-index: 1900; display: flex; flex-direction: column; align-items: center; padding: 10px 0; gap: 8px; overflow-y: auto; overflow-x: hidden; }
         .tab-item { width: 100%; display: flex; flex-direction: column; align-items: center; padding: 15px 0; background: #cbd5e1; color: #64748b; cursor: pointer; border-radius: 0 8px 8px 0; border-left: 3px solid transparent; transition: 0.2s; user-select: none; }
         .tab-item.active { background: var(--bg); color: var(--primary); border-left: 3px solid var(--primary); }
         .tab-name { writing-mode: vertical-lr; text-orientation: upright; letter-spacing: 2px; font-weight: bold; font-size: 0.95rem; }
+        .tab-add { font-size: 1.5rem; color: #64748b; cursor: pointer; padding: 10px; font-weight: bold; }
         
         .main-area { margin-left: 50px; padding: 20px; width: calc(100% - 50px); transition: margin-top 0.3s; }
         body.has-project-bar .main-area { margin-top: 50px; }
-        .view-container { display: none; background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); border: 1px solid #e2e8f0; margin-bottom: 40px; width: 100%; overflow-x: auto; }
+        .view-container { display: none; background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); border: 1px solid #e2e8f0; margin-bottom: 40px; width: 100%; overflow-x: hidden; }
         .view-container.active { display: block; }
         
-        /* 發想矩陣控制列 (標籤選擇器) */
+        /* 發想矩陣控制列 */
         .matrix-input-bar { display: flex; gap: 10px; margin-bottom: 15px; flex-wrap: wrap; }
-        .matrix-input { flex: 1; min-width: 200px; padding: 10px 15px; border: 2px solid #cbd5e1; border-radius: 8px; font-size: 1rem; outline: none; transition: 0.2s; }
+        .matrix-input { flex: 1; min-width: 200px; padding: 12px 15px; border: 2px solid #cbd5e1; border-radius: 8px; font-size: 1rem; outline: none; transition: 0.2s; }
         .matrix-input:focus { border-color: var(--primary); }
-        .matrix-select { padding: 10px; border: 2px solid #cbd5e1; border-radius: 8px; font-weight: bold; color: #475569; outline: none; cursor: pointer; }
+        .matrix-select { padding: 12px; border: 2px solid #cbd5e1; border-radius: 8px; font-weight: bold; color: #475569; outline: none; cursor: pointer; }
         
-        /* 完美 19 路棋盤 (結構優化) */
+        /* 響應式完美 19 路棋盤 */
         .go-board-surface {
             background-color: #e5cc98; border: 6px solid #5a3d2b; border-radius: 6px;
             box-shadow: inset 0 0 20px rgba(0,0,0,0.15), 0 10px 20px rgba(0,0,0,0.2);
             position: relative; aspect-ratio: 1 / 1; margin: 0 auto;
-            width: 100%; max-width: 800px; touch-action: none;
+            width: 100%; max-width: 800px; height: auto; touch-action: none;
         }
         .go-grid-lines {
             position: absolute; top: 4%; left: 4%; right: 4%; bottom: 4%;
@@ -66,19 +72,20 @@
             background-image: linear-gradient(#333 1px, transparent 1px), linear-gradient(90deg, #333 1px, transparent 1px);
             background-size: calc(100% / 18) calc(100% / 18);
         }
-        .star-point { position: absolute; width: 8px; height: 8px; background: #222; border-radius: 50%; transform: translate(-50%, -50%); }
+        .star-point { position: absolute; width: clamp(4px, 1.5vw, 8px); height: clamp(4px, 1.5vw, 8px); background: #222; border-radius: 50%; transform: translate(-50%, -50%); }
         
         /* 磁鐵與標籤便利貼 */
-        .matrix-node { position: absolute; z-index: 10; display: flex; flex-direction: column; align-items: center; transform: translate(-50%, -12px); }
+        .matrix-node { position: absolute; z-index: 10; display: flex; flex-direction: column; align-items: center; transform: translate(-50%, -12px); touch-action: none; }
         .matrix-node:active { z-index: 100 !important; }
         
-        .node-stone { width: 24px; height: 24px; border-radius: 50%; flex-shrink: 0; box-shadow: 2px 4px 6px rgba(0,0,0,0.4); cursor: grab; transition: transform 0.1s; position: relative; z-index: 2; }
+        /* 調整棋子響應式大小 */
+        .node-stone { width: clamp(20px, 4vw, 24px); height: clamp(20px, 4vw, 24px); border-radius: 50%; flex-shrink: 0; box-shadow: 2px 4px 6px rgba(0,0,0,0.4); cursor: grab; transition: transform 0.1s; position: relative; z-index: 2; }
         .matrix-node:active .node-stone { cursor: grabbing; transform: scale(1.2); box-shadow: 4px 8px 12px rgba(0,0,0,0.5); }
         .stone-white .node-stone { background: radial-gradient(circle at 30% 30%, #ffffff, #d1d5db); border: 1px solid #94a3b8; }
         .stone-black .node-stone { background: radial-gradient(circle at 30% 30%, #64748b, #0f172a); border: 1px solid #020617; }
         
-        .node-paper { background: #fffdf0; padding: 6px 10px; border-radius: 4px; box-shadow: 1px 3px 6px rgba(0,0,0,0.2); margin-top: -6px; position: relative; z-index: 1; max-width: 180px; display: flex; flex-direction: column; gap: 4px; opacity: 0.9; transition: opacity 0.2s; }
-        .matrix-node:hover .node-paper, .matrix-node:active .node-paper { opacity: 1; box-shadow: 0 6px 12px rgba(0,0,0,0.15); }
+        .node-paper { background: #fffdf0; padding: 6px 10px; border-radius: 4px; box-shadow: 1px 3px 6px rgba(0,0,0,0.2); margin-top: -6px; position: relative; z-index: 1; min-width: 100px; max-width: 180px; display: flex; flex-direction: column; gap: 4px; opacity: 0.95; transition: opacity 0.2s; pointer-events: auto; }
+        .matrix-node:hover .node-paper, .matrix-node:active .node-paper { opacity: 1; box-shadow: 0 6px 12px rgba(0,0,0,0.15); z-index: 101; }
         .matrix-node:nth-child(even) .node-paper { transform: rotate(1.5deg); } .matrix-node:nth-child(odd) .node-paper { transform: rotate(-1deg); }
 
         .node-tag { font-size: 0.7rem; font-weight: bold; padding: 2px 6px; border-radius: 12px; align-self: center; white-space: nowrap; }
@@ -88,78 +95,117 @@
         .tag-q4 { background: #f1f5f9; color: #64748b; border: 1px solid #cbd5e1; }
 
         .matrix-node-text { font-size: 0.9rem; font-weight: bold; color: #334155; text-align: center; word-break: break-word; line-height: 1.4; }
-        .node-action-group { display: flex; gap: 4px; justify-content: center; margin-top: 2px; }
-        .node-action-btn { background: rgba(0,0,0,0.05); border: none; border-radius: 4px; padding: 2px 6px; font-size: 0.75rem; cursor: pointer; color: #475569; font-weight: bold; }
+        .node-action-group { display: flex; gap: 4px; justify-content: center; margin-top: 4px; }
+        .node-action-btn { background: rgba(0,0,0,0.05); border: none; border-radius: 4px; padding: 4px 8px; font-size: 0.8rem; cursor: pointer; color: #475569; font-weight: bold; }
         .node-action-btn:hover { background: rgba(0,0,0,0.1); color: var(--primary); } .node-action-btn.del:hover { color: #ef4444; }
 
-        /* 獨立浮動詰棋視窗 */
-        #tsumego-widget-btn { position: fixed; bottom: 30px; right: 30px; z-index: 8500; width: 56px; height: 56px; border-radius: 28px; background: #1e293b; color: white; font-size: 1.8rem; display: flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 6px 16px rgba(0,0,0,0.3); border: 2px solid #cbd5e1; transition: 0.2s; }
+        /* 獨立浮動詰棋視窗 (響應式修正) */
+        #tsumego-widget-btn { position: fixed; bottom: 30px; right: 30px; z-index: 8500; width: 60px; height: 60px; border-radius: 30px; background: #1e293b; color: white; font-size: 2rem; display: flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 6px 16px rgba(0,0,0,0.3); border: 2px solid #cbd5e1; transition: 0.2s; }
         #tsumego-widget-btn:hover { transform: scale(1.1); background: #334155; }
         
-        .tsumego-panel { position: fixed; top: 10vh; left: 10vw; width: auto; background: white; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.3); border: 1px solid #cbd5e1; overflow: hidden; display: none; z-index: 9500; }
-        .tsumego-header { background: #f8fafc; padding: 12px 15px; font-weight: bold; border-bottom: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center; cursor: move; user-select: none; }
-        .tsumego-board-container { padding: 15px; background: #334155; display: flex; justify-content: center; align-items: center; max-width: 90vw; max-height: 60vh; overflow: auto; overscroll-behavior: contain; }
-        .tsumego-board-surface { width: 500px; height: 500px; flex-shrink: 0; }
-        .pure-stone { position: absolute; width: 22px; height: 22px; border-radius: 50%; transform: translate(-50%, -50%); box-shadow: 2px 4px 6px rgba(0,0,0,0.4); pointer-events: none; }
+        .tsumego-panel { position: fixed; top: 10vh; left: 10vw; width: 90vw; max-width: 550px; background: white; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.3); border: 1px solid #cbd5e1; overflow: hidden; display: none; z-index: 9500; }
+        .tsumego-header { background: #f8fafc; padding: 12px 15px; font-weight: bold; border-bottom: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center; cursor: move; user-select: none; touch-action: none; }
+        .tsumego-board-container { padding: 15px; background: #334155; display: flex; justify-content: center; align-items: center; overflow: hidden; }
+        /* 讓詰棋盤自適應外框 */
+        .tsumego-board-surface { width: 100%; aspect-ratio: 1/1; height: auto; max-width: none; }
+        .pure-stone { position: absolute; width: clamp(14px, 4vw, 22px); height: clamp(14px, 4vw, 22px); border-radius: 50%; transform: translate(-50%, -50%); box-shadow: 2px 4px 6px rgba(0,0,0,0.4); pointer-events: none; }
         .pure-stone.black { background: radial-gradient(circle at 30% 30%, #475569, #0f172a); border: 1px solid #020617; }
         .pure-stone.white { background: radial-gradient(circle at 30% 30%, #ffffff, #cbd5e1); border: 1px solid #94a3b8; }
-        .tsumego-controls { padding: 10px 15px; display: flex; gap: 5px; }
-        .tsumego-tool-btn { flex: 1; padding: 8px; border: 1px solid #cbd5e1; border-radius: 6px; background: white; cursor: pointer; font-size: 0.9rem; font-weight: bold; color: #475569; }
+        .tsumego-controls { padding: 10px 15px; display: flex; gap: 5px; flex-wrap: wrap; }
+        .tsumego-tool-btn { flex: 1; padding: 10px; border: 1px solid #cbd5e1; border-radius: 6px; background: white; cursor: pointer; font-size: 0.95rem; font-weight: bold; color: #475569; min-width: 60px; text-align: center; }
         .tsumego-tool-btn.active { background: #e0e7ff; border-color: #4f46e5; color: #4338ca; }
 
-        /* 時間軸 & 卡片 (鋒利極簡版) */
+        /* 時間軸 & 卡片 */
         .timeline { position: relative; padding: 20px 0; max-width: 1200px; margin: 0 auto; }
         .timeline::before { content: ''; position: absolute; top: 0; bottom: 0; left: 20px; width: 4px; background: #e5e7eb; border-radius: 2px; }
         .card-wrapper { display: flex; margin-bottom: 30px; position: relative; padding-left: 45px; }
         .card-dot { position: absolute; left: 16px; top: 20px; width: 12px; height: 12px; background: white; border: 4px solid var(--primary); border-radius: 50%; z-index: 2; }
-        .card { flex: 1; background: white; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); border-top: 5px solid var(--primary); transition: 0.2s; }
+        .card { flex: 1; background: white; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); border-top: 5px solid var(--primary); transition: 0.2s; width: 100%; overflow: hidden; }
         .card[data-color="green"] { border-top-color: #10b981; background: #f0fdf4; } .card[data-color="red"] { border-top-color: #ef4444; background: #fef2f2; } .card[data-color="yellow"] { border-top-color: #f59e0b; background: #fffbeb; }
-        .card-header { padding: 10px 15px; border-bottom: 1px dashed #e2e8f0; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; }
-        .status-dot { width: 16px; height: 16px; border-radius: 50%; cursor: pointer; border: 2px solid rgba(0,0,0,0.1); }
+        .card-header { padding: 12px 15px; border-bottom: 1px dashed #e2e8f0; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; }
+        .status-dot { width: 20px; height: 20px; border-radius: 50%; cursor: pointer; border: 2px solid rgba(0,0,0,0.1); flex-shrink: 0; }
         .status-0 { background: #9ca3af; } .status-1 { background: #f59e0b; } .status-2 { background: #10b981; } .status-3 { background: #ef4444; }
         .card-body { padding: 15px; display: flex; flex-direction: column; gap: 8px; }
-        .input-title { font-size: 1.25rem; font-weight: bold; color: var(--primary); border: none; border-bottom: 1px dashed #cbd5e1; outline: none; background: transparent; width: 100%; padding-bottom: 5px; }
-        .input-content { padding: 10px; border: 1px solid transparent; border-radius: 6px; font-size: 1.05rem; line-height: 1.6; resize: none; outline: none; background: transparent; color: #334155; overflow: hidden; }
+        .input-title { font-size: 1.25rem; font-weight: bold; color: var(--primary); border: none; border-bottom: 1px dashed #cbd5e1; outline: none; background: transparent; width: 100%; padding-bottom: 8px; }
+        .input-content { padding: 10px; border: 1px solid transparent; border-radius: 6px; font-size: 1.05rem; line-height: 1.6; resize: none; outline: none; background: transparent; color: #334155; overflow: hidden; min-height: 80px; }
         .input-content:focus { border-color: #cbd5e1; background: rgba(255,255,255,0.8); }
-        .card-footer { background: #cbd5e1; padding: 8px 15px; display: flex; justify-content: flex-end; border-radius: 0 0 12px 12px; }
-        .input-project { background: transparent; border: none; color: white; font-weight: bold; text-align: right; outline: none; font-size: 0.95rem; width: 100%; max-width: 200px; }
-        .icon-btn { background: white; border: 1px solid #cbd5e1; border-radius: 4px; width: 28px; height: 28px; display: inline-flex; justify-content: center; align-items: center; cursor: pointer; color: #64748b; font-size: 14px; }
-        .add-main-btn { display: block; width: 100%; max-width: 500px; margin: 40px auto; padding: 15px; background: white; border: 2px dashed #cbd5e1; border-radius: 12px; text-align: center; color: #64748b; font-weight: bold; cursor: pointer; font-size: 1.1rem; }
+        .card-footer { background: #cbd5e1; padding: 10px 15px; display: flex; justify-content: flex-end; border-radius: 0 0 12px 12px; }
+        .input-project { background: transparent; border: none; color: white; font-weight: bold; text-align: right; outline: none; font-size: 1rem; width: 100%; max-width: 200px; }
+        .icon-btn { background: white; border: 1px solid #cbd5e1; border-radius: 6px; width: 34px; height: 34px; display: inline-flex; justify-content: center; align-items: center; cursor: pointer; color: #64748b; font-size: 16px; }
+        
+        .add-main-btn { display: block; width: 100%; max-width: 500px; margin: 40px auto; padding: 18px; background: white; border: 2px dashed #cbd5e1; border-radius: 12px; text-align: center; color: #64748b; font-weight: bold; cursor: pointer; font-size: 1.1rem; }
         
         #chronicle-render-target { max-width: 1000px; margin: 0 auto; }
-        .chronicle-row { display: flex; margin-bottom: 25px; border-left: 3px solid #e2e8f0; padding-left: 20px; position: relative; }
+        .chronicle-row { display: flex; margin-bottom: 25px; border-left: 3px solid #e2e8f0; padding-left: 20px; position: relative; flex-wrap: wrap; }
         .chronicle-row::before { content: ''; position: absolute; left: -8px; top: 6px; width: 13px; height: 13px; border-radius: 50%; background: var(--primary); border: 2px solid white; }
-        .chronicle-date { font-weight: bold; width: 120px; flex-shrink: 0; color: #64748b; font-size: 0.95rem; }
-        .chronicle-info { flex: 1; background: #f8fafc; padding: 10px 15px; border-radius: 8px; border: 1px solid #e2e8f0; }
+        .chronicle-date { font-weight: bold; width: 100%; max-width: 120px; flex-shrink: 0; color: #64748b; font-size: 0.95rem; margin-bottom: 5px; }
+        .chronicle-info { flex: 1; background: #f8fafc; padding: 12px 15px; border-radius: 8px; border: 1px solid #e2e8f0; width: 100%; }
         .chronicle-title { font-weight: bold; font-size: 1.1rem; color: #1e293b; }
 
-        .modal-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); z-index: 9000; align-items: center; justify-content: center; backdrop-filter: blur(2px); }
-        .modal-content { background: white; padding: 25px; border-radius: 12px; width: 95%; max-width: 900px; max-height: 90vh; overflow-y: auto; box-shadow: 0 10px 25px rgba(0,0,0,0.2); display: flex; flex-direction: column; }
+        /* 模態彈窗：全域筆記本 */
+        .modal-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); z-index: 9000; align-items: center; justify-content: center; backdrop-filter: blur(2px); padding: 15px; }
+        .modal-content { background: white; padding: 25px; border-radius: 12px; width: 100%; max-width: 900px; max-height: 90vh; overflow-y: auto; box-shadow: 0 10px 25px rgba(0,0,0,0.2); display: flex; flex-direction: column; }
         .nb-textarea { width: 100%; height: 400px; resize: vertical; padding: 15px; border: 1px solid #cbd5e1; border-radius: 8px; outline: none; font-size: 1.05rem; line-height: 1.6; }
 
+        /* =========================================
+           🔥 行動裝置專屬優化 (Mobile First Overrides) 
+           ========================================= */
         @media (max-width: 768px) {
             .tool-title, .mobile-hidden { display: none !important; }
-            .tool-right { margin-left: auto; width: 100%; justify-content: flex-end; }
-            .toolbar { flex-wrap: wrap; height: auto; min-height: 60px; padding: 8px 10px; }
-            #project-bar { top: auto; bottom: 0; left: 0; right: 0; border-bottom: none; border-top: 1px solid #e2e8f0; z-index: 3000; padding: 8px 10px; }
-            #tab-bar { width: 45px; z-index: 1900; }
-            .main-area { margin-left: 45px; padding: 10px; width: calc(100% - 45px); }
-            body.has-project-bar .main-area { margin-top: 0; padding-bottom: 60px; }
             
-            .btn-cloud-save::before { content: "☁️"; } .btn-cloud-save { font-size: 0; padding: 8px; }
-            .btn-cloud-load::before { content: "📥"; } .btn-cloud-load { font-size: 0; padding: 8px; }
-            .btn-clear-local::before { content: "🧹"; } .btn-clear-local { font-size: 0; padding: 6px; }
+            /* 工具列改為橫向滑動，避免按鈕堆疊遮擋畫面 */
+            .toolbar { display: flex; overflow-x: auto; flex-wrap: nowrap; padding: 8px 10px; align-items: center; gap: 10px; justify-content: flex-start; }
+            .tool-left, .tool-right { flex-shrink: 0; }
+            .tool-right { margin-left: 0; }
+            
+            /* 導覽列改為置底 (Bottom Navigation) */
+            #tab-bar { position: fixed; top: auto; bottom: 0; left: 0; right: 0; width: 100%; height: 60px; flex-direction: row; justify-content: space-around; padding: 0; background: white; border-top: 1px solid #cbd5e1; box-shadow: 0 -2px 10px rgba(0,0,0,0.05); z-index: 8000; padding-bottom: env(safe-area-inset-bottom); }
+            .tab-item { border-radius: 0; border-left: none; border-top: 3px solid transparent; flex: 1; padding: 5px; justify-content: center; background: white; }
+            .tab-item.active { border-left: none; border-top: 3px solid var(--primary); background: #f8fafc; }
+            .tab-name { writing-mode: horizontal-tb; text-orientation: mixed; font-size: 0.85rem; letter-spacing: normal; margin-top: 4px; }
+            .tab-add { padding: 15px; }
+
+            /* 專案列與主畫面微調 */
+            #project-bar { top: 60px; left: 0; }
+            .main-area { margin-left: 0; padding: 15px 10px; width: 100%; padding-bottom: 80px; } /* 底部留白給導覽列 */
+            body.has-project-bar .main-area { margin-top: 50px; }
+            .view-container { padding: 15px; margin-bottom: 20px; }
+            
+            /* 按鈕精簡化 */
+            .btn-cloud-save::before { content: "☁️"; } .btn-cloud-save { font-size: 0; padding: 10px; }
+            .btn-cloud-load::before { content: "📥"; } .btn-cloud-load { font-size: 0; padding: 10px; }
+            .btn-clear-local::before { content: "🧹"; } .btn-clear-local { font-size: 0; padding: 10px; }
             #pomodoro-btn span { display: none; }
-            #tsumego-widget-btn { bottom: 80px; right: 15px; width: 48px; height: 48px; font-size: 1.5rem; }
+            
+            /* 時間軸卡片響應式 */
+            .card-wrapper { padding-left: 25px; }
+            .timeline::before { left: 8px; }
+            .card-dot { left: 4px; width: 10px; height: 10px; border-width: 3px; top: 22px; }
+            .card-header { flex-direction: column; align-items: flex-start; gap: 12px; }
+            .card-header > div { width: 100%; justify-content: space-between; }
+            .input-date { width: 100%; flex: 1; max-width: none; font-size: 0.9rem; padding: 4px; }
+            
+            /* 發想矩陣輸入區 */
+            .matrix-input-bar { flex-direction: column; }
+            .matrix-input { min-width: 100%; }
+            .matrix-select { width: 100%; }
+            
+            /* 浮動按鈕與彈窗 */
+            #tsumego-widget-btn { bottom: 80px; right: 20px; width: 50px; height: 50px; font-size: 1.5rem; }
+            .tsumego-panel { top: 50%; left: 50%; transform: translate(-50%, -50%) !important; width: 95vw; }
+            .tsumego-header { font-size: 0.95rem; }
         }
+        
+        /* 表格與圖表的外層滾動 */
+        #gantt-render-target, #calendar-render-target { overflow-x: auto; }
     </style>
 </head>
 <body>
 
     <div id="login-screen">
         <h1 style="font-size: 2.5rem; margin-bottom: 10px;">白板</h1>
-        <p style="color: #94a3b8; margin-bottom: 30px;">(極簡鋒利・標籤矩陣版)</p>
-        <button onclick="app.login()" style="padding: 12px 24px; font-size: 1.1rem; border-radius: 30px; border: none; background: #3b82f6; color: white; font-weight: bold; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.3); transition: transform 0.2s;">
+        <p style="color: #94a3b8; margin-bottom: 30px;">(極簡鋒利・標籤矩陣・行動優化版)</p>
+        <button onclick="app.login()" style="padding: 14px 28px; font-size: 1.1rem; border-radius: 30px; border: none; background: #3b82f6; color: white; font-weight: bold; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.3); transition: transform 0.2s;">
             使用 Google 登入
         </button>
     </div>
@@ -176,9 +222,7 @@
                 <button class="btn mobile-hidden" onclick="app.switchView('calendar')" id="btn-view-calendar">📅 日曆</button>
             </div>
             <div class="tool-right">
-                <!-- 🔥 新增的雲端時間顯示 -->
                 <span id="cloud-time-display" style="font-size: 0.8rem; color: #94a3b8; margin-right: 10px; display: none;" class="mobile-hidden"></span>
-                
                 <button class="btn btn-cloud-save" onclick="app.saveToCloudManual()">☁️ 存雲端</button>
                 <button class="btn btn-cloud-load" onclick="app.loadFromCloudManual()">📥 載雲端</button>
                 <div style="width:1px; height:20px; background:#475569; margin:0 2px;"></div>
@@ -190,6 +234,8 @@
         </div>
 
         <div id="project-bar" style="display: none;"></div>
+        
+        <!-- 分頁列 (在手機版會自動變為底部導覽列) -->
         <div id="tab-bar"></div>
 
         <div class="main-area">
@@ -204,13 +250,12 @@
                         <option value="q3">⚡ 緊急・不重</option>
                         <option value="q4">☕ 不重・不急</option>
                     </select>
-                    <button class="btn btn-cloud-save" style="padding: 10px 20px; font-size: 1rem;" onclick="app.actions.addMatrixNode()">＋ 落下棋子</button>
+                    <button class="btn btn-cloud-save" style="padding: 12px 20px; font-size: 1rem; width: 100%; justify-content: center;" onclick="app.actions.addMatrixNode()">＋ 落下棋子</button>
                 </div>
                 
+                <!-- Fluid Go Board Container -->
                 <div class="go-board-surface matrix-board" id="matrix-board">
-                    <div class="go-grid-lines" id="matrix-grid-lines">
-                        <!-- 節點會產生在這裡 -->
-                    </div>
+                    <div class="go-grid-lines" id="matrix-grid-lines"></div>
                 </div>
             </div>
 
@@ -232,7 +277,7 @@
             <!-- 3. 甘特圖 (Gantt) -->
             <div id="view-gantt" class="view-container">
                 <h3 style="text-align: center; color: #475569; margin-top: 0;">📊 專案甘特圖</h3>
-                <div id="gantt-render-target" style="min-width: 600px;"></div>
+                <div id="gantt-render-target" style="min-width: 100%;"></div>
             </div>
 
             <!-- 4. 日曆 (Calendar) -->
@@ -246,10 +291,10 @@
         <div id="modal-notebook" class="modal-overlay">
             <div class="modal-content">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-                    <h3 style="margin: 0; color: #1e293b; font-size: 1.5rem;">📖 全域共用筆記本</h3>
+                    <h3 style="margin: 0; color: #1e293b; font-size: 1.3rem;">📖 全域筆記本</h3>
                     <button class="icon-btn" style="width:36px; height:36px; font-size:1.2rem;" onclick="app.closeNotebook()">×</button>
                 </div>
-                <select id="nb-template" onchange="app.actions.updateNotebookTemplate(this.value)" style="margin-bottom: 15px; padding: 8px 12px; border-radius: 6px; border: 1px solid #cbd5e1; font-size: 1rem; width: 100%; max-width: 300px;">
+                <select id="nb-template" onchange="app.actions.updateNotebookTemplate(this.value)" style="margin-bottom: 15px; padding: 10px; border-radius: 6px; border: 1px solid #cbd5e1; font-size: 1rem; width: 100%;">
                     <option value="free">📝 自由筆記區</option>
                     <option value="matrix">⚖️ 艾森豪四象限</option>
                 </select>
@@ -262,7 +307,7 @@
         <div id="tsumego-panel" class="tsumego-panel">
             <div class="tsumego-header" id="tsumego-header">
                 <span>🎲 休息區：19x19 詰棋</span>
-                <button class="icon-btn" style="width:24px; height:24px; border:none; background:transparent;" onclick="app.toggleTsumego()">×</button>
+                <button class="icon-btn" style="width:28px; height:28px; border:none; background:transparent;" onclick="app.toggleTsumego()">×</button>
             </div>
             <div class="tsumego-board-container">
                 <div class="go-board-surface tsumego-board-surface" id="tsumego-board" onclick="app.actions.placeTsumegoStone(event)">
@@ -270,9 +315,9 @@
                 </div>
             </div>
             <div class="tsumego-controls">
-                <button class="tsumego-tool-btn active" id="ts-btn-black" onclick="app.actions.setTsumegoColor('black')">⚫ 黑子</button>
-                <button class="tsumego-tool-btn" id="ts-btn-white" onclick="app.actions.setTsumegoColor('white')">⚪ 白子</button>
-                <button class="tsumego-tool-btn" id="ts-btn-clear" onclick="app.actions.setTsumegoColor('clear')">🧹 移除</button>
+                <button class="tsumego-tool-btn active" id="ts-btn-black" onclick="app.actions.setTsumegoColor('black')">⚫</button>
+                <button class="tsumego-tool-btn" id="ts-btn-white" onclick="app.actions.setTsumegoColor('white')">⚪</button>
+                <button class="tsumego-tool-btn" id="ts-btn-clear" onclick="app.actions.setTsumegoColor('clear')">🧹</button>
                 <button class="tsumego-tool-btn" style="color:#ef4444; border-color:#fca5a5;" onclick="app.actions.resetTsumego()">🗑️ 清盤</button>
             </div>
         </div>
@@ -318,7 +363,7 @@
                         this.loadFromLocal();
                         this.setupMatrixDrag();
                         this.setupTsumegoDrag();
-                        this.fetchCloudTime(); // 🔥 登入後抓取雲端時間
+                        this.fetchCloudTime();
                     } else {
                         this.currentUser = null;
                         document.getElementById('login-screen').style.display = 'flex';
@@ -327,7 +372,6 @@
                 });
             },
 
-            // 🔥 新增：擷取雲端存檔時間的函式
             fetchCloudTime() {
                 if (!this.currentUser) return;
                 db.collection('Whiteboard_Data').doc(this.currentUser.uid).get().then(doc => {
@@ -402,7 +446,7 @@
                 const payload = { tabs: this.state.tabs, workspaces: this.state.workspaces, nodes: this.state.nodes, globalNotebook: this.state.globalNotebook, updatedAt: firebase.firestore.FieldValue.serverTimestamp() };
                 db.collection('Whiteboard_Data').doc(this.currentUser.uid).set(payload, { merge: true }).then(() => {
                     alert("✅ 備份至雲端。");
-                    this.fetchCloudTime(); // 🔥 存檔成功，更新右上角時間
+                    this.fetchCloudTime(); 
                 }).catch(err => alert("失敗：" + err.message)).finally(() => btn.innerText = orig);
             },
 
@@ -418,7 +462,7 @@
                           if (!this.state.tabs.find(t => t.id === this.state.activeTabId)) this.state.activeTabId = this.state.tabs[0].id;
                           if (!this.state.nodes[this.state.activeTabId]) this.state.nodes[this.state.activeTabId] = [];
                           this.saveToLocal(); this.renderAll(); 
-                          this.fetchCloudTime(); // 🔥 載入成功，更新右上角時間
+                          this.fetchCloudTime(); 
                           alert("📥 載入成功！");
                       } else { alert("雲端目前沒有備份資料喔！"); }
                   }).catch(err => alert("下載失敗：" + err.message)).finally(() => btn.innerText = orig);
@@ -434,8 +478,11 @@
             setupTsumegoDrag() {
                 const panel = document.getElementById('tsumego-panel'); const header = document.getElementById('tsumego-header');
                 let isDragging = false, startX, startY, startLeft, startTop;
+                
                 const onMouseDown = (e) => {
-                    if (e.target.closest('button')) return; isDragging = true;
+                    if (e.target.closest('button')) return; 
+                    if (window.innerWidth <= 768) return; // 手機版居中不允許拖曳，避免畫面跑掉
+                    isDragging = true;
                     startX = e.touches ? e.touches[0].clientX : e.clientX; startY = e.touches ? e.touches[0].clientY : e.clientY;
                     startLeft = panel.offsetLeft; startTop = panel.offsetTop;
                     panel.style.transform = 'none'; panel.style.left = startLeft + 'px'; panel.style.top = startTop + 'px';
@@ -586,8 +633,8 @@
                     const gridBox = document.getElementById('tsumego-grid-lines');
                     const rect = gridBox.getBoundingClientRect();
                     
-                    let rawX = e.clientX - rect.left;
-                    let rawY = e.clientY - rect.top;
+                    let rawX = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left;
+                    let rawY = (e.touches ? e.touches[0].clientY : e.clientY) - rect.top;
                     
                     let gridX = Math.round((rawX / rect.width) * 18);
                     let gridY = Math.round((rawY / rect.height) * 18);
@@ -630,7 +677,7 @@
                 const panel = document.getElementById('tsumego-panel');
                 if(this.state.tsumego.isOpen) {
                     panel.style.display = 'block';
-                    if(panel.style.transform !== 'none' && !panel.style.left) { panel.style.top = '10vh'; panel.style.left = '10vw'; }
+                    if(window.innerWidth > 768 && panel.style.transform !== 'none' && !panel.style.left) { panel.style.top = '10vh'; panel.style.left = '10vw'; }
                 } else { panel.style.display = 'none'; }
             },
 
@@ -640,9 +687,10 @@
             },
 
             renderTabs() {
+                const isMobile = window.innerWidth <= 768;
                 const html = this.state.tabs.map(t => {
                     const isActive = t.id === this.state.activeTabId;
-                    const gearBtn = (isActive && t.id !== 'main') ? `<div style="margin-top:10px; font-size:1.1rem; cursor:pointer;" onclick="event.stopPropagation(); app.actions.manageTab(event, '${t.id}')">⚙️</div>` : '';
+                    const gearBtn = (isActive && t.id !== 'main' && !isMobile) ? `<div style="margin-top:10px; font-size:1.1rem; cursor:pointer;" onclick="event.stopPropagation(); app.actions.manageTab(event, '${t.id}')">⚙️</div>` : '';
                     return `<div class="tab-item ${isActive ? 'active' : ''}" onclick="app.actions.switchTab('${t.id}')" oncontextmenu="app.actions.manageTab(event, '${t.id}')"><div class="tab-name">${t.name}</div>${gearBtn}</div>`
                 }).join('') + `<div class="tab-add" onclick="app.actions.addTab()">＋</div>`;
                 document.getElementById('tab-bar').innerHTML = html;
@@ -705,13 +753,13 @@
                 let cards = this.getActiveCards();
                 cards = cards.sort((a, b) => { const dateA = a.dateMode === 'range' ? a.dateStart : a.dateSingle; const dateB = b.dateMode === 'range' ? b.dateStart : b.dateSingle; if(!dateA) return 1; if(!dateB) return -1; return new Date(dateA) - new Date(dateB); });
                 const html = cards.map(card => {
-                    const dateHtml = card.dateMode === 'single' ? `<input type="date" class="input-date" value="${card.dateSingle}" onchange="app.actions.updateCard('${card.id}', 'dateSingle', this.value)">` : `<span style="font-size:0.8rem;color:#64748b;">起</span><input type="date" class="input-date" value="${card.dateStart}" onchange="app.actions.updateCard('${card.id}', 'dateStart', this.value)"><span style="font-size:0.8rem;color:#64748b;">迄</span><input type="date" class="input-date" value="${card.dateEnd}" onchange="app.actions.updateCard('${card.id}', 'dateEnd', this.value)">`;
+                    const dateHtml = card.dateMode === 'single' ? `<input type="date" class="input-date" value="${card.dateSingle}" onchange="app.actions.updateCard('${card.id}', 'dateSingle', this.value)">` : `<span style="font-size:0.8rem;color:#64748b;white-space:nowrap;">起</span><input type="date" class="input-date" value="${card.dateStart}" onchange="app.actions.updateCard('${card.id}', 'dateStart', this.value)"><span style="font-size:0.8rem;color:#64748b;white-space:nowrap;">迄</span><input type="date" class="input-date" value="${card.dateEnd}" onchange="app.actions.updateCard('${card.id}', 'dateEnd', this.value)">`;
                     return `
                     <div class="card-wrapper">
                         <div class="card-dot"></div>
                         <div class="card ${card.isMemo ? 'memo-mode' : ''}" data-color="${card.color}">
                             <div class="card-header">
-                                <div style="display:flex; align-items:center; gap:10px;">
+                                <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
                                     <div class="status-dot status-${card.status}" onclick="app.actions.cycleStatus('${card.id}')"></div>
                                     <button class="icon-btn" onclick="app.actions.toggleMemo('${card.id}')">${card.isMemo ? '♾️' : '📅'}</button>
                                     ${dateHtml}
@@ -727,7 +775,7 @@
                             </div>
                             <div class="card-footer">
                                 <input type="text" class="input-project" value="${card.project}" placeholder="#專案名稱" onchange="app.actions.updateCard('${card.id}', 'project', this.value)">
-                                <button class="icon-btn" onclick="app.actions.deleteCard('${card.id}')" style="color:#ef4444; border-color:#fca5a5;">🗑️</button>
+                                <button class="icon-btn" onclick="app.actions.deleteCard('${card.id}')" style="color:#ef4444; border-color:#fca5a5; width:34px; height:34px;">🗑️</button>
                             </div>
                         </div>
                     </div>`;
@@ -745,7 +793,7 @@
 
             renderGantt() {
                 const cards = this.getActiveCards().filter(c => !c.isMemo && c.dateMode === 'range' && c.dateStart && c.dateEnd); if (cards.length === 0) { document.getElementById('gantt-render-target').innerHTML = '<p style="text-align:center; color:#94a3b8;">請將卡片切換為「區間模式 (↔️)」並設定起迄日期</p>'; return; }
-                let html = '<div style="display:flex; flex-direction:column; gap:10px;">';
+                let html = '<div style="display:flex; flex-direction:column; gap:10px; min-width: 600px;">';
                 cards.forEach(c => { const s = new Date(c.dateStart).getTime(); const e = new Date(c.dateEnd).getTime(); const days = Math.max(1, (e - s) / (1000 * 60 * 60 * 24)); const widthPct = Math.min(100, days * 3); html += `<div style="background:#f1f5f9; border-radius:6px; padding:10px; border: 1px solid #e2e8f0;"><div style="font-weight:bold; margin-bottom:5px; font-size:0.95rem; color:#1e293b;">${c.project ? '['+c.project+']' : ''} ${c.title || '未命名'} <span style="font-size:0.8rem; color:#64748b; font-weight:normal;">(${days}天)</span></div><div style="height:12px; background:#e2e8f0; border-radius:6px; width:100%;"><div style="height:100%; border-radius:6px; background:var(--primary); width:${widthPct}%;"></div></div></div>`; });
                 document.getElementById('gantt-render-target').innerHTML = html + '</div>';
             },
@@ -761,7 +809,7 @@
             renderNotebookArea() {
                 const d = this.state.globalNotebook; let html = '';
                 if (d.template === 'free') { html = `<textarea class="nb-textarea" onchange="app.actions.updateNotebook('free', this.value)" placeholder="在這裡傾倒您的思緒...">${d.free || ''}</textarea>`; } 
-                else if (d.template === 'matrix') { const m = d.matrix || {}; html = `<div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap:15px;"><div style="background:#fef2f2; padding:15px; border-radius:8px; border:1px solid #fca5a5;"><span style="color:#ef4444; font-weight:bold; font-size:1.1rem; display:block; margin-bottom:10px;">🔥 重要・緊急</span><textarea class="nb-textarea" style="height:200px; background:white;" onchange="app.actions.updateNotebook('matrix.q1', this.value)">${m.q1 || ''}</textarea></div><div style="background:#eff6ff; padding:15px; border-radius:8px; border:1px solid #bfdbfe;"><span style="color:#3b82f6; font-weight:bold; font-size:1.1rem; display:block; margin-bottom:10px;">📅 重要・不急</span><textarea class="nb-textarea" style="height:200px; background:white;" onchange="app.actions.updateNotebook('matrix.q2', this.value)">${m.q2 || ''}</textarea></div><div style="background:#fffbeb; padding:15px; border-radius:8px; border:1px solid #fde68a;"><span style="color:#f59e0b; font-weight:bold; font-size:1.1rem; display:block; margin-bottom:10px;">⚡ 緊急・不重</span><textarea class="nb-textarea" style="height:200px; background:white;" onchange="app.actions.updateNotebook('matrix.q3', this.value)">${m.q3 || ''}</textarea></div><div style="background:#f0fdf4; padding:15px; border-radius:8px; border:1px solid #bbf7d0;"><span style="color:#10b981; font-weight:bold; font-size:1.1rem; display:block; margin-bottom:10px;">☕ 不重・不急</span><textarea class="nb-textarea" style="height:200px; background:white;" onchange="app.actions.updateNotebook('matrix.q4', this.value)">${m.q4 || ''}</textarea></div></div>`; }
+                else if (d.template === 'matrix') { const m = d.matrix || {}; html = `<div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap:15px;"><div style="background:#fef2f2; padding:15px; border-radius:8px; border:1px solid #fca5a5;"><span style="color:#ef4444; font-weight:bold; font-size:1.1rem; display:block; margin-bottom:10px;">🔥 重要・緊急</span><textarea class="nb-textarea" style="height:150px; background:white;" onchange="app.actions.updateNotebook('matrix.q1', this.value)">${m.q1 || ''}</textarea></div><div style="background:#eff6ff; padding:15px; border-radius:8px; border:1px solid #bfdbfe;"><span style="color:#3b82f6; font-weight:bold; font-size:1.1rem; display:block; margin-bottom:10px;">📅 重要・不急</span><textarea class="nb-textarea" style="height:150px; background:white;" onchange="app.actions.updateNotebook('matrix.q2', this.value)">${m.q2 || ''}</textarea></div><div style="background:#fffbeb; padding:15px; border-radius:8px; border:1px solid #fde68a;"><span style="color:#f59e0b; font-weight:bold; font-size:1.1rem; display:block; margin-bottom:10px;">⚡ 緊急・不重</span><textarea class="nb-textarea" style="height:150px; background:white;" onchange="app.actions.updateNotebook('matrix.q3', this.value)">${m.q3 || ''}</textarea></div><div style="background:#f0fdf4; padding:15px; border-radius:8px; border:1px solid #bbf7d0;"><span style="color:#10b981; font-weight:bold; font-size:1.1rem; display:block; margin-bottom:10px;">☕ 不重・不急</span><textarea class="nb-textarea" style="height:150px; background:white;" onchange="app.actions.updateNotebook('matrix.q4', this.value)">${m.q4 || ''}</textarea></div></div>`; }
                 document.getElementById('notebook-render-target').innerHTML = html;
             },
 
@@ -793,6 +841,12 @@
         };
 
         app.init();
+        
+        // 處理視窗縮放事件，確保在行動裝置與桌面間切換時渲染不會跑版
+        window.addEventListener('resize', () => {
+            if (app.state.view === 'matrix') app.renderMatrix();
+            if (app.state.tsumego.isOpen) app.renderTsumegoStones();
+        });
     </script>
 </body>
 </html>
