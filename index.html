@@ -578,6 +578,31 @@
                 addCard() { const newCard = { id: 'card_' + Date.now(), title: '', content: '', project: app.state.filters.activeProject || '', dateMode: 'single', dateSingle: new Date().toISOString().split('T')[0], dateStart: '', dateEnd: '', color: 'blue', status: 0, isMemo: false }; app.state.workspaces[app.state.activeTabId].push(newCard); app.saveToLocal(); app.renderAll(); },
                 updateCard(id, field, value) { const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id); if (card) { card[field] = value; app.saveToLocal(); if(field === 'project') app.renderProjectBar(); if(field.startsWith('date')) app.renderTimeline(); } },
                 deleteCard(id) { if(confirm('確定移除此卡片？')) { app.state.workspaces[app.state.activeTabId] = app.state.workspaces[app.state.activeTabId].filter(c => c.id !== id); app.saveToLocal(); app.renderAll(); } },
+                // (加在 deleteCard 的下方或 actions 裡面的任何地方)
+                moveCard(id, targetTabId) {
+                    const currentTabId = app.state.activeTabId;
+                    if (currentTabId === targetTabId) return;
+
+                    // 找到目前這張卡片
+                    const cardIndex = app.state.workspaces[currentTabId].findIndex(c => c.id === id);
+                    if (cardIndex !== -1) {
+                        // 1. 從目前工作區移除
+                        const [card] = app.state.workspaces[currentTabId].splice(cardIndex, 1);
+                        
+                        // 2. 確保目標工作區存在
+                        if (!app.state.workspaces[targetTabId]) {
+                            app.state.workspaces[targetTabId] = [];
+                        }
+                        
+                        // 3. 加入到目標工作區
+                        app.state.workspaces[targetTabId].push(card);
+                        
+                        // 4. 存檔並重新渲染
+                        app.saveToLocal();
+                        app.renderAll();
+                        // alert('卡片已成功轉移工作區！'); // 視需求決定要不要跳通知
+                    }
+                },
                 cycleStatus(id) { const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id); if (card) { card.status = (card.status + 1) % 4; app.saveToLocal(); app.renderAll(); } },
                 cycleColor(id) { const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id); const colors = ['blue', 'green', 'red', 'yellow']; if (card) { card.color = colors[(colors.indexOf(card.color) + 1) % colors.length]; app.saveToLocal(); app.renderAll(); } },
                 toggleMemo(id) { const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id); if (card) { card.isMemo = !card.isMemo; app.saveToLocal(); app.renderAll(); } },
@@ -752,6 +777,10 @@
             renderTimeline() {
                 let cards = this.getActiveCards();
                 cards = cards.sort((a, b) => { const dateA = a.dateMode === 'range' ? a.dateStart : a.dateSingle; const dateB = b.dateMode === 'range' ? b.dateStart : b.dateSingle; if(!dateA) return 1; if(!dateB) return -1; return new Date(dateA) - new Date(dateB); });
+                
+                // 【新增】產生目前所有工作區的下拉選項
+                const tabOptionsHtml = this.state.tabs.map(t => `<option value="${t.id}">${t.name}</option>`).join('');
+
                 const html = cards.map(card => {
                     const dateHtml = card.dateMode === 'single' ? `<input type="date" class="input-date" value="${card.dateSingle}" onchange="app.actions.updateCard('${card.id}', 'dateSingle', this.value)">` : `<span style="font-size:0.8rem;color:#64748b;white-space:nowrap;">起</span><input type="date" class="input-date" value="${card.dateStart}" onchange="app.actions.updateCard('${card.id}', 'dateStart', this.value)"><span style="font-size:0.8rem;color:#64748b;white-space:nowrap;">迄</span><input type="date" class="input-date" value="${card.dateEnd}" onchange="app.actions.updateCard('${card.id}', 'dateEnd', this.value)">`;
                     return `
@@ -773,10 +802,19 @@
                                 <input type="text" class="input-title" value="${card.title}" placeholder="🏷️ 標題..." onchange="app.actions.updateCard('${card.id}', 'title', this.value)">
                                 <textarea class="input-content" placeholder="📝 寫下卡片細節..." oninput="this.style.height='auto'; this.style.height=this.scrollHeight+'px';" onchange="app.actions.updateCard('${card.id}', 'content', this.value)">${card.content}</textarea>
                             </div>
-                            <div class="card-footer">
+                            
+                            <!-- 【這裡有修改】調整了 footer 排版，並放入下拉選單 -->
+                            <div class="card-footer" style="display: flex; gap: 8px; align-items: center; justify-content: flex-end;">
                                 <input type="text" class="input-project" value="${card.project}" placeholder="#專案名稱" onchange="app.actions.updateCard('${card.id}', 'project', this.value)">
+                                
+                                <select class="icon-btn" style="width: auto; padding: 0 5px; font-size: 0.85rem;" onchange="if(this.value) { app.actions.moveCard('${card.id}', this.value); this.value=''; }">
+                                    <option value="" disabled selected>🚀 轉移至...</option>
+                                    ${tabOptionsHtml}
+                                </select>
+
                                 <button class="icon-btn" onclick="app.actions.deleteCard('${card.id}')" style="color:#ef4444; border-color:#fca5a5; width:34px; height:34px;">🗑️</button>
                             </div>
+                            
                         </div>
                     </div>`;
                 }).join('');
