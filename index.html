@@ -355,7 +355,7 @@
                 }
             },
 
-            absorbSandboxPayload() {
+absorbSandboxPayload() {
                 const payloadKey = `flow_checkout_payload_${this.currentUser.uid}`;
                 const payloadRaw = localStorage.getItem(payloadKey);
                 if (!payloadRaw) return;
@@ -363,7 +363,9 @@
                 const payload = JSON.parse(payloadRaw);
                 const dateObj = new Date(payload.timestamp);
                 const dateStr = `${dateObj.getMonth()+1}/${dateObj.getDate()} ${dateObj.getHours().toString().padStart(2,'0')}:${dateObj.getMinutes().toString().padStart(2,'0')}`;
-                let updatedCount = 0, newCount = 0;
+                
+                let updatedCards = []; 
+                let newCount = 0;
 
                 // 1. 處理更新的卡片 (文字疊加與狀態改變)
                 payload.updates.forEach(update => {
@@ -375,9 +377,10 @@
                     if (targetCard) {
                         if (update.completed) targetCard.status = 2; // 綠燈
                         if (update.content && update.content.trim() !== '') {
-                            targetCard.content += `\n\n--- \n**📥 [${dateStr} 沙盒紀錄]**\n${update.content}`;
+                            // 視覺優化：用符號鎖定變更範圍
+                            targetCard.content += `\n\n--- 📥 ⬇️ [${dateStr} 沙盒更新] ⬇️ ---\n${update.content}\n--- 📥 ⬆️ [結束更新] ⬆️ ---`;
                         }
-                        updatedCount++;
+                        updatedCards.push(targetCard.title || "未命名卡片");
                     }
                 });
 
@@ -388,41 +391,39 @@
                         this.state.globalNotebook.free += `\n\n**[${dateStr} 臨時完工]** ${t.task}\n${t.content || ''}`;
                     } else {
                         // 新增但未完成 -> 生出新卡片
-                        let cardColor = 'blue';
-                        if(t.priority === 'P1') cardColor = 'red';
-                        else if(t.priority === 'P2') cardColor = 'yellow';
-
+                        let cardColor = t.priority === 'P1' ? 'red' : (t.priority === 'P2' ? 'yellow' : 'blue');
                         this.state.workspaces[this.state.activeTabId].push({
                             id: 'card_' + Date.now() + Math.random(),
                             title: t.task,
                             content: t.content ? `**📥 [${dateStr} 沙盒遺留]**\n${t.content}` : '',
                             project: '沙盒遺留',
-                            dateMode: 'single', dateSingle: new Date().toISOString().split('T')[0], dateStart: '', dateEnd: '',
+                            dateMode: 'single', dateSingle: new Date().toISOString().split('T')[0],
                             color: cardColor, status: 0, isMemo: false
                         });
                         newCount++;
                     }
                 });
 
-                // 3. 沙盒全域筆記 -> 疊加進白板自由筆記
+                // 3. 處理全域筆記
                 if (payload.globalNote && payload.globalNote.trim()) {
                     this.state.globalNotebook.free += `\n\n**[${dateStr} 沙盒全域筆記]**\n${payload.globalNote}`;
                 }
 
-                // 清除 Payload
+                // 清除暫存與 UI 更新 (只執行一次)
                 localStorage.removeItem(payloadKey);
                 this.saveToLocal();
                 this.renderAll();
                 this.checkSandboxPayload();
 
-                // 讓「存雲端」按鈕發光提醒
+                // 視覺提醒：按鈕發光
                 const saveBtn = document.querySelector('.btn-cloud-save');
                 saveBtn.style.boxShadow = '0 0 20px #10b981';
                 setTimeout(() => saveBtn.style.boxShadow = 'none', 4000);
 
-                alert(`✅ 成功吸收沙盒進度！\n\n自動更新了 ${updatedCount} 張原卡片\n產生了 ${newCount} 張待辦新卡片。\n\n⚠️ 提示：本機資料已被修改，請點擊上方發光的『☁️ 存雲端』以保全進度！`);
+                // 最終提示
+                let msg = `✅ 成功吸收沙盒進度！\n\n【已更新的卡片】：\n${updatedCards.length > 0 ? updatedCards.join('\n') : '無'}\n\n【新增卡片】：${newCount} 張\n\n⚠️ 提示：請點擊頂部發光的「☁️ 存雲端」以保全進度！`;
+                alert(msg);
             },
-            // ==========================================
 
             fetchCloudTime() {
                 if (!this.currentUser) return;
