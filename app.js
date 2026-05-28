@@ -165,12 +165,10 @@ const app = {
 
         getActiveCards() { return app.state.workspaces[app.state.activeTabId] || []; },
 
-        // --- 核心：Markdown 子任務解析與操作 ---
         parseSubtasks(content) {
             if (!content) return [];
             const lines = content.split('\n');
             const subtasks = [];
-            // 尋找 `- [ ]` 或 `- [x]`
             const regex = /^\s*[-*]\s+\[([ xX])\]\s+(.*)$/;
             lines.forEach((line, index) => {
                 const match = line.match(regex);
@@ -192,7 +190,6 @@ const app = {
             const lines = card.content.split('\n');
             const line = lines[lineIndex];
             
-            // 精準替換
             if (line.includes('[ ]')) {
                 lines[lineIndex] = line.replace('[ ]', '[x]');
             } else if (line.includes('[x]') || line.includes('[X]')) {
@@ -200,23 +197,20 @@ const app = {
             }
             card.content = lines.join('\n');
             
-            // ✨ 自動收斂魔術 (Auto-complete Card)
             const subtasks = this.parseSubtasks(card.content);
             if (subtasks.length > 0 && subtasks.every(st => st.completed)) {
-                card.status = 2; // 全部打勾 -> 母卡片變綠燈
+                card.status = 2; 
             } else if (subtasks.length > 0 && subtasks.some(st => !st.completed) && card.status === 2) {
-                card.status = 0; // 取消打勾 -> 母卡片回歸未完成
+                card.status = 0; 
             }
             
             app.saveToLocal();
             this.renderTodo();
-            // 如果當前正在編輯這張卡片，同步更新文字框
             if (app.state.sandbox.activeTaskId === cardId) {
                 document.getElementById('sb-activeNoteArea').value = card.content;
             }
         },
 
-        // --- 無腦新增任務 ---
         addTodo() {
             const input = document.getElementById('sb-newTodoTask');
             const text = input.value.trim();
@@ -225,17 +219,15 @@ const app = {
             let targetCardId = app.state.sandbox.activeTaskId;
             let targetCard = null;
 
-            // 1. 如果有焦點卡片，加為子任務
             if (targetCardId) {
                 targetCard = this.getActiveCards().find(c => c.id === targetCardId);
                 if (targetCard) {
                     const prefix = targetCard.content && !targetCard.content.endsWith('\n') ? '\n' : '';
                     targetCard.content += `${prefix}- [ ] ${text}\n`;
-                    if (targetCard.status === 2) targetCard.status = 0; // 確保母卡片變回未完成
+                    if (targetCard.status === 2) targetCard.status = 0; 
                 }
             } 
             
-            // 2. 如果沒有焦點卡片，尋找或建立「今日雜項」大卡片
             if (!targetCard) {
                 targetCard = this.getActiveCards().find(c => c.title === '今日雜項');
                 if (!targetCard) {
@@ -301,7 +293,6 @@ const app = {
             if (app.state.sandbox.activeTaskId) {
                 const card = this.getActiveCards().find(c => c.id === app.state.sandbox.activeTaskId);
                 if (card) card.content = noteArea.value;
-                // 注意：打字時不觸發 renderTodo，避免游標跳掉，只做底層儲存
             } else { app.state.globalNotebook.free = noteArea.value; }
             app.saveToLocal();
         },
@@ -312,7 +303,7 @@ const app = {
             const selectedText = noteArea.value.substring(start, end);
             noteArea.value = noteArea.value.substring(0, start) + prefix + selectedText + suffix + noteArea.value.substring(end);
             noteArea.focus(); noteArea.selectionStart = noteArea.selectionEnd = selectedText.length === 0 ? start + prefix.length : start + prefix.length + selectedText.length + suffix.length;
-            this.saveActiveNote(); this.renderTodo(); // UI輔助工具可以觸發重繪
+            this.saveActiveNote(); this.renderTodo(); 
         },
 
         insertPrefix(prefix) {
@@ -367,7 +358,6 @@ const app = {
             alert("✅ 任務已成功合併！筆記與子任務已自動串接。");
         },
 
-        // --- 核心：彩現任務與動態子任務 ---
         renderTodo() {
             const container = document.getElementById('sb-todoListContainer');
             if(!container) return;
@@ -393,7 +383,6 @@ const app = {
                 const prioColor = c.color === 'red' ? '#dc3545' : (c.color === 'yellow' ? '#ffc107' : '#007bff');
                 const subtasks = this.parseSubtasks(c.content);
 
-                // 渲染母卡片
                 html += `
                 <div class="sb-todo-card ${isActive ? 'active-card' : ''}" onclick="if(event.target.tagName !== 'INPUT' && event.target.tagName !== 'BUTTON') app.sandbox.setActiveTask('${c.id}')" style="cursor: pointer;">
                     <div style="display: flex; align-items: flex-start;">
@@ -416,7 +405,6 @@ const app = {
                         </div>
                     </div>`;
                     
-                // ✨ 渲染解析出的子任務
                 if (subtasks.length > 0) {
                     html += `<div class="sb-subtasks-container">`;
                     subtasks.forEach(st => {
@@ -547,10 +535,10 @@ const app = {
         this.state.view = viewName;
         document.querySelectorAll('.view-container').forEach(el => el.classList.remove('active'));
         document.querySelectorAll('.toolbar .btn').forEach(el => el.classList.remove('active'));
-        document.getElementById('view-' + viewName).classList.add('active');
-        if(document.getElementById('btn-view-' + viewName)) document.getElementById('btn-view-' + viewName).classList.add('active');
+        if (document.getElementById('view-' + viewName)) document.getElementById('view-' + viewName).classList.add('active');
+        if (document.getElementById('btn-view-' + viewName)) document.getElementById('btn-view-' + viewName).classList.add('active');
+        
         if(viewName === 'sandbox') { 
-            // 進入沙盒時確保重繪子任務清單
             this.sandbox.refreshActiveNoteUI(); 
             this.sandbox.renderTodo(); 
         } else { 
@@ -560,7 +548,13 @@ const app = {
 
     renderAll() {
         this.renderTabs(); if (this.state.showProjectBar) this.renderProjectBar();
-        if (this.state.view === 'timeline') this.renderTimeline(); else if (this.state.view === 'matrix') this.renderMatrix(); else if (this.state.view === 'chronicle') this.renderChronicle(); else if (this.state.view === 'gantt') this.renderGantt(); else if (this.state.view === 'calendar') this.renderCalendar();
+        
+        if (this.state.view === 'timeline') this.renderTimeline(); 
+        else if (this.state.view === 'kanban') this.renderKanban(); 
+        else if (this.state.view === 'matrix') this.renderMatrix(); 
+        else if (this.state.view === 'chronicle') this.renderChronicle(); 
+        else if (this.state.view === 'gantt') this.renderGantt(); 
+        else if (this.state.view === 'calendar') this.renderCalendar();
     },
 
     toggleProjectBar() { this.state.showProjectBar = !this.state.showProjectBar; document.getElementById('project-bar').style.display = this.state.showProjectBar ? 'flex' : 'none'; if(this.state.showProjectBar) document.body.classList.add('has-project-bar'); else document.body.classList.remove('has-project-bar'); this.renderProjectBar(); },
@@ -589,41 +583,142 @@ const app = {
     renderTimeline() {
         let cards = this.state.workspaces[this.state.activeTabId] || [];
         if (this.state.filters.activeProject) cards = cards.filter(c => c.project === this.state.filters.activeProject);
-        cards = cards.sort((a, b) => { const dA = a.dateMode === 'range' ? a.dateStart : a.dateSingle; const dB = b.dateMode === 'range' ? b.dateStart : b.dateSingle; if(!dA) return 1; if(!dB) return -1; return new Date(dA) - new Date(dB); });
+        
+        cards = cards.sort((a, b) => { 
+            const dA = a.dateMode === 'range' ? a.dateStart : a.dateSingle; 
+            const dB = b.dateMode === 'range' ? b.dateStart : b.dateSingle; 
+            if(!dA) return 1; if(!dB) return -1; return new Date(dA) - new Date(dB); 
+        });
+
+        const groupedCards = {};
+        cards.forEach(card => {
+            const projName = card.project || '日常雜項 (未分類)';
+            if (!groupedCards[projName]) groupedCards[projName] = [];
+            groupedCards[projName].push(card);
+        });
+
         const tabOptionsHtml = this.state.tabs.map(t => `<option value="${t.id}">${t.name}</option>`).join('');
 
-        const html = cards.map(card => {
-            const dateHtml = card.dateMode === 'single' ? `<input type="date" class="input-date" value="${card.dateSingle}" onchange="app.actions.updateCard('${card.id}', 'dateSingle', this.value)">` : `<span style="font-size:0.8rem;color:#64748b;">起</span><input type="date" class="input-date" value="${card.dateStart}" onchange="app.actions.updateCard('${card.id}', 'dateStart', this.value)"><span style="font-size:0.8rem;color:#64748b;">迄</span><input type="date" class="input-date" value="${card.dateEnd}" onchange="app.actions.updateCard('${card.id}', 'dateEnd', this.value)">`;
-            return `
-            <div class="card-wrapper"><div class="card-dot"></div>
-                <div class="card ${card.isMemo ? 'memo-mode' : ''}" data-color="${card.color}">
-                    <div class="card-header">
-                        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-                            <div class="status-dot status-${card.status}" onclick="app.actions.cycleStatus('${card.id}')"></div>
-                            <button class="icon-btn" onclick="app.actions.toggleMemo('${card.id}')">${card.isMemo ? '♾️' : '📅'}</button>
-                            ${dateHtml}
-                        </div>
-                        <div style="display:flex; gap:5px;">
-                            <button class="icon-btn" onclick="app.actions.toggleDateMode('${card.id}')">↔️</button>
-                            <button class="icon-btn" onclick="app.actions.cycleColor('${card.id}')">🎨</button>
-                        </div>
-                    </div>
-                    <div class="card-body">
-                        <input type="text" class="input-title" value="${card.title}" placeholder="🏷️ 標題..." onchange="app.actions.updateCard('${card.id}', 'title', this.value)">
-                        <textarea class="input-content" placeholder="📝 寫下卡片細節..." oninput="this.style.height='auto'; this.style.height=this.scrollHeight+'px';" onchange="app.actions.updateCard('${card.id}', 'content', this.value)">${card.content}</textarea>
-                    </div>
-                    <div class="card-footer" style="display: flex; gap: 8px; align-items: center; justify-content: flex-end;">
-                        <input type="text" class="input-project" value="${card.project}" placeholder="#專案名稱" onchange="app.actions.updateCard('${card.id}', 'project', this.value)">
-                        <select class="icon-btn" style="width: auto; padding: 0 5px; font-size: 0.85rem;" onchange="if(this.value) { app.actions.moveCard('${card.id}', this.value); this.value=''; }">
-                            <option value="" disabled selected>🚀 轉移至...</option>${tabOptionsHtml}
-                        </select>
-                        <button class="icon-btn" onclick="app.actions.deleteCard('${card.id}')" style="color:#ef4444; border-color:#fca5a5; width:34px; height:34px;">🗑️</button>
-                    </div>
+        let html = '';
+        for (const [project, projCards] of Object.entries(groupedCards)) {
+            html += `
+            <div class="timeline-group" style="margin-top: 15px; margin-bottom: 10px;">
+                <div onclick="const content = this.nextElementSibling; content.style.display = content.style.display === 'none' ? 'block' : 'none'; this.querySelector('.toggle-icon').innerText = content.style.display === 'none' ? '▶' : '▼';" 
+                     style="cursor: pointer; background: #f1f5f9; padding: 8px 12px; border-radius: 6px; font-weight: bold; color: #334155; display: flex; justify-content: space-between; border-left: 4px solid var(--primary);">
+                    <span>${project} <span style="font-size: 0.8rem; color: #64748b; margin-left: 5px;">(${projCards.length} 筆任務)</span></span>
+                    <span class="toggle-icon" style="font-size: 0.8rem; color: #94a3b8;">▼</span>
                 </div>
-            </div>`;
-        }).join('');
+                <div class="timeline-group-content" style="padding-left: 10px; margin-top: 10px;">
+            `;
+
+            html += projCards.map(card => {
+                const dateHtml = card.dateMode === 'single' ? `<input type="date" class="input-date" value="${card.dateSingle}" onchange="app.actions.updateCard('${card.id}', 'dateSingle', this.value)">` : `<span style="font-size:0.8rem;color:#64748b;">起</span><input type="date" class="input-date" value="${card.dateStart}" onchange="app.actions.updateCard('${card.id}', 'dateStart', this.value)"><span style="font-size:0.8rem;color:#64748b;">迄</span><input type="date" class="input-date" value="${card.dateEnd}" onchange="app.actions.updateCard('${card.id}', 'dateEnd', this.value)">`;
+                return `
+                <div class="card-wrapper"><div class="card-dot"></div>
+                    <div class="card ${card.isMemo ? 'memo-mode' : ''}" data-color="${card.color}" data-id="${card.id}">
+                        <div class="card-header">
+                            <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                                <div class="status-dot status-${card.status}" onclick="app.actions.cycleStatus('${card.id}')"></div>
+                                <button class="icon-btn" onclick="app.actions.toggleMemo('${card.id}')">${card.isMemo ? '♾️' : '📅'}</button>
+                                ${dateHtml}
+                            </div>
+                            <div style="display:flex; gap:5px;">
+                                <button class="icon-btn" onclick="app.actions.toggleDateMode('${card.id}')">↔️</button>
+                                <button class="icon-btn" onclick="app.actions.cycleColor('${card.id}')">🎨</button>
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            <input type="text" class="input-title" value="${card.title}" placeholder="🏷️ 標題..." onchange="app.actions.updateCard('${card.id}', 'title', this.value)">
+                            <textarea class="input-content" placeholder="📝 寫下卡片細節..." oninput="this.style.height='auto'; this.style.height=this.scrollHeight+'px';" onchange="app.actions.updateCard('${card.id}', 'content', this.value)">${card.content}</textarea>
+                        </div>
+                        <div class="card-footer" style="display: flex; gap: 8px; align-items: center; justify-content: flex-end;">
+                            <input type="text" class="input-project" value="${card.project}" placeholder="#專案名稱" onchange="app.actions.updateCard('${card.id}', 'project', this.value)">
+                            <select class="icon-btn" style="width: auto; padding: 0 5px; font-size: 0.85rem;" onchange="if(this.value) { app.actions.moveCard('${card.id}', this.value); this.value=''; }">
+                                <option value="" disabled selected>🚀 轉移至...</option>${tabOptionsHtml}
+                            </select>
+                            <button class="icon-btn" onclick="app.actions.deleteCard('${card.id}')" style="color:#ef4444; border-color:#fca5a5; width:34px; height:34px;" title="刪除此卡片">🗑️</button>
+                        </div>
+                    </div>
+                </div>`;
+            }).join('');
+            
+            html += `</div></div>`; 
+        }
+
+        if (cards.length === 0) {
+            html = `<div style="text-align:center; padding: 40px; color: #94a3b8;">此區域目前沒有卡片，點擊右下角 ＋ 新增。</div>`;
+        }
+
         document.getElementById('timeline-render-target').innerHTML = html;
         setTimeout(() => { document.querySelectorAll('.input-content').forEach(el => { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; }); }, 10);
+    },
+
+    renderKanban() {
+        let cards = this.state.workspaces[this.state.activeTabId] || [];
+        if (this.state.filters.activeProject) {
+            cards = cards.filter(c => c.project === this.state.filters.activeProject);
+        }
+
+        const columns = [
+            { id: 0, title: '📌 待辦 (To Do)', color: '#94a3b8' },
+            { id: 1, title: '🚀 進行中 (Doing)', color: '#3b82f6' },
+            { id: 2, title: '✅ 已完成 (Done)', color: '#10b981' },
+            { id: 3, title: '⏸️ 擱置 (On Hold)', color: '#f59e0b' }
+        ];
+
+        let html = '<div style="display: flex; gap: 20px; overflow-x: auto; min-height: 65vh; padding-bottom: 20px; align-items: flex-start;">';
+
+        columns.forEach(col => {
+            const colCards = cards.filter(c => c.status === col.id);
+            
+            html += `
+            <div style="flex: 0 0 320px; background: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0; display: flex; flex-direction: column; max-height: 80vh;">
+                <div style="padding: 12px; border-bottom: 3px solid ${col.color}; font-weight: bold; color: #334155; display: flex; justify-content: space-between; position: sticky; top: 0; background: #f8fafc; z-index: 10;">
+                    <span>${col.title}</span>
+                    <span style="background: #e2e8f0; padding: 2px 8px; border-radius: 12px; font-size: 0.8rem;">${colCards.length}</span>
+                </div>
+                <div style="padding: 10px; overflow-y: auto; flex-grow: 1; display: flex; flex-direction: column; gap: 10px;">
+            `;
+
+            if (colCards.length === 0) {
+                html += `<div style="text-align: center; color: #cbd5e1; font-size: 0.9rem; padding: 20px 0;">無卡片</div>`;
+            } else {
+                const tabOptionsHtml = this.state.tabs.map(t => `<option value="${t.id}">${t.name}</option>`).join('');
+                colCards.forEach(card => {
+                    html += `
+                    <div class="card ${card.isMemo ? 'memo-mode' : ''}" data-color="${card.color}" data-id="${card.id}" style="margin: 0; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                        <div class="card-header" style="padding-bottom: 5px;">
+                            <div style="display:flex; align-items:center; gap:8px;">
+                                <div class="status-dot status-${card.status}" onclick="app.actions.cycleStatus('${card.id}')" title="點擊推進狀態"></div>
+                                <button class="icon-btn" onclick="app.actions.toggleMemo('${card.id}')">${card.isMemo ? '♾️' : '📅'}</button>
+                            </div>
+                            <button class="icon-btn" onclick="app.actions.cycleColor('${card.id}')">🎨</button>
+                        </div>
+                        <div class="card-body" style="padding: 5px 10px;">
+                            <input type="text" class="input-title" value="${card.title}" placeholder="🏷️ 標題..." onchange="app.actions.updateCard('${card.id}', 'title', this.value)">
+                            <textarea class="input-content" placeholder="📝 細節..." oninput="this.style.height='auto'; this.style.height=this.scrollHeight+'px';" onchange="app.actions.updateCard('${card.id}', 'content', this.value)" style="min-height: 40px;">${card.content}</textarea>
+                        </div>
+                        <div class="card-footer" style="padding: 5px 10px; display: flex; gap: 5px; justify-content: space-between; align-items: center;">
+                            <input type="text" class="input-project" value="${card.project}" placeholder="#專案" onchange="app.actions.updateCard('${card.id}', 'project', this.value)" style="max-width: 80px;">
+                            <div style="display:flex; gap:5px;">
+                                <select class="icon-btn" style="width: auto; padding: 0 2px; font-size: 0.8rem;" onchange="if(this.value) { app.actions.moveCard('${card.id}', this.value); this.value=''; }">
+                                    <option value="" disabled selected>🚀</option>${tabOptionsHtml}
+                                </select>
+                                <button class="icon-btn" onclick="app.actions.deleteCard('${card.id}')" style="color:#ef4444; border-color:transparent; width:28px; height:28px;" title="刪除">🗑️</button>
+                            </div>
+                        </div>
+                    </div>`;
+                });
+            }
+            html += `</div></div>`;
+        });
+
+        html += '</div>';
+        const renderTarget = document.getElementById('kanban-render-target');
+        if (renderTarget) {
+            renderTarget.innerHTML = html;
+            setTimeout(() => { document.querySelectorAll('#kanban-render-target .input-content').forEach(el => { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; }); }, 10);
+        }
     },
 
     renderMatrix() {
@@ -661,28 +756,96 @@ const app = {
     },
 
     renderChronicle() {
-        const cards = (this.state.workspaces[this.state.activeTabId] || []).filter(c => !c.isMemo && (c.dateSingle || c.dateStart)); 
+        let allCards = []; 
+        for (let tabId in this.state.workspaces) { 
+            const tabName = this.state.tabs.find(t => t.id === tabId)?.name || '未知'; 
+            this.state.workspaces[tabId].forEach(c => allCards.push({ ...c, tabId, tabName })); 
+        }
+        const cards = allCards.filter(c => !c.isMemo && (c.dateSingle || c.dateStart)); 
         if (cards.length === 0) { document.getElementById('chronicle-render-target').innerHTML = '<p style="text-align:center; color:#94a3b8;">無有效日期之卡片</p>'; return; }
+        
         const sorted = cards.sort((a, b) => { const d1 = new Date(a.dateMode === 'range' ? a.dateStart : a.dateSingle).getTime() || 0; const d2 = new Date(b.dateMode === 'range' ? b.dateStart : b.dateSingle).getTime() || 0; return d1 - d2; });
-        const html = sorted.map(c => { const dStr = c.dateMode === 'range' ? `${c.dateStart} ~ ${c.dateEnd}` : c.dateSingle; const pTag = c.project ? `<span style="background:#e2e8f0; padding:2px 6px; border-radius:4px; font-size:0.8rem; margin-right:8px;">#${c.project}</span>` : ''; return `<div class="chronicle-row"><div class="chronicle-date">${dStr}</div><div class="chronicle-info"><div style="display:flex; align-items:center; margin-bottom:5px;"><div class="status-dot status-${c.status}" style="margin-right:8px;"></div><div class="chronicle-title">${pTag}${c.title || '未命名'}</div></div><div style="color:#475569; font-size:0.95rem; white-space:pre-wrap;">${c.content}</div></div></div>`; }).join('');
+        const html = sorted.map(c => { 
+            const dStr = c.dateMode === 'range' ? `${c.dateStart} ~ ${c.dateEnd}` : c.dateSingle; 
+            const pTag = c.project ? `<span style="background:#e2e8f0; padding:2px 6px; border-radius:4px; font-size:0.8rem; margin-right:8px;">#${c.project}</span>` : ''; 
+            return `<div class="chronicle-row" onclick="app.actions.jumpToCard('${c.id}', '${c.tabId}')" style="cursor:pointer;" title="點擊跳轉編輯">
+                <div class="chronicle-date">${dStr}</div>
+                <div class="chronicle-info">
+                    <div style="display:flex; align-items:center; margin-bottom:5px;">
+                        <div class="status-dot status-${c.status}" style="margin-right:8px;"></div>
+                        <div class="chronicle-title">${pTag}<span style="color:#64748b; font-size:0.8rem; margin-right:5px;">[${c.tabName}]</span>${c.title || '未命名'}</div>
+                    </div>
+                    <div style="color:#475569; font-size:0.95rem; white-space:pre-wrap;">${c.content}</div>
+                </div>
+            </div>`; 
+        }).join('');
         document.getElementById('chronicle-render-target').innerHTML = html;
     },
 
     renderGantt() {
-        const cards = (this.state.workspaces[this.state.activeTabId] || []).filter(c => !c.isMemo && c.dateMode === 'range' && c.dateStart && c.dateEnd); 
+        let allCards = []; 
+        for (let tabId in this.state.workspaces) { 
+            const tabName = this.state.tabs.find(t => t.id === tabId)?.name || '未知'; 
+            this.state.workspaces[tabId].forEach(c => allCards.push({ ...c, tabId, tabName })); 
+        }
+        const cards = allCards.filter(c => !c.isMemo && c.dateMode === 'range' && c.dateStart && c.dateEnd); 
         if (cards.length === 0) { document.getElementById('gantt-render-target').innerHTML = '<p style="text-align:center; color:#94a3b8;">請將卡片切換為「區間模式 (↔️)」並設定起迄日期</p>'; return; }
-        let html = '<div style="display:flex; flex-direction:column; gap:10px; min-width: 600px;">';
-        cards.forEach(c => { const s = new Date(c.dateStart).getTime(); const e = new Date(c.dateEnd).getTime(); const days = Math.max(1, (e - s) / (1000 * 60 * 60 * 24)); const widthPct = Math.min(100, days * 3); html += `<div style="background:#f1f5f9; border-radius:6px; padding:10px; border: 1px solid #e2e8f0;"><div style="font-weight:bold; margin-bottom:5px; font-size:0.95rem; color:#1e293b;">${c.project ? '['+c.project+']' : ''} ${c.title || '未命名'} <span style="font-size:0.8rem; color:#64748b; font-weight:normal;">(${days}天)</span></div><div style="height:12px; background:#e2e8f0; border-radius:6px; width:100%;"><div style="height:100%; border-radius:6px; background:var(--primary); width:${widthPct}%;"></div></div></div>`; });
+        
+        const minTime = Math.min(...cards.map(c => new Date(c.dateStart).getTime()));
+        
+        let html = '<div style="display:flex; flex-direction:column; gap:10px; min-width: 600px; padding-bottom: 20px;">';
+        cards.forEach(c => { 
+            const s = new Date(c.dateStart).getTime(); 
+            const e = new Date(c.dateEnd).getTime(); 
+            const days = Math.max(1, (e - s) / (1000 * 60 * 60 * 24)); 
+            const offsetDays = Math.max(0, (s - minTime) / (1000 * 60 * 60 * 24));
+            
+            const widthPx = Math.max(30, days * 25);
+            const marginLeftPx = offsetDays * 25;
+
+            html += `
+            <div style="background:#f1f5f9; border-radius:6px; padding:10px; border: 1px solid #e2e8f0; cursor:pointer;" onclick="app.actions.jumpToCard('${c.id}', '${c.tabId}')" title="點擊跳轉編輯">
+                <div style="font-weight:bold; margin-bottom:5px; font-size:0.95rem; color:#1e293b; display:flex; justify-content:space-between;">
+                    <span><span style="color:#64748b; font-size:0.8rem; margin-right:5px;">[${c.tabName}]</span>${c.project ? '#'+c.project : ''} ${c.title || '未命名'} <span style="font-size:0.8rem; color:#64748b; font-weight:normal;">(${days}天)</span></span>
+                    <button class="icon-btn" onclick="event.stopPropagation(); app.actions.deleteCard('${c.id}', '${c.tabId}')" style="color:#ef4444; border:none; background:transparent; padding:0; width:20px; height:20px;">🗑️</button>
+                </div>
+                <div style="height:12px; background:#e2e8f0; border-radius:6px; width:100%; position: relative;">
+                    <div style="height:100%; border-radius:6px; background:var(--primary); width:${widthPx}px; margin-left:${marginLeftPx}px;"></div>
+                </div>
+            </div>`; 
+        });
         document.getElementById('gantt-render-target').innerHTML = html + '</div>';
     },
 
     renderCalendar() {
-        let allCards = []; for (let tabId in this.state.workspaces) { const tabName = this.state.tabs.find(t => t.id === tabId)?.name || '未知'; this.state.workspaces[tabId].forEach(c => allCards.push({ ...c, tabName })); }
+        let allCards = []; 
+        for (let tabId in this.state.workspaces) { 
+            const tabName = this.state.tabs.find(t => t.id === tabId)?.name || '未知'; 
+            this.state.workspaces[tabId].forEach(c => allCards.push({ ...c, tabId, tabName })); 
+        }
         allCards = allCards.filter(c => !c.isMemo && (c.dateSingle || c.dateStart));
         if (allCards.length === 0) { document.getElementById('calendar-render-target').innerHTML = '<p style="text-align:center; color:#94a3b8;">全部分頁中皆無有效日期資料</p>'; return; }
+        
         const grouped = {}; allCards.forEach(c => { const d = c.dateMode === 'range' ? c.dateStart : c.dateSingle; if(d) { if(!grouped[d]) grouped[d] = []; grouped[d].push(c); } });
         let html = '<div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap:15px;">';
-        Object.keys(grouped).sort().forEach(dateStr => { html += `<div style="border:1px solid #e2e8f0; border-radius:8px; padding:12px; background:#f8fafc; box-shadow: 0 2px 4px rgba(0,0,0,0.02);"><div style="font-weight:bold; color:var(--primary); border-bottom:1px solid #cbd5e1; margin-bottom:10px; padding-bottom:6px; font-size:1.1rem;">${dateStr}</div>`; grouped[dateStr].forEach(c => { html += `<div style="font-size:0.9rem; background:white; padding:6px 10px; border-radius:6px; margin-bottom:6px; box-shadow:0 1px 3px rgba(0,0,0,0.05); border-left:4px solid ${c.color === 'blue' ? '#3b82f6' : (c.color === 'red' ? '#ef4444' : (c.color === 'yellow' ? '#f59e0b' : '#10b981'))}"><div style="color:#64748b; font-size:0.75rem; margin-bottom:2px; font-weight:bold;">${c.tabName}</div><div style="color:#1e293b;">${c.title || '未命名'}</div></div>`; }); html += `</div>`; });
+        
+        Object.keys(grouped).sort().forEach(dateStr => { 
+            html += `<div style="border:1px solid #e2e8f0; border-radius:8px; padding:12px; background:#f8fafc; box-shadow: 0 2px 4px rgba(0,0,0,0.02);">
+                        <div style="font-weight:bold; color:var(--primary); border-bottom:1px solid #cbd5e1; margin-bottom:10px; padding-bottom:6px; font-size:1.1rem;">${dateStr}</div>`; 
+            grouped[dateStr].forEach(c => { 
+                const cardBorderColor = c.color === 'blue' ? '#3b82f6' : (c.color === 'red' ? '#ef4444' : (c.color === 'yellow' ? '#f59e0b' : '#10b981'));
+                html += `
+                <div style="font-size:0.9rem; background:white; padding:6px 10px; border-radius:6px; margin-bottom:6px; box-shadow:0 1px 3px rgba(0,0,0,0.05); border-left:4px solid ${cardBorderColor}; cursor:pointer; position:relative; display:flex; justify-content:space-between; align-items:center;" 
+                     onclick="app.actions.jumpToCard('${c.id}', '${c.tabId}')" title="點擊跳轉至時間軸">
+                    <div>
+                        <div style="color:#64748b; font-size:0.75rem; margin-bottom:2px; font-weight:bold;">${c.tabName}</div>
+                        <div style="color:#1e293b;">${c.title || '未命名'}</div>
+                    </div>
+                    <button class="icon-btn" onclick="event.stopPropagation(); app.actions.deleteCard('${c.id}', '${c.tabId}')" style="color:#ef4444; border:none; background:transparent; padding:0; width:24px; height:24px;" title="刪除此卡片">🗑️</button>
+                </div>`; 
+            }); 
+            html += `</div>`; 
+        });
         document.getElementById('calendar-render-target').innerHTML = html + '</div>';
     },
 
@@ -774,9 +937,51 @@ const app = {
     // 基礎 Actions (增刪改查)
     // ==========================================
     actions: {
-        addCard() { const newCard = { id: 'card_' + Date.now(), title: '', content: '', project: app.state.filters.activeProject || '', dateMode: 'single', dateSingle: new Date().toISOString().split('T')[0], color: 'blue', status: 0, isMemo: false }; app.state.workspaces[app.state.activeTabId].push(newCard); app.saveToLocal(); app.renderTimeline(); },
-        updateCard(id, field, value) { const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id); if (card) { card[field] = value; app.saveToLocal(); if(field === 'project') app.renderProjectBar(); if(field.startsWith('date')) app.renderTimeline(); } },
-        deleteCard(id) { if(confirm('確定移除此卡片？')) { app.state.workspaces[app.state.activeTabId] = app.state.workspaces[app.state.activeTabId].filter(c => c.id !== id); app.saveToLocal(); app.renderTimeline(); } },
+        addCard() { const newCard = { id: 'card_' + Date.now(), title: '', content: '', project: app.state.filters.activeProject || '', dateMode: 'single', dateSingle: new Date().toISOString().split('T')[0], color: 'blue', status: 0, isMemo: false }; app.state.workspaces[app.state.activeTabId].push(newCard); app.saveToLocal(); app.renderAll(); },
+        updateCard(id, field, value) { const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id); if (card) { card[field] = value; app.saveToLocal(); app.renderAll(); } },
+        
+        // 👻 升級版：支援跨分頁、清洗沙盒的刪除機制
+        deleteCard(id, targetTabId = null) {
+            if (!confirm('⚠️ 確定移除此卡片嗎？刪除後無法復原。')) return;
+            
+            let foundTabId = targetTabId;
+            if (!foundTabId) {
+                for (let tab in app.state.workspaces) {
+                    if (app.state.workspaces[tab].find(c => c.id === id)) {
+                        foundTabId = tab;
+                        break;
+                    }
+                }
+            }
+            if (!foundTabId) return;
+
+            app.state.workspaces[foundTabId] = app.state.workspaces[foundTabId].filter(c => c.id !== id);
+            
+            // 🧹 核心防呆：如果刪除的剛好是沙盒正在編輯的任務，立刻清空焦點
+            if (app.state.sandbox.activeTaskId === id) {
+                app.sandbox.setActiveTask(null);
+            }
+            
+            app.saveToLocal();
+            app.renderAll(); // 重新渲染確保畫面同步
+        },
+
+        // 🚀 新增：全域日曆/甘特圖專用的跳轉機制
+        jumpToCard(id, tabId) {
+            app.actions.switchTab(tabId); 
+            app.switchView('timeline');   
+            
+            setTimeout(() => {
+                const targetEl = document.querySelector(`.card[data-id="${id}"]`);
+                if (targetEl) {
+                    targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    const origBoxShadow = targetEl.style.boxShadow;
+                    targetEl.style.boxShadow = '0 0 15px 3px rgba(59, 130, 246, 0.6)';
+                    setTimeout(() => targetEl.style.boxShadow = origBoxShadow, 1500);
+                }
+            }, 100);
+        },
+
         moveCard(id, targetTabId) {
             const currentTabId = app.state.activeTabId; if (currentTabId === targetTabId) return;
             const cardIndex = app.state.workspaces[currentTabId].findIndex(c => c.id === id);
@@ -786,10 +991,10 @@ const app = {
                 app.state.workspaces[targetTabId].push(card); app.saveToLocal(); app.renderAll();
             }
         },
-        cycleStatus(id) { const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id); if (card) { card.status = (card.status + 1) % 4; app.saveToLocal(); app.renderTimeline(); } },
-        cycleColor(id) { const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id); const colors = ['blue', 'green', 'red', 'yellow']; if (card) { card.color = colors[(colors.indexOf(card.color) + 1) % colors.length]; app.saveToLocal(); app.renderTimeline(); } },
-        toggleMemo(id) { const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id); if (card) { card.isMemo = !card.isMemo; app.saveToLocal(); app.renderTimeline(); } },
-        toggleDateMode(id) { const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id); if (card) { card.dateMode = card.dateMode === 'single' ? 'range' : 'single'; app.saveToLocal(); app.renderTimeline(); } },
+        cycleStatus(id) { const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id); if (card) { card.status = (card.status + 1) % 4; app.saveToLocal(); app.renderAll(); } },
+        cycleColor(id) { const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id); const colors = ['blue', 'green', 'red', 'yellow']; if (card) { card.color = colors[(colors.indexOf(card.color) + 1) % colors.length]; app.saveToLocal(); app.renderAll(); } },
+        toggleMemo(id) { const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id); if (card) { card.isMemo = !card.isMemo; app.saveToLocal(); app.renderAll(); } },
+        toggleDateMode(id) { const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id); if (card) { card.dateMode = card.dateMode === 'single' ? 'range' : 'single'; app.saveToLocal(); app.renderAll(); } },
         
         addMatrixNode() {
             const inputEl = document.getElementById('matrix-quick-input'); const tagEl = document.getElementById('matrix-tag-select');
