@@ -600,11 +600,12 @@ const app = {
         const tabOptionsHtml = this.state.tabs.map(t => `<option value="${t.id}">${t.name}</option>`).join('');
 
         let html = '';
+        let html = '';
         for (const [project, projCards] of Object.entries(groupedCards)) {
             html += `
             <div class="timeline-group" style="margin-top: 15px; margin-bottom: 10px;">
                 <div onclick="const content = this.nextElementSibling; content.style.display = content.style.display === 'none' ? 'block' : 'none'; this.querySelector('.toggle-icon').innerText = content.style.display === 'none' ? '▶' : '▼';" 
-                     style="cursor: pointer; background: #f1f5f9; padding: 8px 12px; border-radius: 6px; font-weight: bold; color: #334155; display: flex; justify-content: space-between; border-left: 4px solid var(--primary);">
+                     style="margin-left: 45px; position: relative; z-index: 5; cursor: pointer; background: #f1f5f9; padding: 8px 12px; border-radius: 6px; font-weight: bold; color: #334155; display: flex; justify-content: space-between; border-left: 4px solid var(--primary);">
                     <span>${project} <span style="font-size: 0.8rem; color: #64748b; margin-left: 5px;">(${projCards.length} 筆任務)</span></span>
                     <span class="toggle-icon" style="font-size: 0.8rem; color: #94a3b8;">▼</span>
                 </div>
