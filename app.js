@@ -600,7 +600,6 @@ const app = {
         const tabOptionsHtml = this.state.tabs.map(t => `<option value="${t.id}">${t.name}</option>`).join('');
 
         let html = '';
-        let html = '';
         for (const [project, projCards] of Object.entries(groupedCards)) {
             html += `
             <div class="timeline-group" style="margin-top: 15px; margin-bottom: 10px;">
