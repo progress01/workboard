@@ -9,6 +9,8 @@
     <script src="https://www.gstatic.com/firebasejs/10.8.1/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.8.1/firebase-auth-compat.js"></script>
+    <!-- ExcelJS：在瀏覽器直接產生 .xlsx；不改動 Firebase 設定 -->
+    <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
 
     <style>
         /* === 全域變數與重置 === */
@@ -119,6 +121,38 @@
         .worklog-collapsed:hover { background:#eef2ff; }
         .worklog-collapsed-main { min-width:0; display:flex; align-items:center; gap:8px; }
         .worklog-collapsed-latest { min-width:0; color:#64748b; font-size:0.82rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+
+        /* === 工項規劃 / 工時紀錄（向下相容：舊卡片沒有欄位也可正常顯示） === */
+        .task-meta-panel, .worktime-panel { border:1px solid #e2e8f0; border-radius:8px; background:#f8fafc; overflow:hidden; }
+        .task-meta-panel { padding:10px; display:flex; flex-direction:column; gap:8px; }
+        .task-meta-grid { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:8px; }
+        .task-meta-field { display:flex; flex-direction:column; gap:4px; min-width:0; }
+        .task-meta-label { font-size:0.72rem; color:#64748b; font-weight:bold; }
+        .task-meta-input, .task-meta-textarea, .worktime-input { width:100%; border:1px solid #cbd5e1; border-radius:6px; padding:7px 8px; background:white; color:#334155; outline:none; }
+        .task-meta-textarea { min-height:52px; resize:vertical; line-height:1.4; }
+        .task-meta-input:focus, .task-meta-textarea:focus, .worktime-input:focus { border-color:#818cf8; box-shadow:0 0 0 2px rgba(99,102,241,.1); }
+        .worktime-header { padding:8px 10px; background:#eef2ff; display:flex; justify-content:space-between; align-items:center; gap:8px; border-bottom:1px solid #e2e8f0; }
+        .worktime-total { font-size:.82rem; color:#4338ca; font-weight:bold; }
+        .worktime-form { padding:9px 10px; display:grid; grid-template-columns:120px 90px minmax(150px,1fr) auto; gap:6px; align-items:end; }
+        .worktime-list { max-height:145px; overflow-y:auto; background:white; }
+        .worktime-row { display:grid; grid-template-columns:85px 70px minmax(0,1fr) auto; gap:8px; align-items:center; padding:7px 10px; border-top:1px solid #f1f5f9; font-size:.82rem; }
+        .worktime-row-note { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:#475569; }
+        .worktime-source { color:#94a3b8; font-size:.72rem; }
+        .worktime-empty { padding:10px; color:#94a3b8; text-align:center; font-size:.8rem; background:white; }
+        .worktime-delete { border:0; background:transparent; color:#dc2626; cursor:pointer; padding:2px 5px; }
+        .excel-actions { display:flex; gap:8px; flex-wrap:wrap; justify-content:center; margin-bottom:14px; }
+        .excel-copy-btn { border:1px solid #c7d2fe; background:#eef2ff; color:#4338ca; border-radius:6px; padding:8px 12px; cursor:pointer; font-weight:bold; }
+        .excel-copy-btn:hover { background:#e0e7ff; }
+        .timer-target { margin:8px 0; padding:8px 10px; border-radius:6px; background:#f1f5f9; color:#475569; font-size:.82rem; line-height:1.45; }
+
+        @media (max-width: 768px) {
+            .task-meta-grid { grid-template-columns:1fr; }
+            .worktime-form { grid-template-columns:1fr 1fr; }
+            .worktime-form .worktime-note-field { grid-column:1 / -1; }
+            .worktime-form button { grid-column:1 / -1; }
+            .worktime-row { grid-template-columns:78px 62px minmax(0,1fr) auto; }
+        }
+
         #sb-entry-context { margin-bottom:10px; }
         #sb-entry-context .worklog-panel { margin-top:0; border-color:#dbeafe; background:#fff; }
         #sb-entry-context .worklog-header { background:#eff6ff; }
@@ -203,6 +237,70 @@
             .sb-layout { flex-direction: column; }
             .sb-timer-display { font-size: 2.5rem; }
         }
+
+        /* === v2：規劃 / 實際、共用日期軸甘特、Excel 匯出 === */
+        .pm-section { border:1px solid #e2e8f0; border-radius:8px; overflow:hidden; background:#fff; }
+        .pm-section + .pm-section { margin-top:8px; }
+        .pm-section-title { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:7px 10px; font-size:.82rem; font-weight:bold; }
+        .pm-section-plan .pm-section-title { background:#eef2ff; color:#4338ca; }
+        .pm-section-actual .pm-section-title { background:#ecfdf5; color:#047857; }
+        .pm-section-body { padding:9px 10px; }
+        .pm-summary { font-size:.76rem; color:#64748b; font-weight:normal; }
+        .duration-grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:6px; }
+        .actual-metric { padding:8px 10px; border:1px solid #d1fae5; background:#f0fdf4; border-radius:6px; min-height:58px; }
+        .actual-metric strong { display:block; margin-top:3px; color:#065f46; font-size:1rem; }
+        .variance-positive { color:#b91c1c !important; }
+        .variance-negative { color:#047857 !important; }
+        .color-select-wrap { display:flex; align-items:center; gap:6px; }
+        .color-chip { width:13px; height:13px; border-radius:50%; border:1px solid rgba(0,0,0,.15); flex:0 0 auto; }
+        .worktime-form { grid-template-columns:118px 82px 82px minmax(150px,1fr) auto; }
+        .worktime-row { grid-template-columns:88px 78px minmax(0,1fr) auto auto; }
+        .worktime-edit { border:0; background:transparent; color:#4338ca; cursor:pointer; padding:2px 5px; }
+        .gantt-toolbar-note { margin:0 auto 12px; max-width:980px; padding:9px 12px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; color:#64748b; font-size:.82rem; line-height:1.5; }
+        .gantt-legend { display:flex; gap:10px; flex-wrap:wrap; align-items:center; justify-content:center; margin:8px 0 14px; font-size:.78rem; color:#64748b; }
+        .gantt-legend-item { display:inline-flex; align-items:center; gap:5px; }
+        .gantt-table-wrap { width:100%; overflow:auto; border:1px solid #e2e8f0; border-radius:8px; background:white; }
+        .gantt-table { border-collapse:separate; border-spacing:0; min-width:max-content; font-size:.78rem; }
+        .gantt-table th, .gantt-table td { border-right:1px solid #e5e7eb; border-bottom:1px solid #e5e7eb; padding:5px 6px; background:white; white-space:nowrap; height:30px; }
+        .gantt-table thead th { position:sticky; top:0; z-index:30; background:#f8fafc; color:#475569; font-weight:bold; text-align:center; }
+        .gantt-table .gantt-month-head { top:0; background:#e2e8f0; color:#334155; }
+        .gantt-table .gantt-day-head { top:31px; min-width:30px; width:30px; padding:4px 2px; }
+        .gantt-table .weekend { background:#f8fafc; }
+        .gantt-table .today-col { box-shadow:inset 2px 0 #f59e0b, inset -2px 0 #f59e0b; }
+        .gantt-left { position:sticky; z-index:20; background:white !important; }
+        .gantt-table thead .gantt-left { z-index:40; background:#f8fafc !important; }
+        .gantt-title-col { left:0; min-width:220px; max-width:220px; overflow:hidden; text-overflow:ellipsis; text-align:left !important; }
+        .gantt-status-col { left:220px; min-width:78px; text-align:center; }
+        .gantt-progress-col { left:298px; min-width:60px; text-align:center; }
+        .gantt-hours-col { left:358px; min-width:118px; text-align:center; }
+        .gantt-plan-col { left:476px; min-width:168px; text-align:center; }
+        .gantt-actual-col { left:644px; min-width:168px; text-align:center; box-shadow:3px 0 4px rgba(15,23,42,.06); }
+        .gantt-group-row td { background:#eef2ff !important; color:#3730a3; font-weight:bold; border-left:4px solid #4f46e5; padding:7px 10px; }
+        .gantt-day-cell { min-width:30px; width:30px; padding:0 !important; position:relative; }
+        .gantt-bar-cell { opacity:.34; }
+        .gantt-bar-cell.done { opacity:.95; }
+        .gantt-bar-start { border-radius:5px 0 0 5px; }
+        .gantt-bar-end { border-radius:0 5px 5px 0; }
+        .gantt-task-title { display:flex; align-items:center; gap:7px; overflow:hidden; }
+        .gantt-task-title span:last-child { overflow:hidden; text-overflow:ellipsis; }
+        .free-card-note { font-size:.75rem; color:#64748b; margin-left:4px; }
+        .add-card-actions { display:flex; gap:8px; flex-wrap:wrap; justify-content:center; margin:35px auto; max-width:760px; }
+        .add-card-actions .add-main-btn { margin:0; width:auto; flex:1 1 260px; max-width:none; }
+
+        @media (max-width: 768px) {
+            .duration-grid { grid-template-columns:1fr 1fr; }
+            .worktime-form { grid-template-columns:1fr 1fr; }
+            .worktime-form .worktime-note-field { grid-column:1 / -1; }
+            .worktime-form button { grid-column:1 / -1; }
+            .worktime-row { grid-template-columns:76px 70px minmax(0,1fr) auto auto; }
+            .gantt-title-col { min-width:180px; max-width:180px; }
+            .gantt-status-col { left:180px; }
+            .gantt-progress-col { left:258px; }
+            .gantt-hours-col { left:318px; }
+            .gantt-plan-col { left:436px; }
+            .gantt-actual-col { left:604px; }
+        }
+
     </style>
 </head>
 <body>
@@ -272,7 +370,10 @@
                     <span id="local-save-status">✅ 已存於本機</span>
                 </div>
                 <div class="timeline" id="timeline-render-target"></div>
-                <button class="add-main-btn" onclick="app.actions.addCard()">＋ 新增正式排程卡片</button>
+                <div class="add-card-actions">
+                    <button class="add-main-btn" onclick="app.actions.addCard('free')">＋ 新增自由卡片</button>
+                    <button class="add-main-btn" onclick="app.actions.addCard('scheduled')">＋ 新增排程工項</button>
+                </div>
             </div>
 
             <!-- 2. 大事記 -->
@@ -284,7 +385,22 @@
             <!-- 3. 甘特圖 -->
             <div id="view-gantt" class="view-container">
                 <h3 style="text-align: center; color: #475569; margin-top: 0;">📊 專案甘特圖</h3>
-                <div id="gantt-render-target" style="min-width: 100%; overflow-x: auto;"></div>
+                <div class="excel-actions">
+                    <button class="excel-copy-btn" onclick="app.worktime.copyTasksToExcel()">📋 複製工項總表</button>
+                    <button class="excel-copy-btn" onclick="app.worktime.copyLogsToExcel()">⏱️ 複製工時明細</button>
+                    <button class="excel-copy-btn" onclick="app.worktime.copyGanttSourceToExcel()">📊 複製甘特來源資料</button>
+                    <button class="excel-copy-btn" onclick="app.worktime.exportWorkbookXlsx()">⬇️ 匯出 Excel (.xlsx)</button>
+                </div>
+                <div class="gantt-toolbar-note">
+                    甘特圖使用「預計開始 / 預計完成」作為排程橫條；「實際開始 / 實際完成 / 實際工時」分開顯示。紅色代表你人工標記的關鍵／重要任務，不是系統自動計算的 CPM 關鍵路徑。
+                </div>
+                <div class="gantt-legend">
+                    <span class="gantt-legend-item"><span class="color-chip" style="background:#3b82f6"></span>一般</span>
+                    <span class="gantt-legend-item"><span class="color-chip" style="background:#10b981"></span>穩定</span>
+                    <span class="gantt-legend-item"><span class="color-chip" style="background:#ef4444"></span>關鍵／重要（人工）</span>
+                    <span class="gantt-legend-item"><span class="color-chip" style="background:#f59e0b"></span>注意</span>
+                </div>
+                <div id="gantt-render-target"></div>
             </div>
 
             <!-- 4. 日曆 -->
@@ -322,6 +438,7 @@
                             <div class="sb-timer-display" id="sb-timeDisplay">00:00:00</div>
                             <div class="sb-gif-container" id="sb-gifContainer"><span style="color:#ccc">GIF (停止)</span></div>
                             <div style="text-align:center; margin: 10px 0; font-weight:bold; color:#6c757d;" id="sb-statusText">狀態: 閒置</div>
+                            <div class="timer-target" id="sb-timerTarget">目前未綁定卡片。選擇任務後，心流時間會直接累積到該卡。</div>
                             
                             <div style="display: flex; justify-content: space-between; gap: 5px;">
                                 <button class="sb-btn sb-btn-success" onclick="app.sandbox.startTimer()">▶ 啟動</button>
