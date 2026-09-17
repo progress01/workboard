@@ -24,7 +24,7 @@ const app = {
         tsumego: { isOpen: false, currentColor: 'black', stones: [] },
         view: 'timeline',
         filters: { keyword: '', activeProject: null },
-        ganttFilters: { project: '', month: '' },
+        ganttFilters: { project: '', month: '', mode: 'schedule', scale: '' },
         chronicleFilters: { scope: 'all', project: '' },
         showProjectBar: false,
         
@@ -462,6 +462,68 @@ const app = {
             return d;
         },
 
+        startOfWeek(date) {
+            const d = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+            const dow = d.getDay();
+            const diff = dow === 0 ? -6 : 1 - dow; // 週一為一週起點
+            d.setDate(d.getDate() + diff);
+            return d;
+        },
+
+        endOfWeek(date) { return this.addDays(this.startOfWeek(date), 6); },
+
+        startOfMonth(date) { return new Date(date.getFullYear(), date.getMonth(), 1); },
+
+        endOfMonth(date) { return new Date(date.getFullYear(), date.getMonth() + 1, 0); },
+
+        getGanttScale() {
+            const raw = app.state.ganttFilters?.scale;
+            if (raw === 'day' || raw === 'week' || raw === 'month') return raw;
+            return (typeof window !== 'undefined' && window.innerWidth <= 768) ? 'week' : 'day';
+        },
+
+        ganttScaleLabel(scale = this.getGanttScale()) {
+            return scale === 'month' ? '月' : (scale === 'week' ? '週' : '日');
+        },
+
+        buildGanttPeriods(minDate, maxDate, scale = this.getGanttScale()) {
+            if (!minDate || !maxDate || minDate > maxDate) return [];
+            const periods = [];
+            let cursor = new Date(minDate.getFullYear(), minDate.getMonth(), minDate.getDate());
+            let guard = 0;
+            const maxPeriods = scale === 'day' ? 366 : (scale === 'week' ? 156 : 120);
+            while (cursor <= maxDate && guard < maxPeriods) {
+                let end;
+                if (scale === 'month') end = this.endOfMonth(cursor);
+                else if (scale === 'week') end = this.endOfWeek(cursor);
+                else end = new Date(cursor);
+                if (end > maxDate) end = new Date(maxDate);
+                const start = new Date(cursor);
+                let label;
+                let groupLabel;
+                if (scale === 'month') {
+                    label = `${start.getMonth()+1}月`;
+                    groupLabel = `${start.getFullYear()}`;
+                } else if (scale === 'week') {
+                    const sameMonth = start.getFullYear() === end.getFullYear() && start.getMonth() === end.getMonth();
+                    label = sameMonth
+                        ? `${start.getMonth()+1}/${start.getDate()}–${end.getDate()}`
+                        : `${start.getMonth()+1}/${start.getDate()}–${end.getMonth()+1}/${end.getDate()}`;
+                    groupLabel = `${start.getFullYear()}/${start.getMonth()+1}`;
+                } else {
+                    label = String(start.getDate());
+                    groupLabel = `${start.getFullYear()}/${start.getMonth()+1}`;
+                }
+                periods.push({
+                    start, end, label, groupLabel,
+                    key: `${this.dateKey(start)}_${this.dateKey(end)}`
+                });
+                cursor = this.addDays(end, 1);
+                guard++;
+            }
+            return periods;
+        },
+
         colorConfig(color) {
             const map = {
                 blue:   { hex:'#3b82f6', light:'#dbeafe', label:'一般' },
@@ -482,6 +544,47 @@ const app = {
 
         totalMinutes(card) {
             return this.getLogs(card).reduce((sum, log) => sum + this.logMinutes(log), 0);
+        },
+
+        dailyMinutesMap(card) {
+            const map = {};
+            this.getLogs(card).forEach(log => {
+                const key = log.workDate || '';
+                if (!key) return;
+                map[key] = (map[key] || 0) + this.logMinutes(log);
+            });
+            return map;
+        },
+
+        dailyMinutes(card, dateKey) {
+            if (!dateKey) return 0;
+            return this.getLogs(card).reduce((sum, log) => log.workDate === dateKey ? sum + this.logMinutes(log) : sum, 0);
+        },
+
+        dailyLogCount(card, dateKey) {
+            return this.getLogs(card).filter(log => log.workDate === dateKey && this.logMinutes(log) > 0).length;
+        },
+
+        compactMinutes(totalMinutes = 0) {
+            const mins = Math.max(0, Math.round(Number(totalMinutes) || 0));
+            if (mins <= 0) return '';
+            const h = Math.floor(mins / 60);
+            const m = mins % 60;
+            if (h && !m) return `${h}h`;
+            if (h) return `${h}h${m}`;
+            return `${m}m`;
+        },
+
+        workUsagePercent(card) {
+            const planned = this.plannedMinutes(card);
+            if (!planned) return null;
+            return Math.round((this.totalMinutes(card) / planned) * 100);
+        },
+
+        remainingPlannedMinutes(card) {
+            const planned = this.plannedMinutes(card);
+            if (!planned) return null;
+            return Math.round(planned - this.totalMinutes(card));
         },
 
         totalSeconds(card) { return Math.round(this.totalMinutes(card) * 60); },
@@ -1015,14 +1118,29 @@ const app = {
         },
 
         setGanttFilter(field, value) {
-            if (!app.state.ganttFilters) app.state.ganttFilters = { project:'', month:'' };
+            if (!app.state.ganttFilters) app.state.ganttFilters = { project:'', month:'', mode:'schedule', scale:'' };
             if (field !== 'project' && field !== 'month') return;
             app.state.ganttFilters[field] = value || '';
             app.renderGantt();
         },
 
+        setGanttMode(mode) {
+            if (!app.state.ganttFilters) app.state.ganttFilters = { project:'', month:'', mode:'schedule', scale:'' };
+            app.state.ganttFilters.mode = mode === 'time' ? 'time' : 'schedule';
+            app.renderGantt();
+        },
+
+        setGanttScale(scale) {
+            if (!app.state.ganttFilters) app.state.ganttFilters = { project:'', month:'', mode:'schedule', scale:'' };
+            if (!['day','week','month'].includes(scale)) return;
+            app.state.ganttFilters.scale = scale;
+            app.renderGantt();
+        },
+
         resetGanttFilters() {
-            app.state.ganttFilters = { project:'', month:'' };
+            const mode = app.state.ganttFilters?.mode === 'time' ? 'time' : 'schedule';
+            const scale = this.getGanttScale();
+            app.state.ganttFilters = { project:'', month:'', mode, scale };
             app.renderGantt();
         },
 
@@ -1090,64 +1208,83 @@ const app = {
                 [13,12,16,16,28,14,14,14,36,26,26].forEach((w,i)=>logSheet.getColumn(i+1).width=w);
                 logSheet.eachRow((row, rowNum) => { if (rowNum > 1) row.alignment = { vertical:'top', wrapText:true }; });
 
-                // 3) 甘特圖
+                // 3) 甘特圖：只改視覺尺度，工項總表 / 工時明細仍保留原始日期資料。
                 const ganttSheet = workbook.addWorksheet('甘特圖');
+                const exportScale = this.getGanttScale();
+                const exportScaleLabel = this.ganttScaleLabel(exportScale);
                 const entries = this.ganttCards().sort((a,b) => {
-                    const ga = `${a.card.project||''}\u0000${a.card.category||''}`;
-                    const gb = `${b.card.project||''}\u0000${b.card.category||''}`;
+                    const ga = `${a.card.project||''} ${a.card.category||''}`;
+                    const gb = `${b.card.project||''} ${b.card.category||''}`;
                     return ga.localeCompare(gb) || String(a.card.dateStart).localeCompare(String(b.card.dateStart));
                 });
-                const leftHeaders = ['工項','專案','分類','狀態','進度','預估 / 實際','預計起迄','實際起迄','分頁'];
+                const leftHeaders = ['工項','專案','分類','狀態','進度','預估 / 實際','預計起迄','實際起迄','分頁','軌道'];
                 leftHeaders.forEach((h,i)=>ganttSheet.getCell(2,i+1).value=h);
-                let days = [];
+
+                let periods = [];
                 if (entries.length) {
-                    const starts = entries.map(x => this.parseLocalDate(x.card.dateStart)).filter(Boolean);
-                    const ends = entries.map(x => this.parseLocalDate(x.card.dateEnd)).filter(Boolean);
-                    let minDate = new Date(Math.min(...starts.map(d=>d.getTime())));
-                    let maxDate = new Date(Math.max(...ends.map(d=>d.getTime())));
-                    const span = Math.round((maxDate - minDate)/86400000)+1;
-                    if (span > 366) maxDate = this.addDays(minDate,365);
-                    for (let d = new Date(minDate); d <= maxDate; d = this.addDays(d,1)) days.push(new Date(d));
+                    const dateCandidates = [];
+                    entries.forEach(({card}) => {
+                        const s = this.parseLocalDate(card.dateStart);
+                        const e = this.parseLocalDate(card.dateEnd);
+                        if (s) dateCandidates.push(s);
+                        if (e) dateCandidates.push(e);
+                        this.getLogs(card).forEach(log => {
+                            const d = this.parseLocalDate(log.workDate);
+                            if (d) dateCandidates.push(d);
+                        });
+                    });
+                    if (dateCandidates.length) {
+                        let minDate = new Date(Math.min(...dateCandidates.map(d=>d.getTime())));
+                        let maxDate = new Date(Math.max(...dateCandidates.map(d=>d.getTime())));
+                        if (exportScale === 'week') {
+                            minDate = this.startOfWeek(minDate);
+                            maxDate = this.endOfWeek(maxDate);
+                        } else if (exportScale === 'month') {
+                            minDate = this.startOfMonth(minDate);
+                            maxDate = this.endOfMonth(maxDate);
+                        }
+                        periods = this.buildGanttPeriods(minDate, maxDate, exportScale);
+                    }
                 }
-                const dateStartCol = leftHeaders.length + 1;
-                days.forEach((d,idx) => {
-                    const col = dateStartCol + idx;
-                    ganttSheet.getCell(2,col).value = d;
-                    ganttSheet.getCell(2,col).numFmt = 'd';
-                    ganttSheet.getColumn(col).width = 4.2;
+
+                const periodStartCol = leftHeaders.length + 1;
+                periods.forEach((period,idx) => {
+                    const col = periodStartCol + idx;
+                    ganttSheet.getCell(2,col).value = period.label;
+                    ganttSheet.getColumn(col).width = exportScale === 'day' ? 4.2 : (exportScale === 'week' ? 12 : 11);
                 });
-                // 月份列
-                if (days.length) {
+
+                if (periods.length) {
                     let groupStart = 0;
-                    for (let i=0;i<=days.length;i++) {
-                        const changed = i===days.length || days[i].getMonth() !== days[groupStart].getMonth() || days[i].getFullYear() !== days[groupStart].getFullYear();
+                    for (let i=0;i<=periods.length;i++) {
+                        const changed = i===periods.length || periods[i].groupLabel !== periods[groupStart].groupLabel;
                         if (changed) {
-                            const startCol = dateStartCol + groupStart;
-                            const endCol = dateStartCol + i - 1;
+                            const startCol = periodStartCol + groupStart;
+                            const endCol = periodStartCol + i - 1;
                             if (endCol > startCol) ganttSheet.mergeCells(1,startCol,1,endCol);
                             const c = ganttSheet.getCell(1,startCol);
-                            c.value = `${days[groupStart].getFullYear()}/${days[groupStart].getMonth()+1}`;
+                            c.value = periods[groupStart].groupLabel;
                             c.alignment = {horizontal:'center'};
                             groupStart = i;
                         }
                     }
                 }
                 ganttSheet.mergeCells(1,1,1,leftHeaders.length);
-                ganttSheet.getCell(1,1).value = '甘特圖（排程＝預計日期；實際日期與工時分開呈現）';
+                ganttSheet.getCell(1,1).value = `甘特圖｜匯出檢視尺度：${exportScaleLabel}（原始日期仍保留於工項總表 / 工時明細）`;
                 this.styleExcelHeader(ganttSheet.getRow(2));
                 ganttSheet.getRow(1).eachCell(cell => {
                     cell.font = {bold:true,color:{argb:'FF334155'}};
                     cell.fill = {type:'pattern',pattern:'solid',fgColor:{argb:'FFE2E8F0'}};
                     cell.alignment = {horizontal:'center',vertical:'middle'};
                 });
-                [30,18,18,14,10,18,24,24,14].forEach((w,i)=>ganttSheet.getColumn(i+1).width=w);
+                [30,18,18,14,10,18,24,24,14,10].forEach((w,i)=>ganttSheet.getColumn(i+1).width=w);
 
                 let rowNo = 3;
                 let lastGroup = null;
                 entries.forEach(({card, tabName}) => {
                     const group = `${card.project || '未分類專案'} / ${card.category || '未分類'}`;
                     if (group !== lastGroup) {
-                        ganttSheet.mergeCells(rowNo,1,rowNo,Math.max(leftHeaders.length + days.length, leftHeaders.length));
+                        ganttSheet.mergeCells(rowNo,1,rowNo,Math.max(leftHeaders.length + periods.length, leftHeaders.length));
                         const gc = ganttSheet.getCell(rowNo,1);
                         gc.value = group;
                         gc.font = {bold:true,color:{argb:'FF3730A3'}};
@@ -1157,30 +1294,49 @@ const app = {
                     }
                     const planned = this.plannedMinutes(card);
                     const actual = this.totalMinutes(card);
-                    const values = [
+                    const sharedValues = [
                         card.title||'未命名', card.project||'', card.category||'', this.statusLabel(card.status), `${this.progressValue(card)}%`,
                         `${this.formatMinutes(planned)} / ${this.formatMinutes(actual)}`,
                         `${card.dateStart||''} → ${card.dateEnd||''}`,
                         `${this.derivedActualStart(card)||''}${this.derivedActualEnd(card) ? ` → ${this.derivedActualEnd(card)}` : ''}`,
                         tabName
                     ];
-                    values.forEach((v,i)=>ganttSheet.getCell(rowNo,i+1).value=v);
+                    for (let col=1; col<=sharedValues.length; col++) {
+                        ganttSheet.mergeCells(rowNo,col,rowNo+1,col);
+                        ganttSheet.getCell(rowNo,col).value = sharedValues[col-1];
+                        ganttSheet.getCell(rowNo,col).alignment = {vertical:'middle',wrapText:true};
+                    }
+                    ganttSheet.getCell(rowNo,10).value = '📐 預計';
+                    ganttSheet.getCell(rowNo+1,10).value = '⏱️ 實際';
+                    ganttSheet.getCell(rowNo,10).fill = {type:'pattern',pattern:'solid',fgColor:{argb:'FFEEF2FF'}};
+                    ganttSheet.getCell(rowNo+1,10).fill = {type:'pattern',pattern:'solid',fgColor:{argb:'FFECFDF5'}};
+
                     const start = this.parseLocalDate(card.dateStart);
                     const end = this.parseLocalDate(card.dateEnd);
                     const cfg = this.colorConfig(card.color);
-                    const progress = this.progressValue(card);
-                    const totalDays = start && end ? Math.max(1,Math.round((end-start)/86400000)+1) : 1;
-                    const doneDays = Math.ceil(totalDays * progress / 100);
-                    days.forEach((d,idx)=>{
-                        if (!start || !end || d < start || d > end) return;
-                        const cell = ganttSheet.getCell(rowNo,dateStartCol+idx);
-                        const offset = Math.round((d-start)/86400000);
-                        const hex = (offset < doneDays ? cfg.hex : cfg.light).replace('#','').toUpperCase();
-                        cell.fill = {type:'pattern',pattern:'solid',fgColor:{argb:`FF${hex}`}};
+                    periods.forEach((period,idx)=>{
+                        const col = periodStartCol + idx;
+                        const planIntersects = !!(start && end && !(end < period.start || start > period.end));
+                        if (planIntersects) {
+                            ganttSheet.getCell(rowNo,col).fill = {type:'pattern',pattern:'solid',fgColor:{argb:`FF${cfg.light.replace('#','').toUpperCase()}`}};
+                        }
+                        let mins = 0;
+                        this.getLogs(card).forEach(log => {
+                            const d = this.parseLocalDate(log.workDate);
+                            if (d && d >= period.start && d <= period.end) mins += this.logMinutes(log);
+                        });
+                        if (mins > 0) {
+                            const cell = ganttSheet.getCell(rowNo+1,col);
+                            cell.value = this.compactMinutes(mins);
+                            cell.fill = {type:'pattern',pattern:'solid',fgColor:{argb:`FF${cfg.hex.replace('#','').toUpperCase()}`}};
+                            cell.font = {bold:true,color:{argb:'FFFFFFFF'}};
+                            cell.alignment = {horizontal:'center',vertical:'middle'};
+                        }
                     });
                     ganttSheet.getCell(rowNo,1).fill = {type:'pattern',pattern:'solid',fgColor:{argb:`FF${cfg.light.replace('#','').toUpperCase()}`}};
-                    ganttSheet.getRow(rowNo).alignment = {vertical:'middle',wrapText:true};
-                    rowNo++;
+                    ganttSheet.getRow(rowNo).height = 22;
+                    ganttSheet.getRow(rowNo+1).height = 22;
+                    rowNo += 2;
                 });
                 ganttSheet.views = [{state:'frozen', xSplit:leftHeaders.length, ySplit:2}];
 
@@ -2029,20 +2185,35 @@ const app = {
 
     renderGantt() {
         const esc = app.entries.escapeHtml.bind(app.entries);
-        const allEntries = this.worktime.ganttCards().sort((a,b) => {
-            const ga = `${a.card.project || '未分類'}\u0000${a.card.category || '未分類'}`;
-            const gb = `${b.card.project || '未分類'}\u0000${b.card.category || '未分類'}`;
-            return ga.localeCompare(gb) || String(a.card.dateStart).localeCompare(String(b.card.dateStart));
-        });
         const target = document.getElementById('gantt-render-target');
         const projectSelect = document.getElementById('gantt-project-filter');
         const monthSelect = document.getElementById('gantt-month-filter');
-        if (!app.state.ganttFilters) app.state.ganttFilters = { project:'', month:'' };
+        if (!app.state.ganttFilters) app.state.ganttFilters = { project:'', month:'', mode:'schedule', scale:'' };
+        if (!app.state.ganttFilters.mode) app.state.ganttFilters.mode = 'schedule';
         const filters = app.state.ganttFilters;
+        const mode = filters.mode === 'time' ? 'time' : 'schedule';
+        const scale = this.worktime.getGanttScale();
+        const scaleLabel = this.worktime.ganttScaleLabel(scale);
         const NO_PROJECT = '__NO_PROJECT__';
 
-        // 篩選選項永遠由「全部可繪製工項」產生，不因另一個篩選而消失。
-        const projects = [...new Set(allEntries.map(({card}) => card.project?.trim() ? card.project.trim() : NO_PROJECT))]
+        const scheduleEntries = this.worktime.ganttCards();
+        const timeEntries = this.worktime.allCards().filter(({card}) => {
+            const hasLogs = this.worktime.getLogs(card).some(log => this.worktime.logMinutes(log) > 0 && log.workDate);
+            const hasPlan = !card.isMemo && card.dateMode === 'range' && card.dateStart && card.dateEnd;
+            return hasLogs || hasPlan;
+        });
+        const sourceEntries = (mode === 'time' ? timeEntries : scheduleEntries).sort((a,b) => {
+            const ga = `${a.card.project || '未分類'}\u0000${a.card.category || '未分類'}`;
+            const gb = `${b.card.project || '未分類'}\u0000${b.card.category || '未分類'}`;
+            const ad = a.card.dateStart || this.worktime.derivedActualStart(a.card) || '';
+            const bd = b.card.dateStart || this.worktime.derivedActualStart(b.card) || '';
+            return ga.localeCompare(gb) || String(ad).localeCompare(String(bd));
+        });
+
+        document.querySelectorAll('[data-gantt-mode]').forEach(btn => btn.classList.toggle('active', btn.dataset.ganttMode === mode));
+        document.querySelectorAll('[data-gantt-scale]').forEach(btn => btn.classList.toggle('active', btn.dataset.ganttScale === scale));
+
+        const projects = [...new Set(sourceEntries.map(({card}) => card.project?.trim() ? card.project.trim() : NO_PROJECT))]
             .sort((a,b) => (a === NO_PROJECT ? '未分類專案' : a).localeCompare(b === NO_PROJECT ? '未分類專案' : b, 'zh-Hant'));
         if (filters.project && !projects.includes(filters.project)) filters.project = '';
         if (projectSelect) {
@@ -2053,18 +2224,22 @@ const app = {
         }
 
         const monthSet = new Set();
-        allEntries.forEach(({card}) => {
+        sourceEntries.forEach(({card}) => {
             const s = this.worktime.parseLocalDate(card.dateStart);
             const e = this.worktime.parseLocalDate(card.dateEnd);
-            if (!s || !e) return;
-            let cursor = new Date(s.getFullYear(), s.getMonth(), 1);
-            const endMonth = new Date(e.getFullYear(), e.getMonth(), 1);
-            let guard = 0;
-            while (cursor <= endMonth && guard < 240) {
-                monthSet.add(`${cursor.getFullYear()}-${String(cursor.getMonth()+1).padStart(2,'0')}`);
-                cursor = new Date(cursor.getFullYear(), cursor.getMonth()+1, 1);
-                guard++;
+            if (s && e) {
+                let cursor = new Date(s.getFullYear(), s.getMonth(), 1);
+                const endMonth = new Date(e.getFullYear(), e.getMonth(), 1);
+                let guard = 0;
+                while (cursor <= endMonth && guard < 240) {
+                    monthSet.add(`${cursor.getFullYear()}-${String(cursor.getMonth()+1).padStart(2,'0')}`);
+                    cursor = new Date(cursor.getFullYear(), cursor.getMonth()+1, 1);
+                    guard++;
+                }
             }
+            this.worktime.getLogs(card).forEach(log => {
+                if (/^\d{4}-\d{2}-\d{2}$/.test(log.workDate || '')) monthSet.add(log.workDate.slice(0,7));
+            });
         });
         const months = [...monthSet].sort();
         if (filters.month && !months.includes(filters.month)) filters.month = '';
@@ -2076,26 +2251,28 @@ const app = {
             monthSelect.value = filters.month || '';
         }
 
-        let entries = allEntries.filter(({card}) => {
+        let entries = sourceEntries.filter(({card}) => {
             const projectKey = card.project?.trim() ? card.project.trim() : NO_PROJECT;
             if (filters.project && projectKey !== filters.project) return false;
-            if (filters.month) {
-                const [y, m] = filters.month.split('-').map(Number);
-                const monthStart = new Date(y, m - 1, 1);
-                const monthEnd = new Date(y, m, 0);
-                const start = this.worktime.parseLocalDate(card.dateStart);
-                const end = this.worktime.parseLocalDate(card.dateEnd);
-                if (!start || !end || end < monthStart || start > monthEnd) return false;
-            }
-            return true;
+            if (!filters.month) return true;
+            const [y, m] = filters.month.split('-').map(Number);
+            const monthStart = new Date(y, m - 1, 1);
+            const monthEnd = new Date(y, m, 0);
+            const start = this.worktime.parseLocalDate(card.dateStart);
+            const end = this.worktime.parseLocalDate(card.dateEnd);
+            const planIntersects = !!(start && end && !(end < monthStart || start > monthEnd));
+            const hasWorkInMonth = this.worktime.getLogs(card).some(log => (log.workDate || '').slice(0,7) === filters.month && this.worktime.logMinutes(log) > 0);
+            return mode === 'time' ? (planIntersects || hasWorkInMonth) : planIntersects;
         });
 
-        if (!allEntries.length) {
-            target.innerHTML = '<p style="text-align:center; color:#94a3b8; padding:25px;">目前沒有可繪製的排程工項。將卡片用途設為「排程工項」，並填入預計開始與預計完成即可。</p>';
+        if (!sourceEntries.length) {
+            target.innerHTML = mode === 'time'
+                ? '<p style="text-align:center; color:#94a3b8; padding:25px;">目前沒有可顯示的排程或工時紀錄。先在卡片補登工時，或用心流計時停止後自動寫入。</p>'
+                : '<p style="text-align:center; color:#94a3b8; padding:25px;">目前沒有可繪製的排程工項。將卡片用途設為「排程工項」，並填入預計開始與預計完成即可。</p>';
             return;
         }
         if (!entries.length) {
-            target.innerHTML = '<p style="text-align:center; color:#94a3b8; padding:25px;">目前篩選條件下沒有排程工項。可以切換月份／專案或清除篩選。</p>';
+            target.innerHTML = '<p style="text-align:center; color:#94a3b8; padding:25px;">目前篩選條件下沒有資料。可以切換月份／專案或清除篩選。</p>';
             return;
         }
 
@@ -2105,51 +2282,94 @@ const app = {
             minDate = new Date(y, m - 1, 1);
             maxDate = new Date(y, m, 0);
         } else {
-            const starts = entries.map(({card}) => this.worktime.parseLocalDate(card.dateStart)).filter(Boolean);
-            const ends = entries.map(({card}) => this.worktime.parseLocalDate(card.dateEnd)).filter(Boolean);
-            minDate = new Date(Math.min(...starts.map(d => d.getTime())));
-            maxDate = new Date(Math.max(...ends.map(d => d.getTime())));
+            const dateCandidates = [];
+            entries.forEach(({card}) => {
+                const s = this.worktime.parseLocalDate(card.dateStart);
+                const e = this.worktime.parseLocalDate(card.dateEnd);
+                if (s) dateCandidates.push(s);
+                if (e) dateCandidates.push(e);
+                if (mode === 'time') {
+                    this.worktime.getLogs(card).forEach(log => {
+                        const d = this.worktime.parseLocalDate(log.workDate);
+                        if (d) dateCandidates.push(d);
+                    });
+                }
+            });
+            if (!dateCandidates.length) {
+                target.innerHTML = '<p style="text-align:center; color:#94a3b8; padding:25px;">目前資料沒有有效日期。</p>';
+                return;
+            }
+            minDate = new Date(Math.min(...dateCandidates.map(d => d.getTime())));
+            maxDate = new Date(Math.max(...dateCandidates.map(d => d.getTime())));
+            if (scale === 'week') {
+                minDate = this.worktime.startOfWeek(minDate);
+                maxDate = this.worktime.endOfWeek(maxDate);
+            } else if (scale === 'month') {
+                minDate = this.worktime.startOfMonth(minDate);
+                maxDate = this.worktime.endOfMonth(maxDate);
+            }
         }
 
-        const rawSpan = Math.round((maxDate - minDate) / 86400000) + 1;
-        let truncated = false;
-        if (rawSpan > 366) {
-            maxDate = this.worktime.addDays(minDate, 365);
-            truncated = true;
+        const periods = this.worktime.buildGanttPeriods(minDate, maxDate, scale);
+        if (!periods.length) {
+            target.innerHTML = '<p style="text-align:center; color:#94a3b8; padding:25px;">目前資料沒有可顯示的日期區間。</p>';
+            return;
         }
-        const days = [];
-        for (let d = new Date(minDate); d <= maxDate; d = this.worktime.addDays(d,1)) days.push(new Date(d));
-        const todayKey = this.worktime.localDateString();
-        const leftCols = 6;
-        const totalCols = leftCols + days.length;
+        const lastPeriod = periods[periods.length - 1];
+        const displayedMaxDate = lastPeriod.end;
+        const expectedLastKey = this.worktime.dateKey(maxDate);
+        const truncated = this.worktime.dateKey(displayedMaxDate) < expectedLastKey;
+        const today = new Date();
+        today.setHours(0,0,0,0);
+        const leftCols = 7;
+        const totalCols = leftCols + periods.length;
 
-        // 月份標題列
-        let monthCells = '<th class="gantt-left gantt-title-col gantt-month-head">工項</th>' +
+        let groupCells = '<th class="gantt-left gantt-title-col gantt-month-head">工項</th>' +
             '<th class="gantt-left gantt-status-col gantt-month-head">狀態</th>' +
-            '<th class="gantt-left gantt-progress-col gantt-month-head">進度</th>' +
-            '<th class="gantt-left gantt-hours-col gantt-month-head">工時<br><span style="font-weight:normal;font-size:.7rem;">預估 / 實際</span></th>' +
+            '<th class="gantt-left gantt-progress-col gantt-month-head">完成度</th>' +
+            '<th class="gantt-left gantt-hours-col gantt-month-head">工時<br><span style="font-weight:normal;font-size:.7rem;">已用 / 預估 / 尚餘</span></th>' +
             '<th class="gantt-left gantt-plan-col gantt-month-head">規劃<br><span style="font-weight:normal;font-size:.7rem;">預計開始 → 完成</span></th>' +
-            '<th class="gantt-left gantt-actual-col gantt-month-head">實際<br><span style="font-weight:normal;font-size:.7rem;">實際開始 → 完成</span></th>';
-        let i = 0;
-        while (i < days.length) {
-            const d = days[i];
-            let j = i + 1;
-            while (j < days.length && days[j].getFullYear() === d.getFullYear() && days[j].getMonth() === d.getMonth()) j++;
-            monthCells += `<th class="gantt-month-head" colspan="${j-i}">${d.getFullYear()}/${d.getMonth()+1}</th>`;
-            i = j;
+            '<th class="gantt-left gantt-actual-col gantt-month-head">實際<br><span style="font-weight:normal;font-size:.7rem;">實際開始 → 完成</span></th>' +
+            '<th class="gantt-left gantt-track-col gantt-month-head">軌道</th>';
+        let gi = 0;
+        while (gi < periods.length) {
+            let gj = gi + 1;
+            while (gj < periods.length && periods[gj].groupLabel === periods[gi].groupLabel) gj++;
+            groupCells += `<th class="gantt-month-head" colspan="${gj-gi}">${esc(periods[gi].groupLabel)}</th>`;
+            gi = gj;
         }
 
-        const dayCells = '<th class="gantt-left gantt-title-col">名稱</th>' +
+        const periodCells = '<th class="gantt-left gantt-title-col">名稱</th>' +
             '<th class="gantt-left gantt-status-col">狀態</th>' +
-            '<th class="gantt-left gantt-progress-col">%</th>' +
-            '<th class="gantt-left gantt-hours-col">時間</th>' +
+            '<th class="gantt-left gantt-progress-col">成果</th>' +
+            '<th class="gantt-left gantt-hours-col">工時</th>' +
             '<th class="gantt-left gantt-plan-col">預計</th>' +
             '<th class="gantt-left gantt-actual-col">實際</th>' +
-            days.map(d => {
-                const weekend = d.getDay() === 0 || d.getDay() === 6;
-                const today = this.worktime.dateKey(d) === todayKey;
-                return `<th class="gantt-day-head ${weekend ? 'weekend' : ''} ${today ? 'today-col' : ''}" title="${this.worktime.dateKey(d)}">${d.getDate()}</th>`;
+            '<th class="gantt-left gantt-track-col">層</th>' +
+            periods.map(period => {
+                const containsToday = today >= period.start && today <= period.end;
+                const fullTitle = period.start.getTime() === period.end.getTime()
+                    ? this.worktime.dateKey(period.start)
+                    : `${this.worktime.dateKey(period.start)} ～ ${this.worktime.dateKey(period.end)}`;
+                return `<th class="gantt-day-head ${containsToday ? 'today-col' : ''}" title="${esc(fullTitle)}">${esc(period.label)}</th>`;
             }).join('');
+
+        const totalPlanned = entries.reduce((sum, {card}) => sum + this.worktime.plannedMinutes(card), 0);
+        const totalActual = entries.reduce((sum, {card}) => sum + this.worktime.totalMinutes(card), 0);
+        const totalRemaining = entries.reduce((sum, {card}) => {
+            const remaining = this.worktime.remainingPlannedMinutes(card);
+            return sum + (remaining === null ? 0 : remaining);
+        }, 0);
+        const remainingSummary = totalPlanned
+            ? (totalRemaining >= 0 ? `依原預估尚餘 ${this.worktime.formatMinutes(totalRemaining)}` : `已超出預估 ${this.worktime.formatMinutes(Math.abs(totalRemaining))}`)
+            : '尚未設定總預估工時';
+        const summary = `<div class="gantt-summary-strip">
+            <span><strong>${entries.length}</strong> 筆工項</span>
+            <span>預估 <strong>${totalPlanned ? this.worktime.formatMinutes(totalPlanned) : '未估'}</strong></span>
+            <span>實際 <strong>${this.worktime.formatMinutes(totalActual)}</strong></span>
+            <span class="${totalRemaining < 0 ? 'over' : ''}">${esc(remainingSummary)}</span>
+            <span>尺度 <strong>${scaleLabel}</strong></span>
+        </div>`;
 
         let body = '';
         let lastGroup = null;
@@ -2164,48 +2384,98 @@ const app = {
 
             const start = this.worktime.parseLocalDate(card.dateStart);
             const end = this.worktime.parseLocalDate(card.dateEnd);
-            const totalDays = Math.max(1, Math.round((end - start) / 86400000) + 1);
             const progress = this.worktime.progressValue(card);
-            const completedDays = Math.ceil(totalDays * progress / 100);
             const planned = this.worktime.plannedMinutes(card);
             const actual = this.worktime.totalMinutes(card);
+            const remaining = this.worktime.remainingPlannedMinutes(card);
+            const usagePct = this.worktime.workUsagePercent(card);
             const actualStart = this.worktime.derivedActualStart(card);
             const actualEnd = this.worktime.derivedActualEnd(card);
             const cfg = this.worktime.colorConfig(card.color);
             const status = this.worktime.statusLabel(card.status);
-            const actualText = actualStart ? `${actualStart}${actualEnd ? ` → ${actualEnd}` : ' → …'}` : '尚未開始';
-            const dayRow = days.map(d => {
-                const weekend = d.getDay() === 0 || d.getDay() === 6;
-                const today = this.worktime.dateKey(d) === todayKey;
-                const inRange = d >= start && d <= end;
-                if (!inRange) return `<td class="gantt-day-cell ${weekend ? 'weekend' : ''} ${today ? 'today-col' : ''}"></td>`;
-                const offset = Math.round((d - start) / 86400000);
-                const done = offset < completedDays;
-                const isStart = this.worktime.dateKey(d) === this.worktime.dateKey(start) || (start < minDate && this.worktime.dateKey(d) === this.worktime.dateKey(minDate));
-                const isEnd = this.worktime.dateKey(d) === this.worktime.dateKey(end) || (end > maxDate && this.worktime.dateKey(d) === this.worktime.dateKey(maxDate));
-                return `<td class="gantt-day-cell gantt-bar-cell ${done ? 'done' : ''} ${isStart ? 'gantt-bar-start' : ''} ${isEnd ? 'gantt-bar-end' : ''} ${today ? 'today-col' : ''}" style="background:${done ? cfg.hex : cfg.light};" title="${esc(card.title || '未命名')}｜${this.worktime.dateKey(d)}"></td>`;
+            const actualText = actualStart ? `${actualStart}${actualEnd ? ` → ${actualEnd}` : ' → …'}` : (actual > 0 ? '已有工時紀錄' : '尚未開始');
+            const logs = this.worktime.getLogs(card);
+
+            const progressHtml = `<div class="gantt-progress-value">${progress}%</div><div class="gantt-mini-track"><span style="width:${Math.max(0, Math.min(100, progress))}%;"></span></div>`;
+            let remainingText = '未設定預估';
+            if (remaining !== null) remainingText = remaining >= 0 ? `尚餘約 ${this.worktime.formatMinutes(remaining)}` : `超出 ${this.worktime.formatMinutes(Math.abs(remaining))}`;
+            const usageWidth = usagePct === null ? 0 : Math.max(0, Math.min(100, usagePct));
+            const hoursHtml = `<div class="gantt-hours-main">已用 <strong>${this.worktime.formatMinutes(actual)}</strong>${planned ? ` / 預估 ${this.worktime.formatMinutes(planned)}` : ' / 未估'}</div>
+                <div class="gantt-hours-remain ${remaining !== null && remaining < 0 ? 'over' : ''}">${esc(remainingText)}</div>
+                ${planned ? `<div class="gantt-usage-track"><span class="${usagePct > 100 ? 'over' : ''}" style="width:${usageWidth}%;"></span></div>` : ''}
+                ${Number(card.status) === 1 && actual <= 0 ? '<div class="gantt-unlogged">⚠ 進行中但尚無工時紀錄</div>' : ''}`;
+            const planText = start && end ? `${card.dateStart} → ${card.dateEnd}` : '無排程';
+
+            const planPeriodRow = periods.map(period => {
+                const containsToday = today >= period.start && today <= period.end;
+                const intersects = !!(start && end && !(end < period.start || start > period.end));
+                const periodText = period.start.getTime() === period.end.getTime()
+                    ? this.worktime.dateKey(period.start)
+                    : `${this.worktime.dateKey(period.start)} ～ ${this.worktime.dateKey(period.end)}`;
+                const title = esc(`${card.title || '未命名'}｜${periodText}｜${intersects ? '預計排程有涵蓋' : '無預計排程'}`);
+                if (!intersects) return `<td class="gantt-day-cell ${containsToday ? 'today-col' : ''}" title="${title}"></td>`;
+                const isStart = !!(start && start >= period.start && start <= period.end) || (start && start < minDate && period.start.getTime() === minDate.getTime());
+                const isEnd = !!(end && end >= period.start && end <= period.end) || (end && end > displayedMaxDate && period.end.getTime() === displayedMaxDate.getTime());
+                return `<td class="gantt-day-cell gantt-bar-cell ${isStart ? 'gantt-bar-start' : ''} ${isEnd ? 'gantt-bar-end' : ''} ${containsToday ? 'today-col' : ''}" style="background:${cfg.light};" title="${title}"></td>`;
+            }).join('');
+
+            const actualPeriodRow = periods.map(period => {
+                const containsToday = today >= period.start && today <= period.end;
+                let periodMins = 0;
+                let logCount = 0;
+                let outsideCount = 0;
+                logs.forEach(log => {
+                    const d = this.worktime.parseLocalDate(log.workDate);
+                    const mins = this.worktime.logMinutes(log);
+                    if (!d || mins <= 0 || d < period.start || d > period.end) return;
+                    periodMins += mins;
+                    logCount++;
+                    if (start && end && (d < start || d > end)) outsideCount++;
+                });
+                const periodText = period.start.getTime() === period.end.getTime()
+                    ? this.worktime.dateKey(period.start)
+                    : `${this.worktime.dateKey(period.start)} ～ ${this.worktime.dateKey(period.end)}`;
+                const titleParts = [`${card.title || '未命名'}｜${periodText}`];
+                if (periodMins > 0) titleParts.push(`實際 ${this.worktime.formatMinutes(periodMins)}（${logCount} 筆）`);
+                else titleParts.push('此期間無工時紀錄');
+                if (outsideCount > 0) titleParts.push(`⚠ ${outsideCount} 筆排程外工時`);
+                const title = esc(titleParts.join('｜'));
+                if (periodMins > 0) {
+                    return `<td class="gantt-day-cell gantt-work-cell ${outsideCount > 0 ? 'gantt-work-outside' : ''} ${containsToday ? 'today-col' : ''}" style="background:${cfg.hex};" title="${title}"><span>${esc(this.worktime.compactMinutes(periodMins))}</span></td>`;
+                }
+                return `<td class="gantt-day-cell ${containsToday ? 'today-col' : ''}" title="${title}"></td>`;
             }).join('');
 
             body += `
-                <tr style="cursor:pointer;" onclick="app.actions.jumpToCard('${card.id}','${tabId}')" title="點擊跳回卡片">
-                    <td class="gantt-left gantt-title-col">
+                <tr class="gantt-plan-row ${mode === 'time' ? 'gantt-time-focus' : ''}" style="cursor:pointer;" onclick="app.actions.jumpToCard('${card.id}','${tabId}')" title="點擊跳回卡片">
+                    <td rowspan="2" class="gantt-left gantt-title-col gantt-rowspan-cell">
                         <div class="gantt-task-title"><span class="color-chip" style="background:${cfg.hex}"></span><span>${esc(card.title || '未命名')}</span></div>
-                        <div style="font-size:.68rem;color:#94a3b8;margin-top:2px;">[${esc(tabName)}]</div>
+                        <div style="font-size:.68rem;color:#94a3b8;margin-top:2px;">[${esc(tabName)}]${card.isMemo ? ' · 自由卡' : ''}</div>
                     </td>
-                    <td class="gantt-left gantt-status-col">${esc(status)}</td>
-                    <td class="gantt-left gantt-progress-col">${progress}%</td>
-                    <td class="gantt-left gantt-hours-col">${planned ? this.worktime.formatMinutes(planned) : '未估'}<br><strong style="color:#047857;">${this.worktime.formatMinutes(actual)}</strong></td>
-                    <td class="gantt-left gantt-plan-col">${esc(card.dateStart)} → ${esc(card.dateEnd)}</td>
-                    <td class="gantt-left gantt-actual-col">${esc(actualText)}</td>
-                    ${dayRow}
+                    <td rowspan="2" class="gantt-left gantt-status-col gantt-rowspan-cell">${esc(status)}</td>
+                    <td rowspan="2" class="gantt-left gantt-progress-col gantt-rowspan-cell">${progressHtml}</td>
+                    <td rowspan="2" class="gantt-left gantt-hours-col gantt-rowspan-cell">${hoursHtml}</td>
+                    <td rowspan="2" class="gantt-left gantt-plan-col gantt-rowspan-cell">${esc(planText)}</td>
+                    <td rowspan="2" class="gantt-left gantt-actual-col gantt-rowspan-cell">${esc(actualText)}</td>
+                    <td class="gantt-left gantt-track-col gantt-track-plan">📐 預計</td>
+                    ${planPeriodRow}
+                </tr>
+                <tr class="gantt-actual-row" style="cursor:pointer;" onclick="app.actions.jumpToCard('${card.id}','${tabId}')" title="點擊跳回卡片">
+                    <td class="gantt-left gantt-track-col gantt-track-actual">⏱️ 實際</td>
+                    ${actualPeriodRow}
                 </tr>`;
         });
 
-        const warning = truncated ? '<div style="margin-bottom:8px;color:#b45309;font-size:.8rem;">⚠️ 排程跨度超過 366 天，畫面甘特僅顯示前 366 天；Excel 工項資料仍保留完整起迄日期。</div>' : '';
+        const capText = scale === 'day' ? '366 天' : (scale === 'week' ? '156 週' : '120 個月');
+        const warning = truncated ? `<div style="margin-bottom:8px;color:#b45309;font-size:.8rem;">⚠️ 顯示跨度過長，${scaleLabel}尺度最多顯示 ${capText}；原始資料與 Excel 工項／工時明細不受影響。</div>` : '';
         const filterNote = (filters.project || filters.month)
-            ? `<div style="margin-bottom:8px;color:#475569;font-size:.8rem;">目前顯示 ${entries.length} 筆工項${filters.project ? ` · 專案：${esc(filters.project === NO_PROJECT ? '未分類專案' : filters.project)}` : ''}${filters.month ? ` · 月份：${esc(filters.month)}` : ''}</div>`
+            ? `<div style="margin-bottom:8px;color:#475569;font-size:.8rem;">目前顯示 ${entries.length} 筆${filters.project ? ` · 專案：${esc(filters.project === NO_PROJECT ? '未分類專案' : filters.project)}` : ''}${filters.month ? ` · 月份：${esc(filters.month)}` : ''} · 尺度：${scaleLabel}</div>`
             : '';
-        target.innerHTML = `${filterNote}${warning}<div class="gantt-table-wrap"><table class="gantt-table"><thead><tr>${monthCells}</tr><tr>${dayCells}</tr></thead><tbody>${body}</tbody></table></div>`;
+        const granularity = scale === 'day' ? '每天' : (scale === 'week' ? '每週' : '每月');
+        const modeNote = mode === 'time'
+            ? `<div class="gantt-mode-note">⏱️ 工時模式：下層實際工時依「${scaleLabel}」尺度彙總（${granularity}）；上層預計排程淡化。切換尺度只改顯示，不改原始工時日期。</div>`
+            : `<div class="gantt-mode-note">📅 排程模式：上層顯示預計排程，下層顯示${granularity}實際投入。日／週／月只是檢視尺度，不會改寫卡片資料。</div>`;
+        target.innerHTML = `${filterNote}${warning}${summary}${modeNote}<div class="gantt-table-wrap"><table class="gantt-table gantt-scale-${scale}"><thead><tr>${groupCells}</tr><tr>${periodCells}</tr></thead><tbody>${body}</tbody></table></div>`;
     },
 
     renderCalendar() {
