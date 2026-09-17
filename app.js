@@ -2387,8 +2387,236 @@ const app = {
     }
 };
 
+
+// ==========================================
+// 🧭 v2.2.1 任務導覽
+// 與既有 app 核心解耦：不改 renderAll / jumpToCard / Firebase。
+// ==========================================
+app.taskNav = {
+    ui: {
+        initialized: false,
+        open: false,
+        search: '',
+        scope: 'current',
+        activeCardId: null,
+        lastMobile: null,
+        collapsedGroups: Object.create(null),
+        timelineObserver: null,
+        mutationObserver: null,
+        renderTimer: null
+    },
+
+    isMobile() { return window.innerWidth <= 768; },
+    defaultOpen() { return window.innerWidth > 1200; },
+
+    safe(fn) {
+        try { return fn(); }
+        catch (err) { console.warn('[taskNav] 導覽功能發生錯誤，核心白板不受影響：', err); return null; }
+    },
+
+    init() {
+        if (this.ui.initialized) return;
+        this.ui.initialized = true;
+        this.ui.lastMobile = this.isMobile();
+        this.ui.open = this.defaultOpen();
+        this.applyOpenState();
+        this.safe(() => this.renderList());
+        this.installMutationObserver();
+        this.safe(() => this.observeTimelineCards());
+
+        window.addEventListener('resize', () => this.safe(() => {
+            const mobileNow = this.isMobile();
+            if (mobileNow !== this.ui.lastMobile) {
+                this.ui.lastMobile = mobileNow;
+                this.ui.open = this.defaultOpen();
+                this.applyOpenState();
+            }
+            this.observeTimelineCards();
+        }));
+    },
+
+    applyOpenState() {
+        document.body.classList.toggle('task-nav-open', !!this.ui.open);
+        document.getElementById('btn-task-nav')?.classList.toggle('active', !!this.ui.open);
+    },
+
+    toggle() {
+        this.ui.open = !this.ui.open;
+        this.applyOpenState();
+        if (this.ui.open) {
+            this.safe(() => this.renderList());
+            this.safe(() => this.observeTimelineCards());
+            if (this.isMobile()) setTimeout(() => document.getElementById('task-nav-search')?.focus(), 180);
+        }
+    },
+
+    close() { this.ui.open = false; this.applyOpenState(); },
+
+    setSearch(value) {
+        this.ui.search = String(value || '');
+        this.safe(() => this.renderList());
+    },
+
+    setScope(value) {
+        this.ui.scope = value === 'all' ? 'all' : 'current';
+        this.safe(() => this.renderList());
+    },
+
+    normalizeText(value) { return String(value ?? '').toLocaleLowerCase('zh-TW').trim(); },
+    escape(value) {
+        if (app.entries && typeof app.entries.escapeHtml === 'function') return app.entries.escapeHtml(value);
+        return String(value ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;');
+    },
+
+    getTabs() {
+        const tabs = Array.isArray(app.state.tabs) ? app.state.tabs : [];
+        return this.ui.scope === 'all' ? tabs : tabs.filter(t => t.id === app.state.activeTabId);
+    },
+
+    renderList() {
+        const root = document.getElementById('task-nav-list');
+        if (!root) return;
+        const searchEl = document.getElementById('task-nav-search');
+        const scopeEl = document.getElementById('task-nav-scope');
+        if (searchEl && searchEl.value !== this.ui.search) searchEl.value = this.ui.search;
+        if (scopeEl) scopeEl.value = this.ui.scope;
+
+        const q = this.normalizeText(this.ui.search);
+        const sections = [];
+
+        this.getTabs().forEach(tab => {
+            const sourceCards = Array.isArray(app.state.workspaces?.[tab.id]) ? app.state.workspaces[tab.id] : [];
+            const cards = q ? sourceCards.filter(card => {
+                const hay = [tab.name, card.project, card.category, card.title, card.content]
+                    .map(v => this.normalizeText(v)).join(' ');
+                return hay.includes(q);
+            }) : sourceCards;
+            if (!cards.length) return;
+
+            const groups = new Map();
+            cards.forEach(card => {
+                const project = String(card.project || '').trim() || '未分類';
+                if (!groups.has(project)) groups.set(project, []);
+                groups.get(project).push(card);
+            });
+
+            let groupHtml = '';
+            groups.forEach((groupCards, project) => {
+                const groupKey = `${tab.id}::${project}`;
+                const collapsed = !!this.ui.collapsedGroups[groupKey];
+                const rows = groupCards.map(card => {
+                    const active = this.ui.activeCardId === card.id ? ' active' : '';
+                    const titleRaw = String(card.title || '').trim() || '未命名卡片';
+                    const title = this.escape(titleRaw);
+                    const kind = card.isMemo ? '自由' : '排程';
+                    return `<button type="button" class="task-nav-card status-${Number(card.status || 0)}${active}" data-card-id="${this.escape(card.id)}" onclick="app.taskNav.goToCard('${card.id}','${tab.id}')" title="${title}">
+                        <span class="task-nav-card-dot"></span><span class="task-nav-card-title">${title}</span><span class="task-nav-card-kind">${kind}</span>
+                    </button>`;
+                }).join('');
+
+                groupHtml += `<div class="task-nav-project${collapsed ? ' collapsed' : ''}" data-group-key="${this.escape(groupKey)}">
+                    <button type="button" class="task-nav-project-head" onclick="app.taskNav.toggleProject('${this.escape(groupKey)}', this)">
+                        <span class="task-nav-project-arrow">${collapsed ? '▶' : '▼'}</span>
+                        <span class="task-nav-project-name">${this.escape(project)}</span>
+                        <span class="task-nav-project-count">${groupCards.length}</span>
+                    </button>
+                    <div class="task-nav-card-list">${rows}</div>
+                </div>`;
+            });
+
+            sections.push(`<section class="task-nav-workspace">
+                <div class="task-nav-workspace-title">▣ ${this.escape(tab.name || '工作區')}${tab.id === app.state.activeTabId ? ' · 目前' : ''}</div>
+                ${groupHtml}
+            </section>`);
+        });
+
+        root.innerHTML = sections.length ? sections.join('') : `<div class="task-nav-empty">${q ? '找不到符合的卡片。' : '目前沒有可導覽的卡片。'}</div>`;
+    },
+
+    toggleProject(groupKey, button) {
+        const project = button?.closest('.task-nav-project');
+        if (!project) return;
+        const collapsed = !project.classList.contains('collapsed');
+        project.classList.toggle('collapsed', collapsed);
+        const arrow = project.querySelector('.task-nav-project-arrow');
+        if (arrow) arrow.textContent = collapsed ? '▶' : '▼';
+        this.ui.collapsedGroups[groupKey] = collapsed;
+    },
+
+    goToCard(cardId, tabId) {
+        this.ui.activeCardId = cardId;
+        // 使用 v2.1 既有跳轉機制，不改它本身。
+        app.actions.jumpToCard(cardId, tabId);
+        if (this.isMobile()) this.close();
+        setTimeout(() => this.safe(() => {
+            this.setActiveCard(cardId);
+            this.observeTimelineCards();
+            const target = document.querySelector(`.card[data-id="${CSS.escape(cardId)}"]`);
+            if (target) {
+                target.classList.remove('task-nav-flash');
+                void target.offsetWidth;
+                target.classList.add('task-nav-flash');
+            }
+        }), 220);
+    },
+
+    setActiveCard(cardId) {
+        if (!cardId) return;
+        this.ui.activeCardId = cardId;
+        document.querySelectorAll('#task-nav-list .task-nav-card.active').forEach(el => el.classList.remove('active'));
+        document.querySelectorAll('#task-nav-list .task-nav-card').forEach(el => {
+            if (el.dataset.cardId !== cardId) return;
+            el.classList.add('active');
+            const project = el.closest('.task-nav-project');
+            if (project?.classList.contains('collapsed')) {
+                project.classList.remove('collapsed');
+                const arrow = project.querySelector('.task-nav-project-arrow');
+                if (arrow) arrow.textContent = '▼';
+                const key = project.dataset.groupKey;
+                if (key) this.ui.collapsedGroups[key] = false;
+            }
+            if (this.ui.open && !this.isMobile()) el.scrollIntoView({block:'nearest'});
+        });
+    },
+
+    disconnectTimelineObserver() {
+        if (this.ui.timelineObserver) this.ui.timelineObserver.disconnect();
+        this.ui.timelineObserver = null;
+    },
+
+    observeTimelineCards() {
+        this.disconnectTimelineObserver();
+        if (app.state.view !== 'timeline' || !('IntersectionObserver' in window)) return;
+        const cards = [...document.querySelectorAll('#timeline-render-target .card[data-id]')];
+        if (!cards.length) return;
+        this.ui.timelineObserver = new IntersectionObserver(entries => {
+            const visible = entries.filter(e => e.isIntersecting);
+            if (!visible.length) return;
+            visible.sort((a,b) => Math.abs(a.boundingClientRect.top - innerHeight * .33) - Math.abs(b.boundingClientRect.top - innerHeight * .33));
+            const id = visible[0]?.target?.dataset?.id;
+            if (id && id !== this.ui.activeCardId) this.safe(() => this.setActiveCard(id));
+        }, { threshold:[0,.05,.2,.5], rootMargin:'-18% 0px -58% 0px' });
+        cards.forEach(card => this.ui.timelineObserver.observe(card));
+    },
+
+    installMutationObserver() {
+        if (!('MutationObserver' in window)) return;
+        const targets = [document.getElementById('timeline-render-target'), document.getElementById('tab-bar')].filter(Boolean);
+        if (!targets.length) return;
+        this.ui.mutationObserver = new MutationObserver(() => {
+            clearTimeout(this.ui.renderTimer);
+            this.ui.renderTimer = setTimeout(() => this.safe(() => {
+                this.renderList();
+                this.observeTimelineCards();
+            }), 60);
+        });
+        targets.forEach(target => this.ui.mutationObserver.observe(target, {childList:true, subtree:true}));
+    }
+};
+
 // === 啟動應用 ===
 app.init();
+app.taskNav.init();
 window.addEventListener('resize', () => {
     if (app.state.view === 'matrix') app.renderMatrix();
     if (app.state.tsumego.isOpen) app.renderTsumegoStones();
