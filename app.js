@@ -24,6 +24,7 @@ const app = {
         tsumego: { isOpen: false, currentColor: 'black', stones: [] },
         view: 'timeline',
         filters: { keyword: '', activeProject: null },
+        ganttFilters: { project: '', month: '' },
         showProjectBar: false,
         
         // SPA 沙盒專屬狀態
@@ -565,6 +566,26 @@ const app = {
             return `${diff > 0 ? '+' : '-'}${this.formatMinutes(Math.abs(diff))}`;
         },
 
+        getPlanningUi(cardId, source = 'timeline') {
+            const key = `${source}:${cardId}`;
+            if (!this.planningUi) this.planningUi = {};
+            if (!this.planningUi[key]) this.planningUi[key] = { expanded: false };
+            return this.planningUi[key];
+        },
+
+        togglePlanning(cardId, source = 'timeline') {
+            const card = this.getCard(cardId);
+            if (!card) return;
+            const ui = this.getPlanningUi(cardId, source);
+            ui.expanded = !ui.expanded;
+            if (source === 'sandbox') {
+                app.entries.renderSandbox(card);
+                return;
+            }
+            const panel = document.getElementById(`task-meta-${source}-${cardId}`);
+            if (panel) panel.outerHTML = this.renderPlanningPanel(card, source);
+        },
+
         renderPlanningPanel(card, source = 'timeline') {
             const esc = app.entries.escapeHtml.bind(app.entries);
             const category = esc(card.category || '');
@@ -582,9 +603,27 @@ const app = {
             const color = card.color || 'blue';
             const colorCfg = this.colorConfig(color);
             const isScheduled = !card.isMemo;
+            const ui = this.getPlanningUi(card.id, source);
+            const collapsedSummary = `${isScheduled ? '排程工項' : '自由卡'} · 預估 ${this.plannedMinutes(card) ? this.formatMinutes(this.plannedMinutes(card)) : '未填'} · 實際 ${this.formatMinutes(actualMinutes)}`;
+
+            if (!ui.expanded) {
+                return `
+                    <div class="task-meta-panel task-meta-collapsed" id="task-meta-${source}-${card.id}">
+                        <button class="pm-collapse-toggle" type="button" onclick="app.worktime.togglePlanning('${card.id}','${source}')" aria-expanded="false">
+                            <span class="pm-collapse-title">📐 規劃 / ✅ 實際</span>
+                            <span class="pm-collapse-summary">${esc(collapsedSummary)}</span>
+                            <span class="pm-collapse-icon">展開 ▾</span>
+                        </button>
+                    </div>`;
+            }
 
             return `
                 <div class="task-meta-panel" id="task-meta-${source}-${card.id}">
+                    <button class="pm-collapse-toggle pm-collapse-toggle-open" type="button" onclick="app.worktime.togglePlanning('${card.id}','${source}')" aria-expanded="true">
+                        <span class="pm-collapse-title">📐 規劃 / ✅ 實際</span>
+                        <span class="pm-collapse-summary">${esc(collapsedSummary)}</span>
+                        <span class="pm-collapse-icon">收合 ▴</span>
+                    </button>
                     <div class="pm-section pm-section-plan">
                         <div class="pm-section-title">
                             <span>📐 規劃</span>
@@ -599,9 +638,9 @@ const app = {
                                         <option value="scheduled" ${isScheduled ? 'selected' : ''}>排程工項</option>
                                     </select>
                                 </label>
-                                <label class="task-meta-field">
-                                    <span class="task-meta-label">任務分類 / 工作包</span>
-                                    <input class="task-meta-input" value="${category}" placeholder="例如：圖表處理" onchange="app.worktime.updateCardField('${card.id}','category',this.value,'${source}')">
+                                <label class="task-meta-field" title="工作包（Work Package）就是同一專案中可一起管理的一組相關工作。這裡當作任務分類使用，可留白。">
+                                    <span class="task-meta-label">任務分類 <span style="font-weight:normal;color:#94a3b8;">（工作包，可留白）</span></span>
+                                    <input class="task-meta-input" value="${category}" placeholder="例如：圖表處理、目錄處理" onchange="app.worktime.updateCardField('${card.id}','category',this.value,'${source}')">
                                 </label>
                                 <label class="task-meta-field">
                                     <span class="task-meta-label">任務標記</span>
@@ -974,6 +1013,18 @@ const app = {
             } else fallback();
         },
 
+        setGanttFilter(field, value) {
+            if (!app.state.ganttFilters) app.state.ganttFilters = { project:'', month:'' };
+            if (field !== 'project' && field !== 'month') return;
+            app.state.ganttFilters[field] = value || '';
+            app.renderGantt();
+        },
+
+        resetGanttFilters() {
+            app.state.ganttFilters = { project:'', month:'' };
+            app.renderGantt();
+        },
+
         copyTasksToExcel() {
             const header = ['分頁','專案','分類','工項','標記','狀態','進度(%)','預計開始','預計完成','預估工時(分鐘)','預估工時(小時)','實際開始','實際完成','實際工時(分鐘)','實際工時(小時)','工時差異(分鐘)','預期產出','驗收條件','卡片ID'];
             const rows = this.taskExportRows();
@@ -1093,7 +1144,7 @@ const app = {
                 let rowNo = 3;
                 let lastGroup = null;
                 entries.forEach(({card, tabName}) => {
-                    const group = `${card.project || '未分類專案'} / ${card.category || '未分類工作包'}`;
+                    const group = `${card.project || '未分類專案'} / ${card.category || '未分類'}`;
                     if (group !== lastGroup) {
                         ganttSheet.mergeCells(rowNo,1,rowNo,Math.max(leftHeaders.length + days.length, leftHeaders.length));
                         const gc = ganttSheet.getCell(rowNo,1);
@@ -1895,21 +1946,89 @@ const app = {
     },
 
     renderGantt() {
-        const entries = this.worktime.ganttCards().sort((a,b) => {
+        const esc = app.entries.escapeHtml.bind(app.entries);
+        const allEntries = this.worktime.ganttCards().sort((a,b) => {
             const ga = `${a.card.project || '未分類'}\u0000${a.card.category || '未分類'}`;
             const gb = `${b.card.project || '未分類'}\u0000${b.card.category || '未分類'}`;
             return ga.localeCompare(gb) || String(a.card.dateStart).localeCompare(String(b.card.dateStart));
         });
         const target = document.getElementById('gantt-render-target');
-        if (!entries.length) {
+        const projectSelect = document.getElementById('gantt-project-filter');
+        const monthSelect = document.getElementById('gantt-month-filter');
+        if (!app.state.ganttFilters) app.state.ganttFilters = { project:'', month:'' };
+        const filters = app.state.ganttFilters;
+        const NO_PROJECT = '__NO_PROJECT__';
+
+        // 篩選選項永遠由「全部可繪製工項」產生，不因另一個篩選而消失。
+        const projects = [...new Set(allEntries.map(({card}) => card.project?.trim() ? card.project.trim() : NO_PROJECT))]
+            .sort((a,b) => (a === NO_PROJECT ? '未分類專案' : a).localeCompare(b === NO_PROJECT ? '未分類專案' : b, 'zh-Hant'));
+        if (filters.project && !projects.includes(filters.project)) filters.project = '';
+        if (projectSelect) {
+            projectSelect.innerHTML = `<option value="">全部專案</option>` + projects.map(p =>
+                `<option value="${esc(p)}">${esc(p === NO_PROJECT ? '未分類專案' : p)}</option>`
+            ).join('');
+            projectSelect.value = filters.project || '';
+        }
+
+        const monthSet = new Set();
+        allEntries.forEach(({card}) => {
+            const s = this.worktime.parseLocalDate(card.dateStart);
+            const e = this.worktime.parseLocalDate(card.dateEnd);
+            if (!s || !e) return;
+            let cursor = new Date(s.getFullYear(), s.getMonth(), 1);
+            const endMonth = new Date(e.getFullYear(), e.getMonth(), 1);
+            let guard = 0;
+            while (cursor <= endMonth && guard < 240) {
+                monthSet.add(`${cursor.getFullYear()}-${String(cursor.getMonth()+1).padStart(2,'0')}`);
+                cursor = new Date(cursor.getFullYear(), cursor.getMonth()+1, 1);
+                guard++;
+            }
+        });
+        const months = [...monthSet].sort();
+        if (filters.month && !months.includes(filters.month)) filters.month = '';
+        if (monthSelect) {
+            monthSelect.innerHTML = `<option value="">全部月份</option>` + months.map(m => {
+                const [y, mo] = m.split('-');
+                return `<option value="${m}">${Number(y)} 年 ${Number(mo)} 月</option>`;
+            }).join('');
+            monthSelect.value = filters.month || '';
+        }
+
+        let entries = allEntries.filter(({card}) => {
+            const projectKey = card.project?.trim() ? card.project.trim() : NO_PROJECT;
+            if (filters.project && projectKey !== filters.project) return false;
+            if (filters.month) {
+                const [y, m] = filters.month.split('-').map(Number);
+                const monthStart = new Date(y, m - 1, 1);
+                const monthEnd = new Date(y, m, 0);
+                const start = this.worktime.parseLocalDate(card.dateStart);
+                const end = this.worktime.parseLocalDate(card.dateEnd);
+                if (!start || !end || end < monthStart || start > monthEnd) return false;
+            }
+            return true;
+        });
+
+        if (!allEntries.length) {
             target.innerHTML = '<p style="text-align:center; color:#94a3b8; padding:25px;">目前沒有可繪製的排程工項。將卡片用途設為「排程工項」，並填入預計開始與預計完成即可。</p>';
             return;
         }
+        if (!entries.length) {
+            target.innerHTML = '<p style="text-align:center; color:#94a3b8; padding:25px;">目前篩選條件下沒有排程工項。可以切換月份／專案或清除篩選。</p>';
+            return;
+        }
 
-        const starts = entries.map(({card}) => this.worktime.parseLocalDate(card.dateStart)).filter(Boolean);
-        const ends = entries.map(({card}) => this.worktime.parseLocalDate(card.dateEnd)).filter(Boolean);
-        let minDate = new Date(Math.min(...starts.map(d => d.getTime())));
-        let maxDate = new Date(Math.max(...ends.map(d => d.getTime())));
+        let minDate, maxDate;
+        if (filters.month) {
+            const [y, m] = filters.month.split('-').map(Number);
+            minDate = new Date(y, m - 1, 1);
+            maxDate = new Date(y, m, 0);
+        } else {
+            const starts = entries.map(({card}) => this.worktime.parseLocalDate(card.dateStart)).filter(Boolean);
+            const ends = entries.map(({card}) => this.worktime.parseLocalDate(card.dateEnd)).filter(Boolean);
+            minDate = new Date(Math.min(...starts.map(d => d.getTime())));
+            maxDate = new Date(Math.max(...ends.map(d => d.getTime())));
+        }
+
         const rawSpan = Math.round((maxDate - minDate) / 86400000) + 1;
         let truncated = false;
         if (rawSpan > 366) {
@@ -1919,7 +2038,6 @@ const app = {
         const days = [];
         for (let d = new Date(minDate); d <= maxDate; d = this.worktime.addDays(d,1)) days.push(new Date(d));
         const todayKey = this.worktime.localDateString();
-        const esc = app.entries.escapeHtml.bind(app.entries);
         const leftCols = 6;
         const totalCols = leftCols + days.length;
 
@@ -1955,7 +2073,7 @@ const app = {
         let lastGroup = null;
         entries.forEach(({card, tabId, tabName}) => {
             const project = card.project || '未分類專案';
-            const category = card.category || '未分類工作包';
+            const category = card.category || '未分類';
             const group = `${project} / ${category}`;
             if (group !== lastGroup) {
                 body += `<tr class="gantt-group-row"><td colspan="${totalCols}">${esc(project)} <span style="color:#94a3b8;">/</span> ${esc(category)}</td></tr>`;
@@ -1981,8 +2099,8 @@ const app = {
                 if (!inRange) return `<td class="gantt-day-cell ${weekend ? 'weekend' : ''} ${today ? 'today-col' : ''}"></td>`;
                 const offset = Math.round((d - start) / 86400000);
                 const done = offset < completedDays;
-                const isStart = offset === 0;
-                const isEnd = offset === totalDays - 1;
+                const isStart = this.worktime.dateKey(d) === this.worktime.dateKey(start) || (start < minDate && this.worktime.dateKey(d) === this.worktime.dateKey(minDate));
+                const isEnd = this.worktime.dateKey(d) === this.worktime.dateKey(end) || (end > maxDate && this.worktime.dateKey(d) === this.worktime.dateKey(maxDate));
                 return `<td class="gantt-day-cell gantt-bar-cell ${done ? 'done' : ''} ${isStart ? 'gantt-bar-start' : ''} ${isEnd ? 'gantt-bar-end' : ''} ${today ? 'today-col' : ''}" style="background:${done ? cfg.hex : cfg.light};" title="${esc(card.title || '未命名')}｜${this.worktime.dateKey(d)}"></td>`;
             }).join('');
 
@@ -2002,7 +2120,10 @@ const app = {
         });
 
         const warning = truncated ? '<div style="margin-bottom:8px;color:#b45309;font-size:.8rem;">⚠️ 排程跨度超過 366 天，畫面甘特僅顯示前 366 天；Excel 工項資料仍保留完整起迄日期。</div>' : '';
-        target.innerHTML = `${warning}<div class="gantt-table-wrap"><table class="gantt-table"><thead><tr>${monthCells}</tr><tr>${dayCells}</tr></thead><tbody>${body}</tbody></table></div>`;
+        const filterNote = (filters.project || filters.month)
+            ? `<div style="margin-bottom:8px;color:#475569;font-size:.8rem;">目前顯示 ${entries.length} 筆工項${filters.project ? ` · 專案：${esc(filters.project === NO_PROJECT ? '未分類專案' : filters.project)}` : ''}${filters.month ? ` · 月份：${esc(filters.month)}` : ''}</div>`
+            : '';
+        target.innerHTML = `${filterNote}${warning}<div class="gantt-table-wrap"><table class="gantt-table"><thead><tr>${monthCells}</tr><tr>${dayCells}</tr></thead><tbody>${body}</tbody></table></div>`;
     },
 
     renderCalendar() {
