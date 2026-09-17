@@ -89,6 +89,40 @@
         .icon-btn { background: white; border: 1px solid #cbd5e1; border-radius: 6px; width: 34px; height: 34px; display: inline-flex; justify-content: center; align-items: center; cursor: pointer; color: #64748b; font-size: 16px; }
         .add-main-btn { display: block; width: 100%; max-width: 500px; margin: 40px auto; padding: 18px; background: white; border: 2px dashed #cbd5e1; border-radius: 12px; text-align: center; color: #64748b; font-weight: bold; cursor: pointer; font-size: 1.1rem; }
 
+        /* === 卡片工作紀錄：標題索引 / 單筆閱讀 === */
+        .worklog-panel { margin-top: 10px; border: 1px solid #e2e8f0; border-radius: 8px; background: rgba(248,250,252,0.92); overflow: hidden; }
+        .worklog-panel.worklog-compact { margin-top: 8px; }
+        .worklog-header { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:8px 10px; border-bottom:1px solid #e2e8f0; background:#f8fafc; }
+        .worklog-heading { font-size:0.86rem; font-weight:bold; color:#475569; display:flex; align-items:center; gap:6px; min-width:0; }
+        .worklog-count { font-size:0.72rem; color:#64748b; background:#e2e8f0; padding:1px 7px; border-radius:999px; }
+        .worklog-add-btn, .worklog-back-btn, .worklog-action-btn { border:1px solid #cbd5e1; background:white; color:#475569; border-radius:6px; cursor:pointer; padding:5px 8px; font-size:0.8rem; }
+        .worklog-add-btn:hover, .worklog-back-btn:hover, .worklog-action-btn:hover { background:#f1f5f9; }
+        .worklog-action-btn.danger { color:#dc2626; border-color:#fecaca; }
+        .worklog-list { max-height:180px; overflow-y:auto; padding:4px 0; }
+        .worklog-compact .worklog-list { max-height:145px; }
+        .worklog-list-row { width:100%; display:flex; align-items:center; justify-content:space-between; gap:10px; border:0; border-bottom:1px solid #f1f5f9; background:transparent; padding:8px 10px; cursor:pointer; text-align:left; }
+        .worklog-list-row:last-child { border-bottom:0; }
+        .worklog-list-row:hover { background:#eef2ff; }
+        .worklog-list-title { flex:1; min-width:0; color:#334155; font-size:0.9rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .worklog-list-date { flex-shrink:0; color:#94a3b8; font-size:0.72rem; }
+        .worklog-empty { padding:12px 10px; color:#94a3b8; font-size:0.82rem; text-align:center; }
+        .worklog-detail { padding:10px; max-height:260px; overflow-y:auto; }
+        .worklog-detail-title { font-weight:bold; color:#334155; font-size:1rem; margin:2px 0 8px; word-break:break-word; }
+        .worklog-detail-content { color:#475569; font-size:0.9rem; line-height:1.6; white-space:normal; word-break:break-word; }
+        .worklog-detail-meta { color:#94a3b8; font-size:0.72rem; margin-top:10px; }
+        .worklog-actions { display:flex; justify-content:flex-end; gap:6px; padding:8px 10px; border-top:1px solid #e2e8f0; background:#f8fafc; }
+        .worklog-form { padding:10px; display:flex; flex-direction:column; gap:8px; }
+        .worklog-title-input, .worklog-content-input { width:100%; border:1px solid #cbd5e1; border-radius:6px; padding:8px 10px; color:#334155; background:white; outline:none; }
+        .worklog-title-input:focus, .worklog-content-input:focus { border-color:#818cf8; box-shadow:0 0 0 2px rgba(99,102,241,0.1); }
+        .worklog-content-input { min-height:120px; resize:vertical; line-height:1.55; }
+        .worklog-collapsed { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:8px 10px; cursor:pointer; background:#f8fafc; }
+        .worklog-collapsed:hover { background:#eef2ff; }
+        .worklog-collapsed-main { min-width:0; display:flex; align-items:center; gap:8px; }
+        .worklog-collapsed-latest { min-width:0; color:#64748b; font-size:0.82rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        #sb-entry-context { margin-bottom:10px; }
+        #sb-entry-context .worklog-panel { margin-top:0; border-color:#dbeafe; background:#fff; }
+        #sb-entry-context .worklog-header { background:#eff6ff; }
+
         .chronicle-row { display: flex; margin-bottom: 25px; border-left: 3px solid #e2e8f0; padding-left: 20px; position: relative; flex-wrap: wrap; }
         .chronicle-row::before { content: ''; position: absolute; left: -8px; top: 6px; width: 13px; height: 13px; border-radius: 50%; background: var(--primary); border: 2px solid white; }
         .chronicle-date { font-weight: bold; width: 100%; max-width: 120px; flex-shrink: 0; color: #64748b; font-size: 0.95rem; margin-bottom: 5px; }
@@ -336,6 +370,9 @@
                                 </div>
                             </div>
                         </div>
+
+                        <!-- 工作紀錄：與時間軸卡片共用同一份 card.entries，預設收合避免干擾心流 -->
+                        <div id="sb-entry-context" style="display:none;"></div>
 
                         <div class="sb-template-bar">
                             <span style="font-size: 0.85rem; color: #666;">⚡ 快捷：</span>
