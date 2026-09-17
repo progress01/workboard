@@ -31,6 +31,8 @@ const app = {
             activeTaskId: null,
             mode: 'FLEXIBLE', timerStatus: 'IDLE', seconds: 0,
             pomoPhase: 'FOCUS', pomoCount: 0, timerInterval: null,
+            // 以下為執行期計時狀態，不寫入 Firebase / localStorage 設定。
+            timerTaskId: null, timerSessionSeconds: 0, timerSessionStartedAt: null,
             deadlineTask: '', deadlineDate: ''
         }
     },
@@ -307,7 +309,7 @@ const app = {
                 return;
             }
             container.style.display = 'block';
-            container.innerHTML = `<div class="worklog-panel" id="worklog-panel-sandbox-${card.id}">${this.renderPanelInner(card, 'sandbox')}</div>`;
+            container.innerHTML = `${app.worktime.renderPlanningPanel(card, 'sandbox')}<div style="height:8px"></div>${app.worktime.renderPanel(card, 'sandbox')}<div style="height:8px"></div><div class="worklog-panel" id="worklog-panel-sandbox-${card.id}">${this.renderPanelInner(card, 'sandbox')}</div>`;
         },
 
         toggleExpanded(cardId, source = 'sandbox') {
@@ -426,12 +428,734 @@ const app = {
     },
 
     // ==========================================
+    // ⏱️ 工項規劃 / 工時紀錄
+    // - 舊卡片無新欄位時一律以空值處理，不做 migration。
+    // - workLogs 跟著 card 存在既有 workspaces 內，因此既有 Firebase 設定不用改。
+    // ==========================================
+    worktime: {
+        getCard(cardId) { return app.entries.getCard(cardId); },
+
+        getLogs(card) { return card && Array.isArray(card.workLogs) ? card.workLogs : []; },
+
+        localDateString(date = new Date()) {
+            const y = date.getFullYear();
+            const m = String(date.getMonth() + 1).padStart(2, '0');
+            const d = String(date.getDate()).padStart(2, '0');
+            return `${y}-${m}-${d}`;
+        },
+
+        parseLocalDate(value) {
+            if (!value) return null;
+            const m = String(value).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+            if (!m) return null;
+            const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+            return Number.isNaN(d.getTime()) ? null : d;
+        },
+
+        dateKey(date) { return this.localDateString(date); },
+
+        addDays(date, days) {
+            const d = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+            d.setDate(d.getDate() + days);
+            return d;
+        },
+
+        colorConfig(color) {
+            const map = {
+                blue:   { hex:'#3b82f6', light:'#dbeafe', label:'一般' },
+                green:  { hex:'#10b981', light:'#d1fae5', label:'穩定' },
+                red:    { hex:'#ef4444', light:'#fee2e2', label:'關鍵／重要（人工）' },
+                yellow: { hex:'#f59e0b', light:'#fef3c7', label:'注意' }
+            };
+            return map[color] || map.blue;
+        },
+
+        logMinutes(log) {
+            if (!log) return 0;
+            if (Number.isFinite(Number(log.minutes))) return Math.max(0, Number(log.minutes));
+            if (Number.isFinite(Number(log.seconds))) return Math.max(0, Number(log.seconds) / 60);
+            if (Number.isFinite(Number(log.hours))) return Math.max(0, Number(log.hours) * 60);
+            return 0;
+        },
+
+        totalMinutes(card) {
+            return this.getLogs(card).reduce((sum, log) => sum + this.logMinutes(log), 0);
+        },
+
+        totalSeconds(card) { return Math.round(this.totalMinutes(card) * 60); },
+
+        actualHours(card) { return Math.round((this.totalMinutes(card) / 60) * 100) / 100; },
+
+        plannedMinutes(card) {
+            if (!card) return 0;
+            if (Number.isFinite(Number(card.plannedMinutes))) return Math.max(0, Number(card.plannedMinutes));
+            if (Number.isFinite(Number(card.plannedHours))) return Math.max(0, Number(card.plannedHours) * 60);
+            return 0;
+        },
+
+        plannedParts(card) {
+            const total = Math.max(0, Math.round(this.plannedMinutes(card)));
+            return { hours: Math.floor(total / 60), minutes: total % 60 };
+        },
+
+        formatMinutes(totalMinutes = 0) {
+            const mins = Math.max(0, Math.round(Number(totalMinutes) || 0));
+            const h = Math.floor(mins / 60);
+            const m = mins % 60;
+            if (h > 0 && m > 0) return `${h}小時 ${m}分`;
+            if (h > 0) return `${h}小時`;
+            return `${m}分`;
+        },
+
+        formatDuration(totalSeconds = 0) {
+            const sec = Math.max(0, Math.round(Number(totalSeconds) || 0));
+            if (sec > 0 && sec < 60) return `${sec}秒`;
+            return this.formatMinutes(sec / 60);
+        },
+
+        statusLabel(status) {
+            return ({0:'未開始',1:'進行中',2:'完成',3:'卡住／等待'})[Number(status)] || '未開始';
+        },
+
+        progressValue(card, blankWhenUnset = false) {
+            const raw = card?.progress;
+            if (raw === undefined || raw === null || raw === '') {
+                if (Number(card?.status) === 2) return 100;
+                return blankWhenUnset ? '' : 0;
+            }
+            return Math.max(0, Math.min(100, Number(raw) || 0));
+        },
+
+        plannedStart(card) {
+            return card?.dateMode === 'range' ? (card.dateStart || '') : (card?.dateSingle || '');
+        },
+
+        plannedEnd(card) {
+            return card?.dateMode === 'range' ? (card.dateEnd || '') : (card?.dateSingle || '');
+        },
+
+        derivedActualStart(card) {
+            if (card?.actualStart) return card.actualStart;
+            const dates = this.getLogs(card).map(l => l.workDate).filter(Boolean).sort();
+            return dates[0] || '';
+        },
+
+        derivedActualEnd(card) {
+            if (card?.actualEnd) return card.actualEnd;
+            if (Number(card?.status) !== 2) return '';
+            const dates = this.getLogs(card).map(l => l.workDate).filter(Boolean).sort();
+            return dates.length ? dates[dates.length - 1] : '';
+        },
+
+        ensureActualStart(card, dateStr) {
+            if (card && !card.actualStart && dateStr) card.actualStart = dateStr;
+        },
+
+        varianceMinutes(card) {
+            const planned = this.plannedMinutes(card);
+            const actual = this.totalMinutes(card);
+            if (!planned) return null;
+            return Math.round(actual - planned);
+        },
+
+        formatVariance(card) {
+            const diff = this.varianceMinutes(card);
+            if (diff === null) return '尚未設定預估';
+            if (diff === 0) return '與預估相同';
+            return `${diff > 0 ? '+' : '-'}${this.formatMinutes(Math.abs(diff))}`;
+        },
+
+        renderPlanningPanel(card, source = 'timeline') {
+            const esc = app.entries.escapeHtml.bind(app.entries);
+            const category = esc(card.category || '');
+            const planned = this.plannedParts(card);
+            const progress = this.progressValue(card, true);
+            const deliverable = esc(card.deliverable || '');
+            const acceptance = esc(card.acceptance || '');
+            const planStart = this.plannedStart(card);
+            const planEnd = this.plannedEnd(card);
+            const actualStart = this.derivedActualStart(card);
+            const actualEnd = this.derivedActualEnd(card);
+            const actualMinutes = this.totalMinutes(card);
+            const variance = this.varianceMinutes(card);
+            const varianceClass = variance === null ? '' : (variance > 0 ? 'variance-positive' : (variance < 0 ? 'variance-negative' : ''));
+            const color = card.color || 'blue';
+            const colorCfg = this.colorConfig(color);
+            const isScheduled = !card.isMemo;
+
+            return `
+                <div class="task-meta-panel" id="task-meta-${source}-${card.id}">
+                    <div class="pm-section pm-section-plan">
+                        <div class="pm-section-title">
+                            <span>📐 規劃</span>
+                            <span class="pm-summary">預估 ${this.plannedMinutes(card) ? this.formatMinutes(this.plannedMinutes(card)) : '未填'} · ${planStart || '未排'}${planEnd && planEnd !== planStart ? ` → ${planEnd}` : ''}</span>
+                        </div>
+                        <div class="pm-section-body">
+                            <div class="task-meta-grid">
+                                <label class="task-meta-field">
+                                    <span class="task-meta-label">卡片用途</span>
+                                    <select class="task-meta-input" onchange="app.worktime.updateCardMode('${card.id}',this.value,'${source}')">
+                                        <option value="free" ${!isScheduled ? 'selected' : ''}>自由卡（不進甘特／工項 Excel）</option>
+                                        <option value="scheduled" ${isScheduled ? 'selected' : ''}>排程工項</option>
+                                    </select>
+                                </label>
+                                <label class="task-meta-field">
+                                    <span class="task-meta-label">任務分類 / 工作包</span>
+                                    <input class="task-meta-input" value="${category}" placeholder="例如：圖表處理" onchange="app.worktime.updateCardField('${card.id}','category',this.value,'${source}')">
+                                </label>
+                                <label class="task-meta-field">
+                                    <span class="task-meta-label">任務標記</span>
+                                    <span class="color-select-wrap">
+                                        <span class="color-chip" style="background:${colorCfg.hex}"></span>
+                                        <select class="task-meta-input" onchange="app.worktime.updateCardField('${card.id}','color',this.value,'${source}')">
+                                            <option value="blue" ${color === 'blue' ? 'selected' : ''}>一般</option>
+                                            <option value="green" ${color === 'green' ? 'selected' : ''}>穩定</option>
+                                            <option value="red" ${color === 'red' ? 'selected' : ''}>關鍵／重要（人工）</option>
+                                            <option value="yellow" ${color === 'yellow' ? 'selected' : ''}>注意</option>
+                                        </select>
+                                    </span>
+                                </label>
+                            </div>
+                            <div class="task-meta-grid" style="margin-top:8px;">
+                                <label class="task-meta-field">
+                                    <span class="task-meta-label">預計開始</span>
+                                    <input class="task-meta-input" type="date" value="${planStart}" onchange="app.worktime.updatePlannedDate('${card.id}','start',this.value,'${source}')">
+                                </label>
+                                <label class="task-meta-field">
+                                    <span class="task-meta-label">預計完成</span>
+                                    <input class="task-meta-input" type="date" value="${planEnd}" onchange="app.worktime.updatePlannedDate('${card.id}','end',this.value,'${source}')">
+                                </label>
+                                <label class="task-meta-field">
+                                    <span class="task-meta-label">預估工時</span>
+                                    <span class="duration-grid">
+                                        <input class="task-meta-input" type="number" min="0" step="1" value="${planned.hours || ''}" placeholder="小時" onchange="app.worktime.updatePlannedPart('${card.id}','hours',this.value,'${source}')">
+                                        <input class="task-meta-input" type="number" min="0" step="1" value="${planned.minutes || ''}" placeholder="分鐘" onchange="app.worktime.updatePlannedPart('${card.id}','minutes',this.value,'${source}')">
+                                    </span>
+                                </label>
+                            </div>
+                            <div class="task-meta-grid" style="margin-top:8px;grid-template-columns:120px 1fr 1fr;">
+                                <label class="task-meta-field">
+                                    <span class="task-meta-label">進度（%）</span>
+                                    <input class="task-meta-input" type="number" min="0" max="100" step="5" value="${progress}" placeholder="0-100" onchange="app.worktime.updateCardField('${card.id}','progress',this.value,'${source}',true)">
+                                </label>
+                                <label class="task-meta-field">
+                                    <span class="task-meta-label">預期產出</span>
+                                    <textarea class="task-meta-textarea" placeholder="做完會得到什麼" onchange="app.worktime.updateCardField('${card.id}','deliverable',this.value,'${source}')">${deliverable}</textarea>
+                                </label>
+                                <label class="task-meta-field">
+                                    <span class="task-meta-label">驗收條件</span>
+                                    <textarea class="task-meta-textarea" placeholder="怎樣算完成" onchange="app.worktime.updateCardField('${card.id}','acceptance',this.value,'${source}')">${acceptance}</textarea>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="pm-section pm-section-actual">
+                        <div class="pm-section-title">
+                            <span>✅ 實際</span>
+                            <span class="pm-summary">已投入 ${this.formatMinutes(actualMinutes)} · <span class="${varianceClass}">${this.formatVariance(card)}</span></span>
+                        </div>
+                        <div class="pm-section-body">
+                            <div class="task-meta-grid">
+                                <label class="task-meta-field">
+                                    <span class="task-meta-label">實際開始</span>
+                                    <input class="task-meta-input" type="date" value="${actualStart}" onchange="app.worktime.updateCardField('${card.id}','actualStart',this.value,'${source}')">
+                                </label>
+                                <label class="task-meta-field">
+                                    <span class="task-meta-label">實際完成</span>
+                                    <input class="task-meta-input" type="date" value="${actualEnd}" onchange="app.worktime.updateCardField('${card.id}','actualEnd',this.value,'${source}')">
+                                </label>
+                                <div class="actual-metric">
+                                    <span class="task-meta-label">實際工時（由紀錄加總）</span>
+                                    <strong>${this.formatMinutes(actualMinutes)}</strong>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>`;
+        },
+
+        renderPanel(card, source = 'timeline') {
+            const esc = app.entries.escapeHtml.bind(app.entries);
+            const logs = [...this.getLogs(card)].sort((a,b) => {
+                const da = `${a.workDate || ''} ${a.createdAt || ''}`;
+                const db = `${b.workDate || ''} ${b.createdAt || ''}`;
+                return db.localeCompare(da);
+            });
+            const total = this.totalMinutes(card);
+            const planned = this.plannedMinutes(card);
+            const plannedText = planned > 0 ? ` / 預估 ${this.formatMinutes(planned)}` : '';
+            const defaultDate = this.localDateString();
+            const rows = logs.length ? logs.slice(0, 30).map(log => `
+                <div class="worktime-row">
+                    <span>${esc(log.workDate || '')}</span>
+                    <strong>${this.formatMinutes(this.logMinutes(log))}</strong>
+                    <span class="worktime-row-note" title="${esc(log.note || '')}">${esc(log.note || (log.source === 'timer' ? '心流計時' : '手動補登'))} <span class="worktime-source">${log.source === 'timer' ? '· 計時' : '· 手動'}</span></span>
+                    <button class="worktime-edit" title="修改此筆工時" onclick="app.worktime.editLog('${card.id}','${log.id}','${source}')">✏️</button>
+                    <button class="worktime-delete" title="刪除此筆工時" onclick="app.worktime.deleteLog('${card.id}','${log.id}','${source}')">×</button>
+                </div>`).join('') : `<div class="worktime-empty">尚無工時紀錄。心流計時停止後會自動寫入，也可手動補登分鐘或小時。</div>`;
+
+            return `
+                <div class="worktime-panel" id="worktime-panel-${source}-${card.id}">
+                    <div class="worktime-header">
+                        <span style="font-weight:bold;color:#475569;">⏱️ 工時明細</span>
+                        <span class="worktime-total">實際 ${this.formatMinutes(total)}${plannedText}</span>
+                    </div>
+                    <div class="worktime-form">
+                        <label class="task-meta-field">
+                            <span class="task-meta-label">日期</span>
+                            <input id="worktime-date-${source}-${card.id}" class="worktime-input" type="date" value="${defaultDate}">
+                        </label>
+                        <label class="task-meta-field">
+                            <span class="task-meta-label">小時</span>
+                            <input id="worktime-hours-${source}-${card.id}" class="worktime-input" type="number" min="0" step="0.25" placeholder="1.5">
+                        </label>
+                        <label class="task-meta-field">
+                            <span class="task-meta-label">分鐘</span>
+                            <input id="worktime-minutes-${source}-${card.id}" class="worktime-input" type="number" min="0" step="1" placeholder="30">
+                        </label>
+                        <label class="task-meta-field worktime-note-field">
+                            <span class="task-meta-label">工作內容</span>
+                            <input id="worktime-note-${source}-${card.id}" class="worktime-input" type="text" placeholder="例如：圖表定位規則測試">
+                        </label>
+                        <button class="worklog-add-btn" onclick="app.worktime.addManual('${card.id}','${source}')">＋ 補登</button>
+                    </div>
+                    <div class="worktime-list">${rows}</div>
+                </div>`;
+        },
+
+        refresh(cardId, source = 'timeline') {
+            const card = this.getCard(cardId);
+            if (!card) return;
+            if (source === 'sandbox') {
+                app.entries.renderSandbox(card);
+                return;
+            }
+            const p = document.getElementById(`task-meta-${source}-${cardId}`);
+            if (p) p.outerHTML = this.renderPlanningPanel(card, source);
+            const w = document.getElementById(`worktime-panel-${source}-${cardId}`);
+            if (w) w.outerHTML = this.renderPanel(card, source);
+        },
+
+        updateCardField(cardId, field, value, source = 'timeline', numeric = false) {
+            const card = this.getCard(cardId);
+            if (!card) return;
+            if (numeric) {
+                if (String(value).trim() === '') delete card[field];
+                else card[field] = Number(value);
+            } else {
+                if (value === '' && (field === 'actualStart' || field === 'actualEnd')) delete card[field];
+                else card[field] = value;
+            }
+            app.saveToLocal();
+            if (field === 'color') app.renderAll();
+            else this.refresh(cardId, source);
+            if (app.state.view === 'gantt') app.renderGantt();
+        },
+
+        updateCardMode(cardId, mode, source = 'timeline') {
+            const card = this.getCard(cardId);
+            if (!card) return;
+            card.isMemo = mode !== 'scheduled';
+            if (!card.isMemo && !this.plannedStart(card)) {
+                const today = this.localDateString();
+                card.dateMode = 'range';
+                card.dateStart = today;
+                card.dateEnd = today;
+            }
+            app.saveToLocal();
+            app.renderAll();
+            if (source === 'sandbox') app.entries.renderSandbox(card);
+        },
+
+        updatePlannedDate(cardId, which, value, source = 'timeline') {
+            const card = this.getCard(cardId);
+            if (!card) return;
+            const oldStart = this.plannedStart(card);
+            const oldEnd = this.plannedEnd(card);
+            card.dateMode = 'range';
+            card.dateStart = which === 'start' ? value : oldStart;
+            card.dateEnd = which === 'end' ? value : oldEnd;
+            if (card.dateStart && !card.dateEnd) card.dateEnd = card.dateStart;
+            if (card.dateEnd && !card.dateStart) card.dateStart = card.dateEnd;
+            if (card.dateStart && card.dateEnd && card.dateEnd < card.dateStart) {
+                if (which === 'start') card.dateEnd = card.dateStart;
+                else card.dateStart = card.dateEnd;
+            }
+            app.saveToLocal();
+            app.renderAll();
+            if (source === 'sandbox') app.entries.renderSandbox(card);
+        },
+
+        updatePlannedPart(cardId, part, value, source = 'timeline') {
+            const card = this.getCard(cardId);
+            if (!card) return;
+            const current = this.plannedParts(card);
+            let hours = current.hours;
+            let minutes = current.minutes;
+            const v = String(value).trim() === '' ? 0 : Math.max(0, Number(value) || 0);
+            if (part === 'hours') hours = v;
+            else minutes = v;
+            const total = Math.round((hours * 60 + minutes) * 100) / 100;
+            if (total > 0) card.plannedMinutes = total;
+            else delete card.plannedMinutes;
+            delete card.plannedHours;
+            app.saveToLocal();
+            this.refresh(cardId, source);
+        },
+
+        addManual(cardId, source = 'timeline') {
+            const card = this.getCard(cardId);
+            if (!card) return;
+            const dateEl = document.getElementById(`worktime-date-${source}-${cardId}`);
+            const hoursEl = document.getElementById(`worktime-hours-${source}-${cardId}`);
+            const minutesEl = document.getElementById(`worktime-minutes-${source}-${cardId}`);
+            const noteEl = document.getElementById(`worktime-note-${source}-${cardId}`);
+            const hours = Math.max(0, Number(hoursEl?.value) || 0);
+            const minutes = Math.max(0, Number(minutesEl?.value) || 0);
+            const totalMinutes = Math.round((hours * 60 + minutes) * 100) / 100;
+            if (!Number.isFinite(totalMinutes) || totalMinutes <= 0) return alert('請輸入工時。小時、分鐘可擇一填寫，也可以一起填。');
+            if (!Array.isArray(card.workLogs)) card.workLogs = [];
+            const now = new Date().toISOString();
+            const workDate = dateEl?.value || this.localDateString();
+            card.workLogs.push({
+                id: `work_${Date.now()}_${Math.random().toString(36).slice(2,7)}`,
+                workDate,
+                minutes: totalMinutes,
+                note: noteEl?.value.trim() || '手動補登',
+                source: 'manual', createdAt: now, updatedAt: now
+            });
+            this.ensureActualStart(card, workDate);
+            app.saveToLocal();
+            this.refresh(cardId, source);
+            app.sandbox.renderTodo();
+            if (app.state.view === 'gantt') app.renderGantt();
+        },
+
+        addTimerLog(cardId, seconds, note = '心流計時') {
+            const card = this.getCard(cardId);
+            const sec = Math.round(Number(seconds) || 0);
+            if (!card || sec <= 0) return false;
+            if (!Array.isArray(card.workLogs)) card.workLogs = [];
+            const now = new Date().toISOString();
+            const workDate = this.localDateString();
+            card.workLogs.push({
+                id: `work_${Date.now()}_${Math.random().toString(36).slice(2,7)}`,
+                workDate,
+                minutes: Math.round((sec / 60) * 100) / 100,
+                seconds: sec,
+                note,
+                source: 'timer', createdAt: now, updatedAt: now
+            });
+            this.ensureActualStart(card, workDate);
+            app.saveToLocal();
+            return true;
+        },
+
+        editLog(cardId, logId, source = 'timeline') {
+            const card = this.getCard(cardId);
+            if (!card) return;
+            const log = this.getLogs(card).find(l => l.id === logId);
+            if (!log) return;
+            const currentMins = Math.round(this.logMinutes(log));
+            const curHours = Math.floor(currentMins / 60);
+            const curMinutes = currentMins % 60;
+            const date = prompt('工作日期（YYYY-MM-DD）', log.workDate || this.localDateString());
+            if (date === null) return;
+            const hoursRaw = prompt('小時（可填 0；例如 1.5）', String(curHours));
+            if (hoursRaw === null) return;
+            const minutesRaw = prompt('分鐘（可填 0，也可直接填 90）', String(curMinutes));
+            if (minutesRaw === null) return;
+            const hours = Math.max(0, Number(hoursRaw) || 0);
+            const minutes = Math.max(0, Number(minutesRaw) || 0);
+            const totalMinutes = Math.round((hours * 60 + minutes) * 100) / 100;
+            if (totalMinutes <= 0) return alert('工時必須大於 0。');
+            const note = prompt('工作內容', log.note || '') ;
+            if (note === null) return;
+            log.workDate = date || this.localDateString();
+            log.minutes = totalMinutes;
+            delete log.hours;
+            delete log.seconds;
+            log.note = note.trim() || (log.source === 'timer' ? '心流計時' : '手動補登');
+            log.updatedAt = new Date().toISOString();
+            this.ensureActualStart(card, log.workDate);
+            app.saveToLocal();
+            this.refresh(cardId, source);
+            app.sandbox.renderTodo();
+            if (app.state.view === 'gantt') app.renderGantt();
+        },
+
+        deleteLog(cardId, logId, source = 'timeline') {
+            const card = this.getCard(cardId);
+            if (!card || !Array.isArray(card.workLogs)) return;
+            const log = card.workLogs.find(l => l.id === logId);
+            if (!log) return;
+            if (!confirm(`刪除這筆 ${this.formatMinutes(this.logMinutes(log))} 的工時紀錄？`)) return;
+            card.workLogs = card.workLogs.filter(l => l.id !== logId);
+            app.saveToLocal();
+            this.refresh(cardId, source);
+            app.sandbox.renderTodo();
+            if (app.state.view === 'gantt') app.renderGantt();
+        },
+
+        allCards() {
+            const rows = [];
+            for (const tabId in app.state.workspaces) {
+                const tabName = app.state.tabs.find(t => t.id === tabId)?.name || '未知';
+                (app.state.workspaces[tabId] || []).forEach(card => rows.push({card, tabId, tabName}));
+            }
+            return rows;
+        },
+
+        scheduledCards() {
+            return this.allCards().filter(({card}) => !card.isMemo);
+        },
+
+        ganttCards() {
+            return this.scheduledCards().filter(({card}) => card.dateMode === 'range' && card.dateStart && card.dateEnd);
+        },
+
+        taskExportRows() {
+            return this.scheduledCards().map(({card, tabName}) => {
+                const planned = this.plannedMinutes(card);
+                const actual = this.totalMinutes(card);
+                const variance = planned ? Math.round(actual - planned) : '';
+                const progress = this.progressValue(card, true);
+                return [
+                    tabName, card.project||'', card.category||'', card.title||'', this.colorConfig(card.color).label,
+                    this.statusLabel(card.status), progress === '' ? '' : progress,
+                    this.plannedStart(card), this.plannedEnd(card), Math.round(planned), planned ? Math.round((planned/60)*100)/100 : '',
+                    this.derivedActualStart(card), this.derivedActualEnd(card), Math.round(actual), Math.round((actual/60)*100)/100,
+                    variance, card.deliverable||'', card.acceptance||'', card.id||''
+                ];
+            });
+        },
+
+        logExportRows() {
+            const rows = [];
+            this.allCards().forEach(({card, tabName}) => {
+                this.getLogs(card).forEach(log => {
+                    const mins = this.logMinutes(log);
+                    rows.push([
+                        log.workDate || '', tabName, card.project||'', card.category||'', card.title||'',
+                        Math.round(mins*100)/100, Math.round((mins/60)*100)/100,
+                        log.source === 'timer' ? '心流計時' : '手動補登', log.note||'', card.id||'', log.id||''
+                    ]);
+                });
+            });
+            rows.sort((a,b) => String(a[0]).localeCompare(String(b[0])) || String(a[4]).localeCompare(String(b[4])));
+            return rows;
+        },
+
+        ganttExportRows() {
+            return this.ganttCards().map(({card, tabName}) => [
+                tabName, card.project||'', card.category||'', card.title||'', this.colorConfig(card.color).label,
+                this.statusLabel(card.status), this.progressValue(card, true), card.dateStart||'', card.dateEnd||'',
+                Math.round(this.plannedMinutes(card)), Math.round(this.totalMinutes(card)),
+                this.derivedActualStart(card), this.derivedActualEnd(card), card.id||''
+            ]);
+        },
+
+        tsvCell(value) {
+            let v = String(value ?? '').replace(/\r?\n/g, ' ').replace(/\t/g, ' ');
+            if (/^[=+@]/.test(v) || /^-\D/.test(v)) v = "'" + v;
+            return v;
+        },
+
+        copyText(text, successMessage) {
+            const fallback = () => {
+                const ta = document.createElement('textarea'); ta.value = text;
+                ta.style.position = 'fixed'; ta.style.opacity = '0'; document.body.appendChild(ta);
+                ta.select(); document.execCommand('copy'); document.body.removeChild(ta);
+                alert(successMessage);
+            };
+            if (navigator.clipboard && window.isSecureContext) {
+                navigator.clipboard.writeText(text).then(() => alert(successMessage)).catch(fallback);
+            } else fallback();
+        },
+
+        copyTasksToExcel() {
+            const header = ['分頁','專案','分類','工項','標記','狀態','進度(%)','預計開始','預計完成','預估工時(分鐘)','預估工時(小時)','實際開始','實際完成','實際工時(分鐘)','實際工時(小時)','工時差異(分鐘)','預期產出','驗收條件','卡片ID'];
+            const rows = this.taskExportRows();
+            const tsv = [header, ...rows].map(r => r.map(v => this.tsvCell(v)).join('\t')).join('\n');
+            this.copyText(tsv, `已複製 ${rows.length} 筆排程工項，可直接貼到 Excel。自由卡不會列入工項總表。`);
+        },
+
+        copyLogsToExcel() {
+            const header = ['日期','分頁','專案','分類','工項','工時(分鐘)','工時(小時)','來源','工作內容','卡片ID','工時ID'];
+            const rows = this.logExportRows();
+            const tsv = [header, ...rows].map(r => r.map(v => this.tsvCell(v)).join('\t')).join('\n');
+            this.copyText(tsv, `已複製 ${rows.length} 筆工時明細，可直接貼到 Excel。`);
+        },
+
+        copyGanttSourceToExcel() {
+            const header = ['分頁','專案','分類','工項','標記','狀態','進度(%)','預計開始','預計完成','預估工時(分鐘)','實際工時(分鐘)','實際開始','實際完成','卡片ID'];
+            const rows = this.ganttExportRows();
+            const tsv = [header, ...rows].map(r => r.map(v => this.tsvCell(v)).join('\t')).join('\n');
+            this.copyText(tsv, `已複製 ${rows.length} 筆甘特來源資料，可直接貼到 Excel。`);
+        },
+
+        styleExcelHeader(row, fill = '1E293B') {
+            row.eachCell(cell => {
+                cell.font = { bold:true, color:{argb:'FFFFFFFF'} };
+                cell.fill = { type:'pattern', pattern:'solid', fgColor:{argb:`FF${fill}`} };
+                cell.alignment = { vertical:'middle', horizontal:'center', wrapText:true };
+                cell.border = { bottom:{style:'thin', color:{argb:'FFCBD5E1'}} };
+            });
+            row.height = 24;
+        },
+
+        async exportWorkbookXlsx() {
+            if (!window.ExcelJS) return alert('Excel 匯出元件尚未載入。請確認網路後重新整理，再試一次。');
+            try {
+                const workbook = new ExcelJS.Workbook();
+                workbook.creator = '白板 & 心流沙盒';
+                workbook.created = new Date();
+
+                // 1) 工項總表
+                const taskHeader = ['分頁','專案','分類','工項','標記','狀態','進度(%)','預計開始','預計完成','預估工時(分鐘)','預估工時(小時)','實際開始','實際完成','實際工時(分鐘)','實際工時(小時)','工時差異(分鐘)','預期產出','驗收條件','卡片ID'];
+                const taskSheet = workbook.addWorksheet('工項總表', { views:[{state:'frozen', ySplit:1}] });
+                taskSheet.addRow(taskHeader);
+                this.styleExcelHeader(taskSheet.getRow(1));
+                this.taskExportRows().forEach(r => {
+                    const row = taskSheet.addRow(r);
+                    const cardColorLabel = String(r[4] || '');
+                    const colorKey = cardColorLabel.startsWith('關鍵') ? 'red' : (cardColorLabel === '注意' ? 'yellow' : (cardColorLabel === '穩定' ? 'green' : 'blue'));
+                    const cfg = this.colorConfig(colorKey);
+                    row.getCell(4).fill = { type:'pattern', pattern:'solid', fgColor:{argb:`FF${cfg.light.replace('#','').toUpperCase()}`} };
+                });
+                taskSheet.autoFilter = { from:'A1', to:'S1' };
+                [12,16,16,28,18,14,10,13,13,16,16,13,13,16,16,18,30,30,26].forEach((w,i)=>taskSheet.getColumn(i+1).width=w);
+                taskSheet.eachRow((row, rowNum) => { if (rowNum > 1) row.alignment = { vertical:'top', wrapText:true }; });
+
+                // 2) 工時明細
+                const logHeader = ['日期','分頁','專案','分類','工項','工時(分鐘)','工時(小時)','來源','工作內容','卡片ID','工時ID'];
+                const logSheet = workbook.addWorksheet('工時明細', { views:[{state:'frozen', ySplit:1}] });
+                logSheet.addRow(logHeader);
+                this.styleExcelHeader(logSheet.getRow(1));
+                this.logExportRows().forEach(r => logSheet.addRow(r));
+                logSheet.autoFilter = { from:'A1', to:'K1' };
+                [13,12,16,16,28,14,14,14,36,26,26].forEach((w,i)=>logSheet.getColumn(i+1).width=w);
+                logSheet.eachRow((row, rowNum) => { if (rowNum > 1) row.alignment = { vertical:'top', wrapText:true }; });
+
+                // 3) 甘特圖
+                const ganttSheet = workbook.addWorksheet('甘特圖');
+                const entries = this.ganttCards().sort((a,b) => {
+                    const ga = `${a.card.project||''}\u0000${a.card.category||''}`;
+                    const gb = `${b.card.project||''}\u0000${b.card.category||''}`;
+                    return ga.localeCompare(gb) || String(a.card.dateStart).localeCompare(String(b.card.dateStart));
+                });
+                const leftHeaders = ['工項','專案','分類','狀態','進度','預估 / 實際','預計起迄','實際起迄','分頁'];
+                leftHeaders.forEach((h,i)=>ganttSheet.getCell(2,i+1).value=h);
+                let days = [];
+                if (entries.length) {
+                    const starts = entries.map(x => this.parseLocalDate(x.card.dateStart)).filter(Boolean);
+                    const ends = entries.map(x => this.parseLocalDate(x.card.dateEnd)).filter(Boolean);
+                    let minDate = new Date(Math.min(...starts.map(d=>d.getTime())));
+                    let maxDate = new Date(Math.max(...ends.map(d=>d.getTime())));
+                    const span = Math.round((maxDate - minDate)/86400000)+1;
+                    if (span > 366) maxDate = this.addDays(minDate,365);
+                    for (let d = new Date(minDate); d <= maxDate; d = this.addDays(d,1)) days.push(new Date(d));
+                }
+                const dateStartCol = leftHeaders.length + 1;
+                days.forEach((d,idx) => {
+                    const col = dateStartCol + idx;
+                    ganttSheet.getCell(2,col).value = d;
+                    ganttSheet.getCell(2,col).numFmt = 'd';
+                    ganttSheet.getColumn(col).width = 4.2;
+                });
+                // 月份列
+                if (days.length) {
+                    let groupStart = 0;
+                    for (let i=0;i<=days.length;i++) {
+                        const changed = i===days.length || days[i].getMonth() !== days[groupStart].getMonth() || days[i].getFullYear() !== days[groupStart].getFullYear();
+                        if (changed) {
+                            const startCol = dateStartCol + groupStart;
+                            const endCol = dateStartCol + i - 1;
+                            if (endCol > startCol) ganttSheet.mergeCells(1,startCol,1,endCol);
+                            const c = ganttSheet.getCell(1,startCol);
+                            c.value = `${days[groupStart].getFullYear()}/${days[groupStart].getMonth()+1}`;
+                            c.alignment = {horizontal:'center'};
+                            groupStart = i;
+                        }
+                    }
+                }
+                ganttSheet.mergeCells(1,1,1,leftHeaders.length);
+                ganttSheet.getCell(1,1).value = '甘特圖（排程＝預計日期；實際日期與工時分開呈現）';
+                this.styleExcelHeader(ganttSheet.getRow(2));
+                ganttSheet.getRow(1).eachCell(cell => {
+                    cell.font = {bold:true,color:{argb:'FF334155'}};
+                    cell.fill = {type:'pattern',pattern:'solid',fgColor:{argb:'FFE2E8F0'}};
+                    cell.alignment = {horizontal:'center',vertical:'middle'};
+                });
+                [30,18,18,14,10,18,24,24,14].forEach((w,i)=>ganttSheet.getColumn(i+1).width=w);
+
+                let rowNo = 3;
+                let lastGroup = null;
+                entries.forEach(({card, tabName}) => {
+                    const group = `${card.project || '未分類專案'} / ${card.category || '未分類工作包'}`;
+                    if (group !== lastGroup) {
+                        ganttSheet.mergeCells(rowNo,1,rowNo,Math.max(leftHeaders.length + days.length, leftHeaders.length));
+                        const gc = ganttSheet.getCell(rowNo,1);
+                        gc.value = group;
+                        gc.font = {bold:true,color:{argb:'FF3730A3'}};
+                        gc.fill = {type:'pattern',pattern:'solid',fgColor:{argb:'FFEEF2FF'}};
+                        rowNo++;
+                        lastGroup = group;
+                    }
+                    const planned = this.plannedMinutes(card);
+                    const actual = this.totalMinutes(card);
+                    const values = [
+                        card.title||'未命名', card.project||'', card.category||'', this.statusLabel(card.status), `${this.progressValue(card)}%`,
+                        `${this.formatMinutes(planned)} / ${this.formatMinutes(actual)}`,
+                        `${card.dateStart||''} → ${card.dateEnd||''}`,
+                        `${this.derivedActualStart(card)||''}${this.derivedActualEnd(card) ? ` → ${this.derivedActualEnd(card)}` : ''}`,
+                        tabName
+                    ];
+                    values.forEach((v,i)=>ganttSheet.getCell(rowNo,i+1).value=v);
+                    const start = this.parseLocalDate(card.dateStart);
+                    const end = this.parseLocalDate(card.dateEnd);
+                    const cfg = this.colorConfig(card.color);
+                    const progress = this.progressValue(card);
+                    const totalDays = start && end ? Math.max(1,Math.round((end-start)/86400000)+1) : 1;
+                    const doneDays = Math.ceil(totalDays * progress / 100);
+                    days.forEach((d,idx)=>{
+                        if (!start || !end || d < start || d > end) return;
+                        const cell = ganttSheet.getCell(rowNo,dateStartCol+idx);
+                        const offset = Math.round((d-start)/86400000);
+                        const hex = (offset < doneDays ? cfg.hex : cfg.light).replace('#','').toUpperCase();
+                        cell.fill = {type:'pattern',pattern:'solid',fgColor:{argb:`FF${hex}`}};
+                    });
+                    ganttSheet.getCell(rowNo,1).fill = {type:'pattern',pattern:'solid',fgColor:{argb:`FF${cfg.light.replace('#','').toUpperCase()}`}};
+                    ganttSheet.getRow(rowNo).alignment = {vertical:'middle',wrapText:true};
+                    rowNo++;
+                });
+                ganttSheet.views = [{state:'frozen', xSplit:leftHeaders.length, ySplit:2}];
+
+                const buffer = await workbook.xlsx.writeBuffer();
+                const blob = new Blob([buffer], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                const stamp = this.localDateString().replace(/-/g,'');
+                a.href = url; a.download = `白板工項與工時_${stamp}.xlsx`;
+                document.body.appendChild(a); a.click(); a.remove();
+                setTimeout(() => URL.revokeObjectURL(url), 1000);
+            } catch (err) {
+                console.error(err);
+                alert('Excel 匯出失敗：' + (err?.message || err));
+            }
+        }
+    },
+
+
+    // ==========================================
     // 🌟 終極沙盒 SPA (子任務雙向綁定) 🌟
     // ==========================================
     sandbox: {
         GIF_URL: "https://media.giphy.com/media/JIX9t2j0ZTN9S/giphy.gif",
         
         initUI() {
+            this.updateDisplay();
             const textarea = document.getElementById('sb-activeNoteArea');
             if(textarea) {
                 textarea.addEventListener('keydown', function(e) {
@@ -489,9 +1213,13 @@ const app = {
             
             const subtasks = this.parseSubtasks(card.content);
             if (subtasks.length > 0 && subtasks.every(st => st.completed)) {
-                card.status = 2; 
+                card.status = 2;
+                const today = app.worktime.localDateString();
+                if (!card.actualStart) card.actualStart = today;
+                if (!card.actualEnd) card.actualEnd = today;
+                if (card.progress === undefined || card.progress === null || card.progress === '') card.progress = 100;
             } else if (subtasks.length > 0 && subtasks.some(st => !st.completed) && card.status === 2) {
-                card.status = 0; 
+                card.status = 0;
             }
             
             app.saveToLocal();
@@ -541,7 +1269,17 @@ const app = {
 
         toggleTodoCard(id) {
             const card = this.getActiveCards().find(c => c.id === id);
-            if (card) { card.status = card.status === 2 ? 0 : 2; app.saveToLocal(); this.renderTodo(); }
+            if (!card) return;
+            if (card.status === 2) {
+                card.status = 0;
+            } else {
+                card.status = 2;
+                const today = app.worktime.localDateString();
+                if (!card.actualStart) card.actualStart = today;
+                if (!card.actualEnd) card.actualEnd = today;
+                if (card.progress === undefined || card.progress === null || card.progress === '') card.progress = 100;
+            }
+            app.saveToLocal(); this.renderTodo(); this.refreshActiveNoteUI();
         },
 
         clearCompletedCards() {
@@ -552,7 +1290,24 @@ const app = {
             app.saveToLocal(); this.renderTodo();
         },
         
-        setActiveTask(id) { app.state.sandbox.activeTaskId = id; this.refreshActiveNoteUI(); this.renderTodo(); },
+        setActiveTask(id) {
+            const oldId = app.state.sandbox.activeTaskId;
+            if (oldId !== id && app.state.sandbox.timerStatus !== 'IDLE') {
+                this.commitTimerSession('心流計時（切換任務自動結算）');
+                app.state.sandbox.timerTaskId = id || null;
+                app.state.sandbox.timerSessionSeconds = 0;
+                app.state.sandbox.timerSessionStartedAt = app.state.sandbox.timerStatus === 'RUNNING' ? new Date().toISOString() : null;
+            }
+            app.state.sandbox.activeTaskId = id;
+            if (app.state.sandbox.timerStatus === 'IDLE') app.state.sandbox.timerTaskId = id || null;
+            this.refreshActiveNoteUI(); this.renderTodo(); this.updateDisplay();
+        },
+
+        focusTaskForTimer(id) {
+            app.switchView('sandbox');
+            this.switchLeftPanel('TIMER');
+            this.setActiveTask(id);
+        },
 
         refreshActiveNoteUI() {
             const titleEl = document.getElementById('sb-activeTaskTitle');
@@ -626,7 +1381,7 @@ const app = {
             if(checkboxes.length < 2) return alert("💡 請勾選至少兩個大卡片進行合併！");
             let mergedTitle = prompt("請輸入合併後的新母任務名稱：", "合併任務集"); if(!mergedTitle) return; 
 
-            let mergedContent = ""; let mergedEntries = []; let idsToDelete = []; let highestPriority = 'blue';
+            let mergedContent = ""; let mergedEntries = []; let mergedWorkLogs = []; let idsToDelete = []; let highestPriority = 'blue';
 
             checkboxes.forEach((cb, index) => {
                 const id = cb.value; const card = this.getActiveCards().find(c => c.id === id);
@@ -635,13 +1390,14 @@ const app = {
                     if(card.color === 'red') highestPriority = 'red'; else if(card.color === 'yellow' && highestPriority !== 'red') highestPriority = 'yellow';
                     let c = card.content ? card.content.trim() : "";
                     if (Array.isArray(card.entries)) mergedEntries.push(...card.entries);
+                    if (Array.isArray(card.workLogs)) mergedWorkLogs.push(...card.workLogs);
                     mergedContent += `### 🧩 [合併來源] ${card.title}\n${c}\n`;
                     if(index < checkboxes.length - 1) mergedContent += `\n---\n\n`;
                 }
             });
 
             const newCard = {
-                id: 'card_' + Date.now(), title: mergedTitle, content: mergedContent.trim(), entries: mergedEntries,
+                id: 'card_' + Date.now(), title: mergedTitle, content: mergedContent.trim(), entries: mergedEntries, workLogs: mergedWorkLogs,
                 project: '整理', dateMode: 'single', dateSingle: new Date().toISOString().split('T')[0],
                 color: highestPriority, status: 0, isMemo: false
             };
@@ -690,6 +1446,8 @@ const app = {
                             <div style="margin-bottom: 2px;">
                                 <span class="sb-badge" style="background:${prioColor}">${prioLabel}</span>
                                 <span class="sb-badge" style="background:#6c757d; font-size:0.7em;">${c.project||'未分類'}</span>
+                                ${c.category ? `<span class="sb-badge" style="background:#64748b; font-size:0.7em;">${app.entries.escapeHtml(c.category)}</span>` : ''}
+                                ${app.worktime.totalSeconds(c) > 0 ? `<span class="sb-badge" style="background:#4f46e5; font-size:0.7em;">⏱ ${app.worktime.formatDuration(app.worktime.totalSeconds(c))}</span>` : ''}
                             </div>
                             <div style="font-size: 0.95rem; margin-top: 4px; font-weight: bold; color: ${isActive ? '#0056b3' : '#333'}; text-decoration: ${completed ? 'line-through' : 'none'}; opacity: ${completed ? 0.6 : 1};">${c.title || '未命名'}</div>
                         </div>
@@ -725,6 +1483,7 @@ const app = {
                 if (node.tag === 'q1') cardColor = 'red'; else if (node.tag === 'q3') cardColor = 'yellow'; else if (node.tag === 'q2') cardColor = 'green';
                 app.state.workspaces[app.state.activeTabId].push({
                     id: 'card_' + Date.now() + Math.random(), title: node.text, content: '', project: node.project || '發想',
+                    category: '', plannedHours: '', progress: '', deliverable: '', acceptance: '', workLogs: [],
                     dateMode: 'single', dateSingle: new Date().toISOString().split('T')[0], color: cardColor, status: 0, isMemo: false
                 });
             });
@@ -733,53 +1492,99 @@ const app = {
         },
 
         setTimerMode(mode) {
-            clearInterval(app.state.sandbox.timerInterval); 
+            if (app.state.sandbox.timerStatus !== 'IDLE') this.commitTimerSession('心流計時（切換模式自動結算）');
+            clearInterval(app.state.sandbox.timerInterval);
             app.state.sandbox.timerStatus = 'IDLE'; app.state.sandbox.mode = mode;
+            app.state.sandbox.timerTaskId = app.state.sandbox.activeTaskId || null;
+            app.state.sandbox.timerSessionSeconds = 0; app.state.sandbox.timerSessionStartedAt = null;
             document.getElementById('sb-btn-mode-flex').className = mode === 'FLEXIBLE' ? 'sb-tab-btn active' : 'sb-tab-btn';
             document.getElementById('sb-btn-mode-pomo').className = mode === 'POMODORO' ? 'sb-tab-btn active' : 'sb-tab-btn';
             app.state.sandbox.seconds = mode === 'POMODORO' ? 25 * 60 : 0;
             this.updateDisplay(); app.saveToLocal();
         },
+
         startTimer() {
             if (app.state.sandbox.timerStatus === 'RUNNING') return;
+            if (app.state.sandbox.timerStatus === 'IDLE') {
+                app.state.sandbox.timerTaskId = app.state.sandbox.activeTaskId || null;
+                app.state.sandbox.timerSessionSeconds = 0;
+            }
             app.state.sandbox.timerStatus = 'RUNNING';
+            app.state.sandbox.timerSessionStartedAt = new Date().toISOString();
             app.state.sandbox.timerInterval = setInterval(() => {
+                app.state.sandbox.timerSessionSeconds++;
                 if (app.state.sandbox.mode === 'FLEXIBLE') app.state.sandbox.seconds++;
-                else { app.state.sandbox.seconds--; if (app.state.sandbox.seconds <= 0) this.stopTimer(); }
-                this.updateDisplay(); if(app.state.sandbox.seconds % 30 === 0) app.saveToLocal(); 
+                else {
+                    app.state.sandbox.seconds--;
+                    if (app.state.sandbox.seconds <= 0) { this.stopTimer(); return; }
+                }
+                this.updateDisplay();
             }, 1000);
             this.updateDisplay();
         },
-        pauseTimer() { 
-            if (app.state.sandbox.timerStatus !== 'RUNNING') return; 
-            clearInterval(app.state.sandbox.timerInterval); 
-            app.state.sandbox.timerStatus = 'PAUSED'; 
-            this.updateDisplay(); app.saveToLocal(); 
-        },
-        stopTimer() { 
-            clearInterval(app.state.sandbox.timerInterval); 
-            app.state.sandbox.timerStatus = 'IDLE'; 
-            app.state.sandbox.seconds = app.state.sandbox.mode === 'POMODORO' ? 25 * 60 : 0;
+
+        pauseTimer() {
+            if (app.state.sandbox.timerStatus !== 'RUNNING') return;
+            clearInterval(app.state.sandbox.timerInterval);
+            app.state.sandbox.timerStatus = 'PAUSED';
+            app.state.sandbox.timerSessionStartedAt = null;
             this.updateDisplay(); app.saveToLocal();
         },
+
+        commitTimerSession(note = '心流計時') {
+            const taskId = app.state.sandbox.timerTaskId;
+            const sec = app.state.sandbox.timerSessionSeconds;
+            if (taskId && sec > 0) app.worktime.addTimerLog(taskId, sec, note);
+            app.state.sandbox.timerSessionSeconds = 0;
+            app.state.sandbox.timerSessionStartedAt = null;
+            if (taskId) {
+                const card = app.worktime.getCard(taskId);
+                if (card && app.state.sandbox.activeTaskId === taskId) app.entries.renderSandbox(card);
+            }
+        },
+
+        stopTimer() {
+            clearInterval(app.state.sandbox.timerInterval);
+            this.commitTimerSession('心流計時');
+            app.state.sandbox.timerStatus = 'IDLE';
+            app.state.sandbox.timerTaskId = app.state.sandbox.activeTaskId || null;
+            app.state.sandbox.seconds = app.state.sandbox.mode === 'POMODORO' ? 25 * 60 : 0;
+            this.updateDisplay(); app.saveToLocal(); this.renderTodo();
+        },
+
         updateDisplay() {
             let sec = app.state.sandbox.seconds;
             let h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
             let timeStr = (h>0 ? `${h.toString().padStart(2,'0')}:` : '') + `${m.toString().padStart(2,'0')}:${s.toString().padStart(2,'0')}`;
-            
-            document.getElementById('sb-timeDisplay').innerText = timeStr;
+
+            const display = document.getElementById('sb-timeDisplay');
+            if (!display) return;
+            display.innerText = timeStr;
             const gifBox = document.getElementById('sb-gifContainer');
             const statusText = document.getElementById('sb-statusText');
+            const targetBox = document.getElementById('sb-timerTarget');
+
+            const targetCard = app.state.sandbox.timerTaskId ? app.worktime.getCard(app.state.sandbox.timerTaskId) : null;
+            const activeCard = app.state.sandbox.activeTaskId ? app.worktime.getCard(app.state.sandbox.activeTaskId) : null;
+            if (targetBox) {
+                if (targetCard) {
+                    targetBox.innerHTML = `記錄到：<strong>${app.entries.escapeHtml(targetCard.title || '未命名')}</strong><br>本段已累積 ${app.worktime.formatDuration(app.state.sandbox.timerSessionSeconds)}，停止時自動寫入卡片。`;
+                } else if (activeCard) {
+                    targetBox.innerHTML = `準備記錄到：<strong>${app.entries.escapeHtml(activeCard.title || '未命名')}</strong><br>按「啟動」後開始累積工時。`;
+                } else {
+                    targetBox.innerText = '目前未綁定卡片。計時仍可使用，但不會寫入工時；先從任務矩陣選一張卡即可。';
+                }
+            }
 
             if (app.state.sandbox.timerStatus === 'RUNNING') {
-                document.getElementById('sb-timeDisplay').style.color = '#28a745';
-                gifBox.innerHTML = `<img src="${this.GIF_URL}">`; statusText.innerText = "工作中";
+                display.style.color = '#28a745';
+                gifBox.innerHTML = `<img src="${this.GIF_URL}">`; statusText.innerText = '工作中';
             } else if (app.state.sandbox.timerStatus === 'PAUSED') {
-                document.getElementById('sb-timeDisplay').style.color = '#ffc107'; 
-                gifBox.innerHTML = `<span style="color:#aaa">暫停</span>`; statusText.innerText = "暫停中";
+                display.style.color = '#ffc107';
+                gifBox.innerHTML = `<span style="color:#aaa">暫停</span>`; statusText.innerText = '暫停中';
             } else {
-                document.getElementById('sb-timeDisplay').style.color = '#343a40'; 
-                gifBox.innerHTML = `<span style="color:#ccc">停止</span>`; statusText.innerText = "閒置";
+                display.style.color = '#343a40';
+                gifBox.innerHTML = `<span style="color:#ccc">停止</span>`; statusText.innerText = '閒置';
             }
         },
         updateCountdown() {
@@ -905,7 +1710,11 @@ const app = {
             `;
 
             html += projCards.map(card => {
-                const dateHtml = card.dateMode === 'single' ? `<input type="date" class="input-date" value="${card.dateSingle}" onchange="app.actions.updateCard('${card.id}', 'dateSingle', this.value)">` : `<span style="font-size:0.8rem;color:#64748b;">起</span><input type="date" class="input-date" value="${card.dateStart}" onchange="app.actions.updateCard('${card.id}', 'dateStart', this.value)"><span style="font-size:0.8rem;color:#64748b;">迄</span><input type="date" class="input-date" value="${card.dateEnd}" onchange="app.actions.updateCard('${card.id}', 'dateEnd', this.value)">`;
+                const dateHtml = card.isMemo
+                    ? `<span class="free-card-note">自由卡｜不進甘特與工項 Excel</span>`
+                    : (card.dateMode === 'single'
+                        ? `<span style="font-size:0.8rem;color:#64748b;">預計</span><input type="date" class="input-date" value="${card.dateSingle || ''}" onchange="app.actions.updateCard('${card.id}', 'dateSingle', this.value)">`
+                        : `<span style="font-size:0.8rem;color:#64748b;">預計起</span><input type="date" class="input-date" value="${card.dateStart || ''}" onchange="app.actions.updateCard('${card.id}', 'dateStart', this.value)"><span style="font-size:0.8rem;color:#64748b;">迄</span><input type="date" class="input-date" value="${card.dateEnd || ''}" onchange="app.actions.updateCard('${card.id}', 'dateEnd', this.value)">`);
                 return `
                 <div class="card-wrapper"><div class="card-dot"></div>
                     <div class="card ${card.isMemo ? 'memo-mode' : ''}" data-color="${card.color}" data-id="${card.id}">
@@ -916,6 +1725,7 @@ const app = {
                                 ${dateHtml}
                             </div>
                             <div style="display:flex; gap:5px;">
+                                <button class="icon-btn" onclick="app.sandbox.focusTaskForTimer('${card.id}')" title="進入心流並將計時綁定此卡">⏱️</button>
                                 <button class="icon-btn" onclick="app.actions.toggleDateMode('${card.id}')">↔️</button>
                                 <button class="icon-btn" onclick="app.actions.cycleColor('${card.id}')">🎨</button>
                             </div>
@@ -923,6 +1733,8 @@ const app = {
                         <div class="card-body">
                             <input type="text" class="input-title" value="${card.title}" placeholder="🏷️ 標題..." onchange="app.actions.updateCard('${card.id}', 'title', this.value)">
                             <textarea class="input-content" placeholder="📝 寫下卡片細節..." oninput="this.style.height='auto'; this.style.height=this.scrollHeight+'px';" onchange="app.actions.updateCard('${card.id}', 'content', this.value)">${card.content}</textarea>
+                            ${this.worktime.renderPlanningPanel(card, 'timeline')}
+                            ${this.worktime.renderPanel(card, 'timeline')}
                             ${this.entries.renderCardPanel(card, 'timeline')}
                         </div>
                         <div class="card-footer" style="display: flex; gap: 8px; align-items: center; justify-content: flex-end;">
@@ -986,11 +1798,16 @@ const app = {
                                 <div class="status-dot status-${card.status}" onclick="app.actions.cycleStatus('${card.id}')" title="點擊推進狀態"></div>
                                 <button class="icon-btn" onclick="app.actions.toggleMemo('${card.id}')">${card.isMemo ? '♾️' : '📅'}</button>
                             </div>
-                            <button class="icon-btn" onclick="app.actions.cycleColor('${card.id}')">🎨</button>
+                            <div style="display:flex;gap:5px;">
+                                <button class="icon-btn" onclick="app.sandbox.focusTaskForTimer('${card.id}')" title="進入心流並將計時綁定此卡">⏱️</button>
+                                <button class="icon-btn" onclick="app.actions.cycleColor('${card.id}')">🎨</button>
+                            </div>
                         </div>
                         <div class="card-body" style="padding: 5px 10px;">
                             <input type="text" class="input-title" value="${card.title}" placeholder="🏷️ 標題..." onchange="app.actions.updateCard('${card.id}', 'title', this.value)">
                             <textarea class="input-content" placeholder="📝 細節..." oninput="this.style.height='auto'; this.style.height=this.scrollHeight+'px';" onchange="app.actions.updateCard('${card.id}', 'content', this.value)" style="min-height: 40px;">${card.content}</textarea>
+                            ${this.worktime.renderPlanningPanel(card, 'kanban')}
+                            ${this.worktime.renderPanel(card, 'kanban')}
                             ${this.entries.renderCardPanel(card, 'kanban')}
                         </div>
                         <div class="card-footer" style="padding: 5px 10px; display: flex; gap: 5px; justify-content: space-between; align-items: center;">
@@ -1078,38 +1895,114 @@ const app = {
     },
 
     renderGantt() {
-        let allCards = []; 
-        for (let tabId in this.state.workspaces) { 
-            const tabName = this.state.tabs.find(t => t.id === tabId)?.name || '未知'; 
-            this.state.workspaces[tabId].forEach(c => allCards.push({ ...c, tabId, tabName })); 
-        }
-        const cards = allCards.filter(c => !c.isMemo && c.dateMode === 'range' && c.dateStart && c.dateEnd); 
-        if (cards.length === 0) { document.getElementById('gantt-render-target').innerHTML = '<p style="text-align:center; color:#94a3b8;">請將卡片切換為「區間模式 (↔️)」並設定起迄日期</p>'; return; }
-        
-        const minTime = Math.min(...cards.map(c => new Date(c.dateStart).getTime()));
-        
-        let html = '<div style="display:flex; flex-direction:column; gap:10px; min-width: 600px; padding-bottom: 20px;">';
-        cards.forEach(c => { 
-            const s = new Date(c.dateStart).getTime(); 
-            const e = new Date(c.dateEnd).getTime(); 
-            const days = Math.max(1, (e - s) / (1000 * 60 * 60 * 24)); 
-            const offsetDays = Math.max(0, (s - minTime) / (1000 * 60 * 60 * 24));
-            
-            const widthPx = Math.max(30, days * 25);
-            const marginLeftPx = offsetDays * 25;
-
-            html += `
-            <div style="background:#f1f5f9; border-radius:6px; padding:10px; border: 1px solid #e2e8f0; cursor:pointer;" onclick="app.actions.jumpToCard('${c.id}', '${c.tabId}')" title="點擊跳轉編輯">
-                <div style="font-weight:bold; margin-bottom:5px; font-size:0.95rem; color:#1e293b; display:flex; justify-content:space-between;">
-                    <span><span style="color:#64748b; font-size:0.8rem; margin-right:5px;">[${c.tabName}]</span>${c.project ? '#'+c.project : ''} ${c.title || '未命名'} <span style="font-size:0.8rem; color:#64748b; font-weight:normal;">(${days}天)</span></span>
-                    <button class="icon-btn" onclick="event.stopPropagation(); app.actions.deleteCard('${c.id}', '${c.tabId}')" style="color:#ef4444; border:none; background:transparent; padding:0; width:20px; height:20px;">🗑️</button>
-                </div>
-                <div style="height:12px; background:#e2e8f0; border-radius:6px; width:100%; position: relative;">
-                    <div style="height:100%; border-radius:6px; background:var(--primary); width:${widthPx}px; margin-left:${marginLeftPx}px;"></div>
-                </div>
-            </div>`; 
+        const entries = this.worktime.ganttCards().sort((a,b) => {
+            const ga = `${a.card.project || '未分類'}\u0000${a.card.category || '未分類'}`;
+            const gb = `${b.card.project || '未分類'}\u0000${b.card.category || '未分類'}`;
+            return ga.localeCompare(gb) || String(a.card.dateStart).localeCompare(String(b.card.dateStart));
         });
-        document.getElementById('gantt-render-target').innerHTML = html + '</div>';
+        const target = document.getElementById('gantt-render-target');
+        if (!entries.length) {
+            target.innerHTML = '<p style="text-align:center; color:#94a3b8; padding:25px;">目前沒有可繪製的排程工項。將卡片用途設為「排程工項」，並填入預計開始與預計完成即可。</p>';
+            return;
+        }
+
+        const starts = entries.map(({card}) => this.worktime.parseLocalDate(card.dateStart)).filter(Boolean);
+        const ends = entries.map(({card}) => this.worktime.parseLocalDate(card.dateEnd)).filter(Boolean);
+        let minDate = new Date(Math.min(...starts.map(d => d.getTime())));
+        let maxDate = new Date(Math.max(...ends.map(d => d.getTime())));
+        const rawSpan = Math.round((maxDate - minDate) / 86400000) + 1;
+        let truncated = false;
+        if (rawSpan > 366) {
+            maxDate = this.worktime.addDays(minDate, 365);
+            truncated = true;
+        }
+        const days = [];
+        for (let d = new Date(minDate); d <= maxDate; d = this.worktime.addDays(d,1)) days.push(new Date(d));
+        const todayKey = this.worktime.localDateString();
+        const esc = app.entries.escapeHtml.bind(app.entries);
+        const leftCols = 6;
+        const totalCols = leftCols + days.length;
+
+        // 月份標題列
+        let monthCells = '<th class="gantt-left gantt-title-col gantt-month-head">工項</th>' +
+            '<th class="gantt-left gantt-status-col gantt-month-head">狀態</th>' +
+            '<th class="gantt-left gantt-progress-col gantt-month-head">進度</th>' +
+            '<th class="gantt-left gantt-hours-col gantt-month-head">工時<br><span style="font-weight:normal;font-size:.7rem;">預估 / 實際</span></th>' +
+            '<th class="gantt-left gantt-plan-col gantt-month-head">規劃<br><span style="font-weight:normal;font-size:.7rem;">預計開始 → 完成</span></th>' +
+            '<th class="gantt-left gantt-actual-col gantt-month-head">實際<br><span style="font-weight:normal;font-size:.7rem;">實際開始 → 完成</span></th>';
+        let i = 0;
+        while (i < days.length) {
+            const d = days[i];
+            let j = i + 1;
+            while (j < days.length && days[j].getFullYear() === d.getFullYear() && days[j].getMonth() === d.getMonth()) j++;
+            monthCells += `<th class="gantt-month-head" colspan="${j-i}">${d.getFullYear()}/${d.getMonth()+1}</th>`;
+            i = j;
+        }
+
+        const dayCells = '<th class="gantt-left gantt-title-col">名稱</th>' +
+            '<th class="gantt-left gantt-status-col">狀態</th>' +
+            '<th class="gantt-left gantt-progress-col">%</th>' +
+            '<th class="gantt-left gantt-hours-col">時間</th>' +
+            '<th class="gantt-left gantt-plan-col">預計</th>' +
+            '<th class="gantt-left gantt-actual-col">實際</th>' +
+            days.map(d => {
+                const weekend = d.getDay() === 0 || d.getDay() === 6;
+                const today = this.worktime.dateKey(d) === todayKey;
+                return `<th class="gantt-day-head ${weekend ? 'weekend' : ''} ${today ? 'today-col' : ''}" title="${this.worktime.dateKey(d)}">${d.getDate()}</th>`;
+            }).join('');
+
+        let body = '';
+        let lastGroup = null;
+        entries.forEach(({card, tabId, tabName}) => {
+            const project = card.project || '未分類專案';
+            const category = card.category || '未分類工作包';
+            const group = `${project} / ${category}`;
+            if (group !== lastGroup) {
+                body += `<tr class="gantt-group-row"><td colspan="${totalCols}">${esc(project)} <span style="color:#94a3b8;">/</span> ${esc(category)}</td></tr>`;
+                lastGroup = group;
+            }
+
+            const start = this.worktime.parseLocalDate(card.dateStart);
+            const end = this.worktime.parseLocalDate(card.dateEnd);
+            const totalDays = Math.max(1, Math.round((end - start) / 86400000) + 1);
+            const progress = this.worktime.progressValue(card);
+            const completedDays = Math.ceil(totalDays * progress / 100);
+            const planned = this.worktime.plannedMinutes(card);
+            const actual = this.worktime.totalMinutes(card);
+            const actualStart = this.worktime.derivedActualStart(card);
+            const actualEnd = this.worktime.derivedActualEnd(card);
+            const cfg = this.worktime.colorConfig(card.color);
+            const status = this.worktime.statusLabel(card.status);
+            const actualText = actualStart ? `${actualStart}${actualEnd ? ` → ${actualEnd}` : ' → …'}` : '尚未開始';
+            const dayRow = days.map(d => {
+                const weekend = d.getDay() === 0 || d.getDay() === 6;
+                const today = this.worktime.dateKey(d) === todayKey;
+                const inRange = d >= start && d <= end;
+                if (!inRange) return `<td class="gantt-day-cell ${weekend ? 'weekend' : ''} ${today ? 'today-col' : ''}"></td>`;
+                const offset = Math.round((d - start) / 86400000);
+                const done = offset < completedDays;
+                const isStart = offset === 0;
+                const isEnd = offset === totalDays - 1;
+                return `<td class="gantt-day-cell gantt-bar-cell ${done ? 'done' : ''} ${isStart ? 'gantt-bar-start' : ''} ${isEnd ? 'gantt-bar-end' : ''} ${today ? 'today-col' : ''}" style="background:${done ? cfg.hex : cfg.light};" title="${esc(card.title || '未命名')}｜${this.worktime.dateKey(d)}"></td>`;
+            }).join('');
+
+            body += `
+                <tr style="cursor:pointer;" onclick="app.actions.jumpToCard('${card.id}','${tabId}')" title="點擊跳回卡片">
+                    <td class="gantt-left gantt-title-col">
+                        <div class="gantt-task-title"><span class="color-chip" style="background:${cfg.hex}"></span><span>${esc(card.title || '未命名')}</span></div>
+                        <div style="font-size:.68rem;color:#94a3b8;margin-top:2px;">[${esc(tabName)}]</div>
+                    </td>
+                    <td class="gantt-left gantt-status-col">${esc(status)}</td>
+                    <td class="gantt-left gantt-progress-col">${progress}%</td>
+                    <td class="gantt-left gantt-hours-col">${planned ? this.worktime.formatMinutes(planned) : '未估'}<br><strong style="color:#047857;">${this.worktime.formatMinutes(actual)}</strong></td>
+                    <td class="gantt-left gantt-plan-col">${esc(card.dateStart)} → ${esc(card.dateEnd)}</td>
+                    <td class="gantt-left gantt-actual-col">${esc(actualText)}</td>
+                    ${dayRow}
+                </tr>`;
+        });
+
+        const warning = truncated ? '<div style="margin-bottom:8px;color:#b45309;font-size:.8rem;">⚠️ 排程跨度超過 366 天，畫面甘特僅顯示前 366 天；Excel 工項資料仍保留完整起迄日期。</div>' : '';
+        target.innerHTML = `${warning}<div class="gantt-table-wrap"><table class="gantt-table"><thead><tr>${monthCells}</tr><tr>${dayCells}</tr></thead><tbody>${body}</tbody></table></div>`;
     },
 
     renderCalendar() {
@@ -1232,7 +2125,19 @@ const app = {
     // 基礎 Actions (增刪改查)
     // ==========================================
     actions: {
-        addCard() { const newCard = { id: 'card_' + Date.now(), title: '', content: '', project: app.state.filters.activeProject || '', dateMode: 'single', dateSingle: new Date().toISOString().split('T')[0], color: 'blue', status: 0, isMemo: false }; app.state.workspaces[app.state.activeTabId].push(newCard); app.saveToLocal(); app.renderAll(); },
+        addCard(mode = 'free') {
+            const today = app.worktime.localDateString();
+            const scheduled = mode === 'scheduled';
+            const newCard = {
+                id: 'card_' + Date.now(), title: '', content: '', project: app.state.filters.activeProject || '',
+                category: '', progress: '', deliverable: '', acceptance: '', workLogs: [],
+                dateMode: scheduled ? 'range' : 'single', dateSingle: scheduled ? '' : '',
+                dateStart: scheduled ? today : '', dateEnd: scheduled ? today : '',
+                color: 'blue', status: 0, isMemo: !scheduled
+            };
+            app.state.workspaces[app.state.activeTabId].push(newCard);
+            app.saveToLocal(); app.renderAll();
+        },
         updateCard(id, field, value) { const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id); if (card) { card[field] = value; app.saveToLocal(); app.renderAll(); } },
         
         // 👻 升級版：支援跨分頁、清洗沙盒的刪除機制
@@ -1286,9 +2191,31 @@ const app = {
                 app.state.workspaces[targetTabId].push(card); app.saveToLocal(); app.renderAll();
             }
         },
-        cycleStatus(id) { const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id); if (card) { card.status = (card.status + 1) % 4; app.saveToLocal(); app.renderAll(); } },
+        cycleStatus(id) {
+            const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id);
+            if (!card) return;
+            const next = (Number(card.status || 0) + 1) % 4;
+            card.status = next;
+            const today = app.worktime.localDateString();
+            if (next === 1 && !card.actualStart) card.actualStart = today;
+            if (next === 2) {
+                if (!card.actualStart) card.actualStart = today;
+                if (!card.actualEnd) card.actualEnd = today;
+                if (card.progress === undefined || card.progress === null || card.progress === '') card.progress = 100;
+            }
+            app.saveToLocal(); app.renderAll();
+        },
         cycleColor(id) { const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id); const colors = ['blue', 'green', 'red', 'yellow']; if (card) { card.color = colors[(colors.indexOf(card.color) + 1) % colors.length]; app.saveToLocal(); app.renderAll(); } },
-        toggleMemo(id) { const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id); if (card) { card.isMemo = !card.isMemo; app.saveToLocal(); app.renderAll(); } },
+        toggleMemo(id) {
+            const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id);
+            if (!card) return;
+            card.isMemo = !card.isMemo;
+            if (!card.isMemo && !app.worktime.plannedStart(card)) {
+                const today = app.worktime.localDateString();
+                card.dateMode = 'range'; card.dateStart = today; card.dateEnd = today;
+            }
+            app.saveToLocal(); app.renderAll();
+        },
         toggleDateMode(id) { const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id); if (card) { card.dateMode = card.dateMode === 'single' ? 'range' : 'single'; app.saveToLocal(); app.renderAll(); } },
         
         addMatrixNode() {
