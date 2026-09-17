@@ -157,10 +157,42 @@
         #sb-entry-context .worklog-panel { margin-top:0; border-color:#dbeafe; background:#fff; }
         #sb-entry-context .worklog-header { background:#eff6ff; }
 
-        .chronicle-row { display: flex; margin-bottom: 25px; border-left: 3px solid #e2e8f0; padding-left: 20px; position: relative; flex-wrap: wrap; }
-        .chronicle-row::before { content: ''; position: absolute; left: -8px; top: 6px; width: 13px; height: 13px; border-radius: 50%; background: var(--primary); border: 2px solid white; }
-        .chronicle-date { font-weight: bold; width: 100%; max-width: 120px; flex-shrink: 0; color: #64748b; font-size: 0.95rem; margin-bottom: 5px; }
-        .chronicle-info { flex: 1; background: #f8fafc; padding: 12px 15px; border-radius: 8px; border: 1px solid #e2e8f0; width: 100%; }
+        .chronicle-pin-btn.active { background:#fef3c7; border-color:#f59e0b; color:#92400e; }
+        .chronicle-toolbar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:18px; padding:10px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:10px; }
+        .chronicle-scope-group { display:flex; gap:4px; }
+        .chronicle-filter-btn { border:1px solid #cbd5e1; background:white; color:#475569; padding:7px 11px; border-radius:7px; cursor:pointer; font-weight:bold; }
+        .chronicle-filter-btn.active { background:#eef2ff; border-color:#818cf8; color:#4338ca; }
+        .chronicle-project-filter { display:flex; align-items:center; gap:7px; color:#64748b; font-size:.85rem; }
+        .chronicle-project-filter select { min-width:150px; border:1px solid #cbd5e1; border-radius:7px; padding:7px 9px; background:white; color:#334155; }
+        .chronicle-count { margin-left:auto; color:#94a3b8; font-size:.8rem; }
+        .chronicle-month-group { margin:20px 0 28px; }
+        .chronicle-month-group > h4 { margin:0 0 10px; color:#475569; font-size:1rem; border-bottom:1px solid #e2e8f0; padding-bottom:7px; }
+        .chronicle-card { --chronicle-accent:#4f46e5; display:grid; grid-template-columns:128px minmax(0,1fr); gap:14px; margin-bottom:12px; padding:14px; border:1px solid #e2e8f0; border-left:5px solid var(--chronicle-accent); border-radius:10px; background:white; box-shadow:0 1px 2px rgba(15,23,42,.04); }
+        .chronicle-card-date input { width:100%; border:1px solid #cbd5e1; border-radius:7px; padding:7px 8px; color:#475569; background:#f8fafc; }
+        .chronicle-card-main { min-width:0; }
+        .chronicle-card-topline { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; }
+        .chronicle-card-title-wrap { min-width:0; display:flex; align-items:center; flex-wrap:wrap; gap:6px; }
+        .chronicle-project-tag { background:#e2e8f0; color:#475569; padding:2px 7px; border-radius:999px; font-size:.75rem; }
+        .chronicle-tab-tag { color:#94a3b8; font-size:.75rem; }
+        .chronicle-card-title { color:#1f2937; font-size:1rem; word-break:break-word; }
+        .chronicle-card-actions { display:flex; gap:6px; flex-shrink:0; }
+        .chronicle-summary-label { display:block; margin-top:10px; }
+        .chronicle-summary-label > span { display:block; color:#64748b; font-size:.78rem; font-weight:bold; margin-bottom:5px; }
+        .chronicle-summary-input { width:100%; min-height:66px; resize:vertical; border:1px solid #cbd5e1; border-radius:7px; padding:9px 10px; line-height:1.55; color:#334155; background:#fff; }
+        .chronicle-summary-input:focus { outline:none; border-color:#818cf8; box-shadow:0 0 0 2px rgba(99,102,241,.1); }
+        .chronicle-empty { padding:44px 20px; text-align:center; color:#64748b; border:2px dashed #cbd5e1; border-radius:12px; background:#f8fafc; }
+        .chronicle-empty p { max-width:620px; margin:8px auto 0; line-height:1.6; }
+        .chronicle-empty-icon { font-size:2rem; margin-bottom:8px; color:#f59e0b; }
+
+        @media (max-width: 768px) {
+            .chronicle-card { grid-template-columns:1fr; gap:8px; }
+            .chronicle-card-date input { max-width:170px; }
+            .chronicle-card-topline { flex-direction:column; }
+            .chronicle-card-actions { width:100%; flex-wrap:wrap; }
+            .chronicle-project-filter { width:100%; }
+            .chronicle-project-filter select { flex:1; min-width:0; }
+            .chronicle-count { margin-left:0; }
+        }
 
         /* 詰棋與筆記本 modal */
         .modal-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); z-index: 9000; align-items: center; justify-content: center; padding: 15px; }
@@ -486,7 +518,8 @@
 
             <!-- 2. 大事記 -->
             <div id="view-chronicle" class="view-container">
-                <h3 style="text-align: center; color: #475569; margin-top: 0;">⚡ 大事記</h3>
+                <h3 style="text-align: center; color: #475569; margin-top: 0; margin-bottom:6px;">⚡ 大事記</h3>
+                <p style="text-align:center; color:#64748b; font-size:.88rem; margin:0 0 16px;">只收你手動標記的重要成果、決定與節點；一般排程不會自動塞進來。</p>
                 <div id="chronicle-render-target"></div>
             </div>
 

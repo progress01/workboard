@@ -25,6 +25,7 @@ const app = {
         view: 'timeline',
         filters: { keyword: '', activeProject: null },
         ganttFilters: { project: '', month: '' },
+        chronicleFilters: { scope: 'all', project: '' },
         showProjectBar: false,
         
         // SPA 沙盒專屬狀態
@@ -1776,6 +1777,7 @@ const app = {
                                 ${dateHtml}
                             </div>
                             <div style="display:flex; gap:5px;">
+                                <button class="icon-btn chronicle-pin-btn ${card.chroniclePinned ? 'active' : ''}" onclick="app.actions.toggleChronicle('${card.id}')" title="${card.chroniclePinned ? '移出大事記' : '加入大事記'}">${card.chroniclePinned ? '⭐' : '☆'}</button>
                                 <button class="icon-btn" onclick="app.sandbox.focusTaskForTimer('${card.id}')" title="進入心流並將計時綁定此卡">⏱️</button>
                                 <button class="icon-btn" onclick="app.actions.toggleDateMode('${card.id}')">↔️</button>
                                 <button class="icon-btn" onclick="app.actions.cycleColor('${card.id}')">🎨</button>
@@ -1850,6 +1852,7 @@ const app = {
                                 <button class="icon-btn" onclick="app.actions.toggleMemo('${card.id}')">${card.isMemo ? '♾️' : '📅'}</button>
                             </div>
                             <div style="display:flex;gap:5px;">
+                                <button class="icon-btn chronicle-pin-btn ${card.chroniclePinned ? 'active' : ''}" onclick="app.actions.toggleChronicle('${card.id}')" title="${card.chroniclePinned ? '移出大事記' : '加入大事記'}">${card.chroniclePinned ? '⭐' : '☆'}</button>
                                 <button class="icon-btn" onclick="app.sandbox.focusTaskForTimer('${card.id}')" title="進入心流並將計時綁定此卡">⏱️</button>
                                 <button class="icon-btn" onclick="app.actions.cycleColor('${card.id}')">🎨</button>
                             </div>
@@ -1919,30 +1922,109 @@ const app = {
     },
 
     renderChronicle() {
-        let allCards = []; 
-        for (let tabId in this.state.workspaces) { 
-            const tabName = this.state.tabs.find(t => t.id === tabId)?.name || '未知'; 
-            this.state.workspaces[tabId].forEach(c => allCards.push({ ...c, tabId, tabName })); 
+        const target = document.getElementById('chronicle-render-target');
+        if (!target) return;
+        const esc = app.entries.escapeHtml.bind(app.entries);
+        const filters = this.state.chronicleFilters || (this.state.chronicleFilters = { scope: 'all', project: '' });
+        const NO_PROJECT = '__NO_PROJECT__';
+        const today = this.worktime.localDateString();
+        const currentMonth = today.slice(0, 7);
+
+        let cards = [];
+        for (const tabId in this.state.workspaces) {
+            const tabName = this.state.tabs.find(t => t.id === tabId)?.name || '未知';
+            (this.state.workspaces[tabId] || []).forEach(card => {
+                if (!card.chroniclePinned) return;
+                const fallbackDate = card.actualEnd || card.actualStart ||
+                    (card.dateMode === 'range' ? (card.dateEnd || card.dateStart) : card.dateSingle) || '';
+                cards.push({ ...card, tabId, tabName, chronicleResolvedDate: card.chronicleDate || fallbackDate });
+            });
         }
-        const cards = allCards.filter(c => !c.isMemo && (c.dateSingle || c.dateStart)); 
-        if (cards.length === 0) { document.getElementById('chronicle-render-target').innerHTML = '<p style="text-align:center; color:#94a3b8;">無有效日期之卡片</p>'; return; }
-        
-        const sorted = cards.sort((a, b) => { const d1 = new Date(a.dateMode === 'range' ? a.dateStart : a.dateSingle).getTime() || 0; const d2 = new Date(b.dateMode === 'range' ? b.dateStart : b.dateSingle).getTime() || 0; return d1 - d2; });
-        const html = sorted.map(c => { 
-            const dStr = c.dateMode === 'range' ? `${c.dateStart} ~ ${c.dateEnd}` : c.dateSingle; 
-            const pTag = c.project ? `<span style="background:#e2e8f0; padding:2px 6px; border-radius:4px; font-size:0.8rem; margin-right:8px;">#${c.project}</span>` : ''; 
-            return `<div class="chronicle-row" onclick="app.actions.jumpToCard('${c.id}', '${c.tabId}')" style="cursor:pointer;" title="點擊跳轉編輯">
-                <div class="chronicle-date">${dStr}</div>
-                <div class="chronicle-info">
-                    <div style="display:flex; align-items:center; margin-bottom:5px;">
-                        <div class="status-dot status-${c.status}" style="margin-right:8px;"></div>
-                        <div class="chronicle-title">${pTag}<span style="color:#64748b; font-size:0.8rem; margin-right:5px;">[${c.tabName}]</span>${c.title || '未命名'}</div>
-                    </div>
-                    <div style="color:#475569; font-size:0.95rem; white-space:pre-wrap;">${c.content}</div>
+
+        const projects = [...new Set(cards.map(c => (c.project || '').trim()).filter(Boolean))].sort((a,b) => a.localeCompare(b, 'zh-Hant'));
+        const hasNoProject = cards.some(c => !(c.project || '').trim());
+        const projectOptions = [
+            `<option value="">全部專案</option>`,
+            ...(hasNoProject ? [`<option value="${NO_PROJECT}" ${filters.project === NO_PROJECT ? 'selected' : ''}>未分類</option>`] : []),
+            ...projects.map(p => `<option value="${esc(p)}" ${filters.project === p ? 'selected' : ''}>${esc(p)}</option>`)
+        ].join('');
+
+        let filtered = cards.filter(c => {
+            if (filters.scope === 'current' && String(c.chronicleResolvedDate || '').slice(0,7) !== currentMonth) return false;
+            if (filters.project === NO_PROJECT && (c.project || '').trim()) return false;
+            if (filters.project && filters.project !== NO_PROJECT && c.project !== filters.project) return false;
+            return true;
+        });
+        filtered.sort((a,b) => String(a.chronicleResolvedDate || '9999-99-99').localeCompare(String(b.chronicleResolvedDate || '9999-99-99')) || String(a.title || '').localeCompare(String(b.title || ''), 'zh-Hant'));
+
+        const toolbar = `
+            <div class="chronicle-toolbar">
+                <div class="chronicle-scope-group" role="group" aria-label="大事記時間範圍">
+                    <button class="chronicle-filter-btn ${filters.scope === 'all' ? 'active' : ''}" onclick="app.setChronicleFilter('scope','all')">全部</button>
+                    <button class="chronicle-filter-btn ${filters.scope === 'current' ? 'active' : ''}" onclick="app.setChronicleFilter('scope','current')">本月</button>
                 </div>
-            </div>`; 
+                <label class="chronicle-project-filter">
+                    <span>專案</span>
+                    <select onchange="app.setChronicleFilter('project',this.value)">${projectOptions}</select>
+                </label>
+                <span class="chronicle-count">${filtered.length} / ${cards.length} 筆</span>
+            </div>`;
+
+        if (!cards.length) {
+            target.innerHTML = `${toolbar}<div class="chronicle-empty">
+                <div class="chronicle-empty-icon">☆</div>
+                <strong>大事記目前是空的</strong>
+                <p>回到時間軸或看板，按卡片右上角的 ☆，只把真正值得回顧的成果、決定或節點加入這裡。</p>
+            </div>`;
+            return;
+        }
+
+        if (!filtered.length) {
+            target.innerHTML = `${toolbar}<div class="chronicle-empty"><strong>目前篩選條件沒有大事記。</strong><p>資料沒有消失，只是被篩掉了。這次不是軟體在偷偷吃資料。</p></div>`;
+            return;
+        }
+
+        const monthGroups = {};
+        filtered.forEach(c => {
+            const key = c.chronicleResolvedDate ? c.chronicleResolvedDate.slice(0,7) : '未設定日期';
+            if (!monthGroups[key]) monthGroups[key] = [];
+            monthGroups[key].push(c);
+        });
+
+        const content = Object.entries(monthGroups).map(([month, items]) => {
+            const monthLabel = month === '未設定日期' ? month : `${month.replace('-', ' / ')}`;
+            const rows = items.map(c => {
+                const dateValue = c.chronicleResolvedDate || '';
+                const project = (c.project || '').trim() || '未分類';
+                const summary = c.chronicleSummary || '';
+                const colorCfg = this.worktime.colorConfig(c.color);
+                return `<article class="chronicle-card" style="--chronicle-accent:${colorCfg.hex};">
+                    <div class="chronicle-card-date">
+                        <input type="date" value="${esc(dateValue)}" aria-label="大事記日期" onchange="app.actions.updateChronicleMeta('${c.id}','chronicleDate',this.value,'${c.tabId}')">
+                    </div>
+                    <div class="chronicle-card-main">
+                        <div class="chronicle-card-topline">
+                            <div class="chronicle-card-title-wrap">
+                                <span class="chronicle-project-tag">#${esc(project)}</span>
+                                <span class="chronicle-tab-tag">${esc(c.tabName)}</span>
+                                <strong class="chronicle-card-title">${esc(c.title || '未命名')}</strong>
+                            </div>
+                            <div class="chronicle-card-actions">
+                                <button class="worklog-action-btn" onclick="app.actions.jumpToCard('${c.id}','${c.tabId}')">↗ 回原卡片</button>
+                                <button class="worklog-action-btn danger" onclick="app.actions.toggleChronicle('${c.id}','${c.tabId}')">☆ 移出</button>
+                            </div>
+                        </div>
+                        <label class="chronicle-summary-label">
+                            <span>成果／事件摘要</span>
+                            <textarea class="chronicle-summary-input" placeholder="例如：完成批次插入測試，主要流程已可運作。" onchange="app.actions.updateChronicleMeta('${c.id}','chronicleSummary',this.value,'${c.tabId}')">${esc(summary)}</textarea>
+                        </label>
+                    </div>
+                </article>`;
+            }).join('');
+            return `<section class="chronicle-month-group"><h4>${esc(monthLabel)}</h4>${rows}</section>`;
         }).join('');
-        document.getElementById('chronicle-render-target').innerHTML = html;
+
+        target.innerHTML = toolbar + content;
     },
 
     renderGantt() {
@@ -2241,6 +2323,12 @@ const app = {
     },
 
     setFilter(type, value) { if (type === 'project') this.state.filters.activeProject = value; this.renderAll(); },
+    setChronicleFilter(type, value) {
+        if (!this.state.chronicleFilters) this.state.chronicleFilters = { scope: 'all', project: '' };
+        if (type === 'scope') this.state.chronicleFilters.scope = value === 'current' ? 'current' : 'all';
+        if (type === 'project') this.state.chronicleFilters.project = value || '';
+        if (this.state.view === 'chronicle') this.renderChronicle();
+    },
 
     // ==========================================
     // 基礎 Actions (增刪改查)
@@ -2260,6 +2348,36 @@ const app = {
             app.saveToLocal(); app.renderAll();
         },
         updateCard(id, field, value) { const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id); if (card) { card[field] = value; app.saveToLocal(); app.renderAll(); } },
+
+        getCardInTab(id, targetTabId = null) {
+            if (targetTabId && app.state.workspaces[targetTabId]) {
+                const direct = app.state.workspaces[targetTabId].find(c => c.id === id);
+                if (direct) return direct;
+            }
+            for (const tabId in app.state.workspaces) {
+                const card = (app.state.workspaces[tabId] || []).find(c => c.id === id);
+                if (card) return card;
+            }
+            return null;
+        },
+
+        toggleChronicle(id, targetTabId = null) {
+            const card = this.getCardInTab(id, targetTabId);
+            if (!card) return;
+            card.chroniclePinned = !card.chroniclePinned;
+            if (card.chroniclePinned && !card.chronicleDate) card.chronicleDate = app.worktime.localDateString();
+            app.saveToLocal();
+            app.renderAll();
+        },
+
+        updateChronicleMeta(id, field, value, targetTabId = null) {
+            if (!['chronicleDate', 'chronicleSummary'].includes(field)) return;
+            const card = this.getCardInTab(id, targetTabId);
+            if (!card) return;
+            card[field] = value;
+            app.saveToLocal();
+            if (app.state.view === 'chronicle') app.renderChronicle();
+        },
         
         // 👻 升級版：支援跨分頁、清洗沙盒的刪除機制
         deleteCard(id, targetTabId = null) {
