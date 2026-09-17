@@ -35,6 +35,10 @@ const app = {
         }
     },
 
+    // 工作紀錄的畫面狀態只存在記憶體，不寫入 localStorage / Firebase。
+    // 真正資料只放在 card.entries，避免改動既有同步結構。
+    entryUi: {},
+
     init() {
         auth.onAuthStateChanged((user) => {
             if (user) {
@@ -133,6 +137,292 @@ const app = {
                 displayEl.style.display = 'inline-block';
             }
         }).catch(err => console.log("無法取得雲端時間", err));
+    },
+
+    // ==========================================
+    // 📚 卡片工作紀錄（自由標題 + 單筆閱讀）
+    // ==========================================
+    entries: {
+        getCard(cardId) {
+            const currentCards = app.state.workspaces[app.state.activeTabId] || [];
+            let card = currentCards.find(c => c.id === cardId);
+            if (card) return card;
+            for (const tabId in app.state.workspaces) {
+                card = (app.state.workspaces[tabId] || []).find(c => c.id === cardId);
+                if (card) return card;
+            }
+            return null;
+        },
+
+        getList(card) {
+            return card && Array.isArray(card.entries) ? card.entries : [];
+        },
+
+        getUi(cardId, source = 'timeline') {
+            const key = `${source}:${cardId}`;
+            if (!app.entryUi[key]) {
+                app.entryUi[key] = {
+                    mode: 'list',
+                    selectedId: null,
+                    editingId: null,
+                    expanded: source !== 'sandbox'
+                };
+            }
+            return app.entryUi[key];
+        },
+
+        escapeHtml(value) {
+            return String(value ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#039;');
+        },
+
+        formatDate(iso) {
+            if (!iso) return '';
+            const d = new Date(iso);
+            if (Number.isNaN(d.getTime())) return '';
+            const now = new Date();
+            const sameYear = d.getFullYear() === now.getFullYear();
+            const date = sameYear
+                ? `${d.getMonth() + 1}/${d.getDate()}`
+                : `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`;
+            const time = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+            return `${date} ${time}`;
+        },
+
+        getSortedEntries(card) {
+            return [...this.getList(card)].sort((a, b) => {
+                const aTime = new Date(a.createdAt || 0).getTime() || 0;
+                const bTime = new Date(b.createdAt || 0).getTime() || 0;
+                return bTime - aTime;
+            });
+        },
+
+        renderCardPanel(card, source = 'timeline') {
+            const compactClass = source === 'kanban' ? ' worklog-compact' : '';
+            return `<div class="worklog-panel${compactClass}" id="worklog-panel-${source}-${card.id}">${this.renderPanelInner(card, source)}</div>`;
+        },
+
+        renderPanelInner(card, source = 'timeline') {
+            const entries = this.getSortedEntries(card);
+            const ui = this.getUi(card.id, source);
+
+            if (source === 'sandbox' && !ui.expanded) {
+                const latest = entries[0];
+                return `
+                    <div class="worklog-collapsed" onclick="app.entries.toggleExpanded('${card.id}', 'sandbox')">
+                        <div class="worklog-collapsed-main">
+                            <span style="font-size:0.84rem;font-weight:bold;color:#475569;">📚 工作紀錄</span>
+                            <span class="worklog-count">${entries.length}</span>
+                            <span class="worklog-collapsed-latest">${latest ? this.escapeHtml(latest.title || '未命名紀錄') : '尚無紀錄'}</span>
+                        </div>
+                        <span style="color:#64748b;font-size:0.8rem;">展開 ▾</span>
+                    </div>`;
+            }
+
+            if (ui.mode === 'new' || ui.mode === 'edit') {
+                const editing = ui.mode === 'edit' ? entries.find(e => e.id === ui.editingId) : null;
+                const title = editing ? editing.title || '' : '';
+                const content = editing ? editing.content || '' : '';
+                return `
+                    <div class="worklog-header">
+                        <div class="worklog-heading">${ui.mode === 'new' ? '＋ 新增工作紀錄' : '✏️ 修改工作紀錄'}</div>
+                        ${source === 'sandbox' ? `<button class="worklog-action-btn" onclick="app.entries.toggleExpanded('${card.id}', 'sandbox')">收合</button>` : ''}
+                    </div>
+                    <div class="worklog-form">
+                        <input id="worklog-title-${source}-${card.id}" class="worklog-title-input" type="text" value="${this.escapeHtml(title)}" placeholder="隨意取一個之後找得到的標題">
+                        <textarea id="worklog-content-${source}-${card.id}" class="worklog-content-input" placeholder="這裡可以放進度、想法、問題、決定、待確認事項……">${this.escapeHtml(content)}</textarea>
+                    </div>
+                    <div class="worklog-actions">
+                        <button class="worklog-action-btn" onclick="app.entries.cancelEdit('${card.id}', '${source}')">取消</button>
+                        <button class="worklog-action-btn" style="color:#4338ca;border-color:#c7d2fe;" onclick="app.entries.save('${card.id}', '${source}', ${editing ? `'${editing.id}'` : 'null'})">儲存</button>
+                    </div>`;
+            }
+
+            if (ui.mode === 'detail' && ui.selectedId) {
+                const entry = entries.find(e => e.id === ui.selectedId);
+                if (!entry) {
+                    ui.mode = 'list';
+                    ui.selectedId = null;
+                    return this.renderPanelInner(card, source);
+                }
+                const created = this.formatDate(entry.createdAt);
+                const updated = this.formatDate(entry.updatedAt);
+                const updatedText = updated && updated !== created ? `・修改 ${updated}` : '';
+                return `
+                    <div class="worklog-header">
+                        <button class="worklog-back-btn" onclick="app.entries.backToList('${card.id}', '${source}')">← 紀錄列表</button>
+                        <div class="worklog-heading" style="justify-content:flex-end;">${source === 'sandbox' ? `<button class="worklog-action-btn" onclick="app.entries.toggleExpanded('${card.id}', 'sandbox')">收合</button>` : ''}</div>
+                    </div>
+                    <div class="worklog-detail">
+                        <div class="worklog-detail-title">${this.escapeHtml(entry.title || '未命名紀錄')}</div>
+                        <div class="worklog-detail-content">${this.escapeHtml(entry.content || '').replace(/\n/g, '<br>')}</div>
+                        <div class="worklog-detail-meta">建立 ${created}${updatedText}</div>
+                    </div>
+                    <div class="worklog-actions">
+                        <button class="worklog-action-btn" onclick="app.entries.startEdit('${card.id}', '${entry.id}', '${source}')">編輯</button>
+                        <button class="worklog-action-btn danger" onclick="app.entries.deleteEntry('${card.id}', '${entry.id}', '${source}')">刪除</button>
+                    </div>`;
+            }
+
+            const rows = entries.length
+                ? entries.map(entry => `
+                    <button class="worklog-list-row" onclick="app.entries.openEntry('${card.id}', '${entry.id}', '${source}')">
+                        <span class="worklog-list-title">${this.escapeHtml(entry.title || '未命名紀錄')}</span>
+                        <span class="worklog-list-date">${this.formatDate(entry.createdAt)}</span>
+                    </button>`).join('')
+                : `<div class="worklog-empty">尚無工作紀錄。需要留下什麼時再新增即可。</div>`;
+
+            return `
+                <div class="worklog-header">
+                    <div class="worklog-heading">📚 工作紀錄 <span class="worklog-count">${entries.length}</span></div>
+                    <div style="display:flex;gap:6px;align-items:center;">
+                        <button class="worklog-add-btn" onclick="app.entries.startNew('${card.id}', '${source}')">＋ 新增</button>
+                        ${source === 'sandbox' ? `<button class="worklog-action-btn" onclick="app.entries.toggleExpanded('${card.id}', 'sandbox')">收合</button>` : ''}
+                    </div>
+                </div>
+                <div class="worklog-list">${rows}</div>`;
+        },
+
+        refresh(cardId, source = 'timeline') {
+            const card = this.getCard(cardId);
+            if (!card) return;
+            if (source === 'sandbox') {
+                this.renderSandbox(card);
+                return;
+            }
+            const panel = document.getElementById(`worklog-panel-${source}-${cardId}`);
+            if (panel) panel.innerHTML = this.renderPanelInner(card, source);
+        },
+
+        renderSandbox(card) {
+            const container = document.getElementById('sb-entry-context');
+            if (!container) return;
+            if (!card) {
+                container.style.display = 'none';
+                container.innerHTML = '';
+                return;
+            }
+            container.style.display = 'block';
+            container.innerHTML = `<div class="worklog-panel" id="worklog-panel-sandbox-${card.id}">${this.renderPanelInner(card, 'sandbox')}</div>`;
+        },
+
+        toggleExpanded(cardId, source = 'sandbox') {
+            const ui = this.getUi(cardId, source);
+            ui.expanded = !ui.expanded;
+            if (!ui.expanded) {
+                ui.mode = 'list';
+                ui.selectedId = null;
+                ui.editingId = null;
+            }
+            this.refresh(cardId, source);
+        },
+
+        startNew(cardId, source = 'timeline') {
+            const ui = this.getUi(cardId, source);
+            ui.mode = 'new';
+            ui.selectedId = null;
+            ui.editingId = null;
+            if (source === 'sandbox') ui.expanded = true;
+            this.refresh(cardId, source);
+            setTimeout(() => document.getElementById(`worklog-title-${source}-${cardId}`)?.focus(), 0);
+        },
+
+        openEntry(cardId, entryId, source = 'timeline') {
+            const ui = this.getUi(cardId, source);
+            ui.mode = 'detail';
+            ui.selectedId = entryId;
+            ui.editingId = null;
+            if (source === 'sandbox') ui.expanded = true;
+            this.refresh(cardId, source);
+        },
+
+        backToList(cardId, source = 'timeline') {
+            const ui = this.getUi(cardId, source);
+            ui.mode = 'list';
+            ui.selectedId = null;
+            ui.editingId = null;
+            this.refresh(cardId, source);
+        },
+
+        startEdit(cardId, entryId, source = 'timeline') {
+            const ui = this.getUi(cardId, source);
+            ui.mode = 'edit';
+            ui.editingId = entryId;
+            ui.selectedId = entryId;
+            this.refresh(cardId, source);
+            setTimeout(() => document.getElementById(`worklog-title-${source}-${cardId}`)?.focus(), 0);
+        },
+
+        cancelEdit(cardId, source = 'timeline') {
+            const ui = this.getUi(cardId, source);
+            if (ui.editingId) {
+                ui.mode = 'detail';
+                ui.selectedId = ui.editingId;
+            } else {
+                ui.mode = 'list';
+                ui.selectedId = null;
+            }
+            ui.editingId = null;
+            this.refresh(cardId, source);
+        },
+
+        save(cardId, source = 'timeline', entryId = null) {
+            const card = this.getCard(cardId);
+            if (!card) return;
+            const titleEl = document.getElementById(`worklog-title-${source}-${cardId}`);
+            const contentEl = document.getElementById(`worklog-content-${source}-${cardId}`);
+            if (!titleEl || !contentEl) return;
+
+            const title = titleEl.value.trim() || '未命名紀錄';
+            const content = contentEl.value;
+            const now = new Date().toISOString();
+            if (!Array.isArray(card.entries)) card.entries = [];
+
+            let savedId = entryId;
+            if (entryId) {
+                const entry = card.entries.find(e => e.id === entryId);
+                if (!entry) return;
+                entry.title = title;
+                entry.content = content;
+                entry.updatedAt = now;
+            } else {
+                savedId = `entry_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+                card.entries.push({
+                    id: savedId,
+                    title,
+                    content,
+                    createdAt: now,
+                    updatedAt: now
+                });
+            }
+
+            app.saveToLocal();
+            const ui = this.getUi(cardId, source);
+            ui.mode = 'detail';
+            ui.selectedId = savedId;
+            ui.editingId = null;
+            this.refresh(cardId, source);
+        },
+
+        deleteEntry(cardId, entryId, source = 'timeline') {
+            const card = this.getCard(cardId);
+            if (!card || !Array.isArray(card.entries)) return;
+            const entry = card.entries.find(e => e.id === entryId);
+            if (!entry) return;
+            if (!confirm(`確定刪除工作紀錄「${entry.title || '未命名紀錄'}」？`)) return;
+
+            card.entries = card.entries.filter(e => e.id !== entryId);
+            app.saveToLocal();
+            const ui = this.getUi(cardId, source);
+            ui.mode = 'list';
+            ui.selectedId = null;
+            ui.editingId = null;
+            this.refresh(cardId, source);
+        }
     },
 
     // ==========================================
@@ -273,12 +563,14 @@ const app = {
                 const card = this.getActiveCards().find(c => c.id === app.state.sandbox.activeTaskId);
                 if (card) {
                     iconEl.style.display = 'inline'; titleEl.value = card.title; titleEl.style.color = 'var(--primary)';
-                    titleEl.readOnly = false; noteArea.value = card.content || ""; 
+                    titleEl.readOnly = false; noteArea.value = card.content || "";
+                    app.entries.renderSandbox(card);
                     return;
                 } else { app.state.sandbox.activeTaskId = null; }
             }
             iconEl.style.display = 'none'; titleEl.value = "📝 全域沙盒草稿 (未綁定單一任務)"; titleEl.style.color = '#334155';
-            titleEl.readOnly = true; noteArea.value = app.state.globalNotebook.free || ""; 
+            titleEl.readOnly = true; noteArea.value = app.state.globalNotebook.free || "";
+            app.entries.renderSandbox(null);
         },
 
         renameActiveTask() {
@@ -334,7 +626,7 @@ const app = {
             if(checkboxes.length < 2) return alert("💡 請勾選至少兩個大卡片進行合併！");
             let mergedTitle = prompt("請輸入合併後的新母任務名稱：", "合併任務集"); if(!mergedTitle) return; 
 
-            let mergedContent = ""; let idsToDelete = []; let highestPriority = 'blue';
+            let mergedContent = ""; let mergedEntries = []; let idsToDelete = []; let highestPriority = 'blue';
 
             checkboxes.forEach((cb, index) => {
                 const id = cb.value; const card = this.getActiveCards().find(c => c.id === id);
@@ -342,13 +634,14 @@ const app = {
                     idsToDelete.push(id);
                     if(card.color === 'red') highestPriority = 'red'; else if(card.color === 'yellow' && highestPriority !== 'red') highestPriority = 'yellow';
                     let c = card.content ? card.content.trim() : "";
+                    if (Array.isArray(card.entries)) mergedEntries.push(...card.entries);
                     mergedContent += `### 🧩 [合併來源] ${card.title}\n${c}\n`;
                     if(index < checkboxes.length - 1) mergedContent += `\n---\n\n`;
                 }
             });
 
             const newCard = {
-                id: 'card_' + Date.now(), title: mergedTitle, content: mergedContent.trim(),
+                id: 'card_' + Date.now(), title: mergedTitle, content: mergedContent.trim(), entries: mergedEntries,
                 project: '整理', dateMode: 'single', dateSingle: new Date().toISOString().split('T')[0],
                 color: highestPriority, status: 0, isMemo: false
             };
@@ -630,6 +923,7 @@ const app = {
                         <div class="card-body">
                             <input type="text" class="input-title" value="${card.title}" placeholder="🏷️ 標題..." onchange="app.actions.updateCard('${card.id}', 'title', this.value)">
                             <textarea class="input-content" placeholder="📝 寫下卡片細節..." oninput="this.style.height='auto'; this.style.height=this.scrollHeight+'px';" onchange="app.actions.updateCard('${card.id}', 'content', this.value)">${card.content}</textarea>
+                            ${this.entries.renderCardPanel(card, 'timeline')}
                         </div>
                         <div class="card-footer" style="display: flex; gap: 8px; align-items: center; justify-content: flex-end;">
                             <input type="text" class="input-project" value="${card.project}" placeholder="#專案名稱" onchange="app.actions.updateCard('${card.id}', 'project', this.value)">
@@ -697,6 +991,7 @@ const app = {
                         <div class="card-body" style="padding: 5px 10px;">
                             <input type="text" class="input-title" value="${card.title}" placeholder="🏷️ 標題..." onchange="app.actions.updateCard('${card.id}', 'title', this.value)">
                             <textarea class="input-content" placeholder="📝 細節..." oninput="this.style.height='auto'; this.style.height=this.scrollHeight+'px';" onchange="app.actions.updateCard('${card.id}', 'content', this.value)" style="min-height: 40px;">${card.content}</textarea>
+                            ${this.entries.renderCardPanel(card, 'kanban')}
                         </div>
                         <div class="card-footer" style="padding: 5px 10px; display: flex; gap: 5px; justify-content: space-between; align-items: center;">
                             <input type="text" class="input-project" value="${card.project}" placeholder="#專案" onchange="app.actions.updateCard('${card.id}', 'project', this.value)" style="max-width: 80px;">
