@@ -223,9 +223,48 @@
         #sb-activeNoteArea { flex: 1; min-height: 350px; font-family: 'Courier New', Courier, monospace; resize: vertical; background: #fdfdfd; line-height: 1.6; font-size: 1rem; border: 2px solid #e9ecef; width: 100%; padding: 10px; border-radius: 6px;}
         #sb-activeNoteArea:focus { outline: none; border-color: #17a2b8; box-shadow: 0 0 0 3px rgba(23, 162, 184, 0.1); }
 
+        /* === v2.2：任務導覽 / 頁內目錄 === */
+        :root { --task-nav-width: 260px; }
+        #task-nav-panel { position:fixed; top:60px; left:50px; bottom:0; width:var(--task-nav-width); background:#fff; border-right:1px solid #dbe3ee; box-shadow:4px 0 14px rgba(15,23,42,.06); z-index:1760; display:flex; flex-direction:column; transform:translateX(-110%); transition:transform .22s ease; }
+        body.task-nav-open #task-nav-panel { transform:translateX(0); }
+        #task-nav-overlay { display:none; }
+        .task-nav-header { padding:12px 12px 10px; border-bottom:1px solid #e2e8f0; background:#f8fafc; display:flex; flex-direction:column; gap:8px; }
+        .task-nav-title-row { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+        .task-nav-title { font-weight:bold; color:#1e293b; display:flex; align-items:center; gap:6px; }
+        .task-nav-close { border:1px solid #cbd5e1; background:#fff; color:#64748b; border-radius:6px; width:30px; height:30px; cursor:pointer; }
+        .task-nav-controls { display:grid; grid-template-columns:1fr auto; gap:6px; }
+        .task-nav-search { width:100%; min-width:0; border:1px solid #cbd5e1; border-radius:7px; padding:8px 9px; outline:none; color:#334155; background:#fff; }
+        .task-nav-search:focus { border-color:#818cf8; box-shadow:0 0 0 2px rgba(99,102,241,.1); }
+        .task-nav-scope { border:1px solid #cbd5e1; border-radius:7px; background:#fff; color:#475569; padding:7px 6px; max-width:92px; }
+        #task-nav-list { flex:1; overflow:auto; padding:8px 7px 14px; overscroll-behavior:contain; }
+        .task-nav-empty { color:#94a3b8; font-size:.82rem; text-align:center; padding:24px 10px; line-height:1.6; }
+        .task-nav-workspace { margin-bottom:10px; }
+        .task-nav-workspace-title { display:flex; align-items:center; gap:6px; padding:6px 7px; color:#64748b; font-size:.74rem; font-weight:bold; text-transform:none; border-bottom:1px solid #f1f5f9; }
+        .task-nav-project { margin-top:4px; border-radius:7px; overflow:hidden; }
+        .task-nav-project-head { width:100%; border:0; background:#f1f5f9; color:#334155; display:grid; grid-template-columns:22px minmax(0,1fr) auto; align-items:center; gap:4px; padding:7px 7px; cursor:pointer; text-align:left; }
+        .task-nav-project-head:hover { background:#e9eef6; }
+        .task-nav-project-arrow { border:0; background:transparent; color:#64748b; cursor:pointer; width:22px; height:22px; padding:0; border-radius:4px; }
+        .task-nav-project-arrow:hover { background:#dde5ef; }
+        .task-nav-project-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:bold; font-size:.84rem; }
+        .task-nav-project-count { color:#94a3b8; font-size:.7rem; }
+        .task-nav-card-list { padding:3px 0 4px 12px; border-left:2px solid #e2e8f0; margin-left:11px; }
+        .task-nav-project.collapsed .task-nav-card-list { display:none; }
+        .task-nav-card { width:100%; border:0; background:transparent; display:grid; grid-template-columns:10px minmax(0,1fr) auto; align-items:center; gap:7px; text-align:left; padding:7px 6px; border-radius:6px; color:#475569; cursor:pointer; font-size:.82rem; }
+        .task-nav-card:hover { background:#eef2ff; color:#3730a3; }
+        .task-nav-card.active { background:#e0e7ff; color:#3730a3; font-weight:bold; box-shadow:inset 3px 0 #4f46e5; }
+        .task-nav-card-dot { width:8px; height:8px; border-radius:50%; background:#94a3b8; }
+        .task-nav-card.status-1 .task-nav-card-dot { background:#f59e0b; }
+        .task-nav-card.status-2 .task-nav-card-dot { background:#10b981; }
+        .task-nav-card.status-3 .task-nav-card-dot { background:#ef4444; }
+        .task-nav-card-title { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .task-nav-card-kind { color:#94a3b8; font-size:.7rem; }
+        body.task-nav-open .main-area { margin-left:calc(50px + var(--task-nav-width)); width:calc(100% - 50px - var(--task-nav-width)); }
+        body.task-nav-open #project-bar { left:calc(50px + var(--task-nav-width)); }
+        .task-nav-current-hint { color:#94a3b8; font-size:.7rem; line-height:1.35; }
+
         /* RWD */
         @media (max-width: 768px) {
-            .tool-title, .mobile-hidden { display: none !important; }
+            .tool-title, .mobile-hidden, .nav-btn-label { display: none !important; }
             .toolbar { display: flex; overflow-x: auto; flex-wrap: nowrap; padding: 8px 10px; align-items: center; gap: 10px; justify-content: flex-start; }
             #tab-bar { position: fixed; top: auto; bottom: 0; left: 0; right: 0; width: 100%; height: 60px; flex-direction: row; justify-content: space-around; padding: 0; background: white; border-top: 1px solid #cbd5e1; z-index: 8000; padding-bottom: env(safe-area-inset-bottom); }
             .tab-item { border-radius: 0; border-left: none; border-top: 3px solid transparent; flex: 1; padding: 5px; justify-content: center; background: white; }
@@ -236,6 +275,17 @@
             
             .sb-layout { flex-direction: column; }
             .sb-timer-display { font-size: 2.5rem; }
+            #task-nav-panel { top:60px; left:0; bottom:calc(60px + env(safe-area-inset-bottom)); width:min(86vw, 340px); z-index:8600; box-shadow:8px 0 24px rgba(15,23,42,.22); }
+            #task-nav-overlay { position:fixed; top:60px; left:0; right:0; bottom:calc(60px + env(safe-area-inset-bottom)); background:rgba(15,23,42,.42); z-index:8550; display:block; opacity:0; pointer-events:none; transition:opacity .2s ease; }
+            body.task-nav-open #task-nav-overlay { opacity:1; pointer-events:auto; }
+            body.task-nav-open .main-area { margin-left:0; width:100%; }
+            body.task-nav-open #project-bar { left:0; }
+            .task-nav-close { width:34px; height:34px; }
+            .task-nav-card { padding:10px 7px; font-size:.9rem; min-height:42px; }
+            .task-nav-project-head { padding:9px 7px; min-height:42px; }
+            .task-nav-search { font-size:16px; }
+            .task-nav-scope { font-size:.82rem; }
+            #tsumego-widget-btn { bottom:82px; width:52px; height:52px; font-size:1.6rem; }
         }
 
         /* === v2：規劃 / 實際、共用日期軸甘特、Excel 匯出 === */
@@ -333,6 +383,7 @@
             <div class="tool-left">
                 <div class="tool-title">白板</div>
                 <button class="btn" onclick="app.toggleProjectBar()">📁 專案</button>
+                <button class="btn" onclick="app.taskNav.toggle()" id="btn-task-nav" title="快速跳到專案或卡片">🧭 <span class="nav-btn-label">導覽</span></button>
                 <button class="btn" onclick="app.switchView('timeline')" id="btn-view-timeline">📜 時間軸</button>
                 <button class="btn" onclick="app.switchView('matrix')" id="btn-view-matrix">💡 發想棋盤</button>
                 <button class="btn mobile-hidden" onclick="app.switchView('chronicle')" id="btn-view-chronicle">⚡ 大事記</button>
@@ -356,6 +407,26 @@
 
         <div id="project-bar" style="display: none;"></div>
         <div id="tab-bar"></div>
+
+        <!-- v2.2：任務導覽。桌機是固定側欄；手機是抽屜，不寫入 Firebase。 -->
+        <div id="task-nav-overlay" onclick="app.taskNav.close()"></div>
+        <aside id="task-nav-panel" aria-label="任務導覽">
+            <div class="task-nav-header">
+                <div class="task-nav-title-row">
+                    <div class="task-nav-title">🧭 任務導覽</div>
+                    <button type="button" class="task-nav-close" onclick="app.taskNav.close()" title="收合導覽">✕</button>
+                </div>
+                <div class="task-nav-controls">
+                    <input id="task-nav-search" class="task-nav-search" type="search" placeholder="搜尋卡片／專案…" oninput="app.taskNav.setSearch(this.value)">
+                    <select id="task-nav-scope" class="task-nav-scope" onchange="app.taskNav.setScope(this.value)">
+                        <option value="current">本區</option>
+                        <option value="all">全部</option>
+                    </select>
+                </div>
+                <div class="task-nav-current-hint">點專案跳到第一張卡；點卡片直接定位。手機選取後會自動收起。</div>
+            </div>
+            <div id="task-nav-list"></div>
+        </aside>
 
         <div class="main-area">
             
