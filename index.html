@@ -239,6 +239,13 @@
         }
 
         /* === v2：規劃 / 實際、共用日期軸甘特、Excel 匯出 === */
+        .pm-collapse-toggle { width:100%; border:0; background:#f8fafc; color:#334155; padding:8px 10px; border-radius:7px; cursor:pointer; display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:10px; text-align:left; }
+        .pm-collapse-toggle:hover { background:#f1f5f9; }
+        .pm-collapse-toggle-open { margin-bottom:2px; border-bottom:1px dashed #cbd5e1; border-radius:7px 7px 4px 4px; }
+        .pm-collapse-title { font-weight:bold; white-space:nowrap; }
+        .pm-collapse-summary { color:#64748b; font-size:.76rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .pm-collapse-icon { color:#64748b; font-size:.76rem; white-space:nowrap; }
+        .task-meta-collapsed { padding:6px; }
         .pm-section { border:1px solid #e2e8f0; border-radius:8px; overflow:hidden; background:#fff; }
         .pm-section + .pm-section { margin-top:8px; }
         .pm-section-title { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:7px 10px; font-size:.82rem; font-weight:bold; }
@@ -256,6 +263,12 @@
         .worktime-form { grid-template-columns:118px 82px 82px minmax(150px,1fr) auto; }
         .worktime-row { grid-template-columns:88px 78px minmax(0,1fr) auto auto; }
         .worktime-edit { border:0; background:transparent; color:#4338ca; cursor:pointer; padding:2px 5px; }
+        .gantt-filter-bar { margin:0 auto 10px; max-width:980px; display:flex; align-items:flex-end; justify-content:center; gap:10px; flex-wrap:wrap; padding:10px 12px; background:#fff; border:1px solid #e2e8f0; border-radius:8px; }
+        .gantt-filter-field { display:flex; flex-direction:column; gap:4px; min-width:180px; }
+        .gantt-filter-field span { font-size:.72rem; font-weight:bold; color:#64748b; }
+        .gantt-filter-select { border:1px solid #cbd5e1; border-radius:6px; background:white; color:#334155; padding:7px 9px; min-height:34px; }
+        .gantt-filter-reset { border:1px solid #cbd5e1; border-radius:6px; background:#f8fafc; color:#475569; padding:7px 11px; cursor:pointer; min-height:34px; }
+        .gantt-filter-reset:hover { background:#f1f5f9; }
         .gantt-toolbar-note { margin:0 auto 12px; max-width:980px; padding:9px 12px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; color:#64748b; font-size:.82rem; line-height:1.5; }
         .gantt-legend { display:flex; gap:10px; flex-wrap:wrap; align-items:center; justify-content:center; margin:8px 0 14px; font-size:.78rem; color:#64748b; }
         .gantt-legend-item { display:inline-flex; align-items:center; gap:5px; }
@@ -391,8 +404,23 @@
                     <button class="excel-copy-btn" onclick="app.worktime.copyGanttSourceToExcel()">📊 複製甘特來源資料</button>
                     <button class="excel-copy-btn" onclick="app.worktime.exportWorkbookXlsx()">⬇️ 匯出 Excel (.xlsx)</button>
                 </div>
+                <div class="gantt-filter-bar">
+                    <label class="gantt-filter-field">
+                        <span>專案篩選</span>
+                        <select id="gantt-project-filter" class="gantt-filter-select" onchange="app.worktime.setGanttFilter('project', this.value)">
+                            <option value="">全部專案</option>
+                        </select>
+                    </label>
+                    <label class="gantt-filter-field">
+                        <span>月份篩選</span>
+                        <select id="gantt-month-filter" class="gantt-filter-select" onchange="app.worktime.setGanttFilter('month', this.value)">
+                            <option value="">全部月份</option>
+                        </select>
+                    </label>
+                    <button class="gantt-filter-reset" type="button" onclick="app.worktime.resetGanttFilters()">清除篩選</button>
+                </div>
                 <div class="gantt-toolbar-note">
-                    甘特圖使用「預計開始 / 預計完成」作為排程橫條；「實際開始 / 實際完成 / 實際工時」分開顯示。紅色代表你人工標記的關鍵／重要任務，不是系統自動計算的 CPM 關鍵路徑。
+                    甘特圖使用「預計開始 / 預計完成」作為排程橫條；「實際開始 / 實際完成 / 實際工時」分開顯示。月份篩選會保留「與該月份有交集」的工項。紅色代表你人工標記的關鍵／重要任務，不是系統自動計算的 CPM 關鍵路徑。
                 </div>
                 <div class="gantt-legend">
                     <span class="gantt-legend-item"><span class="color-chip" style="background:#3b82f6"></span>一般</span>
