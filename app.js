@@ -707,8 +707,21 @@ const app = {
             const color = card.color || 'blue';
             const colorCfg = this.colorConfig(color);
             const isScheduled = !card.isMemo;
+            const excludedFromGantt = !!card.excludeFromGantt;
+            const conflicts = isScheduled ? this.scheduleConflicts(card) : [];
             const ui = this.getPlanningUi(card.id, source);
-            const collapsedSummary = `${isScheduled ? '排程工項' : '自由卡'} · 預估 ${this.plannedMinutes(card) ? this.formatMinutes(this.plannedMinutes(card)) : '未填'} · 實際 ${this.formatMinutes(actualMinutes)}`;
+            const collapsedSummary = `${isScheduled ? '排程工項' : '自由卡'} · 預估 ${this.plannedMinutes(card) ? this.formatMinutes(this.plannedMinutes(card)) : '未填'} · 實際 ${this.formatMinutes(actualMinutes)}${excludedFromGantt ? ' · 甘特隱藏' : ''}${conflicts.length ? ` · ⚠ ${conflicts.length} 個排程重疊` : ''}`;
+            const conflictRows = conflicts.slice(0, 8).map(item => {
+                const overlap = item.overlapStart === item.overlapEnd ? item.overlapStart : `${item.overlapStart} → ${item.overlapEnd}`;
+                const project = item.card.project?.trim() || '未分類專案';
+                const hiddenNote = item.hiddenFromGantt ? ' · 甘特隱藏' : '';
+                return `<button type="button" class="schedule-conflict-item" onclick="app.actions.jumpToCard('${item.card.id}','${item.tabId}')" title="跳到重疊工項"><span class="schedule-conflict-date">${esc(overlap)}</span><span class="schedule-conflict-title">${esc(item.card.title || '未命名')}</span><span class="schedule-conflict-meta">#${esc(project)} · ${esc(item.tabName)}${esc(hiddenNote)}</span></button>`;
+            }).join('');
+            const conflictPanel = isScheduled && planStart && planEnd
+                ? (conflicts.length
+                    ? `<div class="schedule-conflict-panel has-conflict"><div class="schedule-conflict-head">⚠️ 排程重疊：此工項與 ${conflicts.length} 個排程日期有交集</div><div class="schedule-conflict-list">${conflictRows}</div>${conflicts.length > 8 ? `<div class="schedule-conflict-more">另有 ${conflicts.length - 8} 筆，請至甘特圖查看。</div>` : ''}<div class="schedule-conflict-help">僅提醒，不會阻止儲存；即使另一工項設定「不顯示於甘特圖」，仍會列入重疊檢查。</div></div>`
+                    : `<div class="schedule-conflict-panel no-conflict">✓ 目前沒有其他正式排程與此日期區間重疊。</div>`)
+                : '';
 
             if (!ui.expanded) {
                 return `
@@ -790,6 +803,11 @@ const app = {
                                     <textarea class="task-meta-textarea" placeholder="怎樣算完成" onchange="app.worktime.updateCardField('${card.id}','acceptance',this.value,'${source}')">${acceptance}</textarea>
                                 </label>
                             </div>
+                            <label class="gantt-visibility-toggle">
+                                <input type="checkbox" ${excludedFromGantt ? 'checked' : ''} onchange="app.worktime.updateCardFlag('${card.id}','excludeFromGantt',this.checked,'${source}')">
+                                <span><strong>不要顯示於甘特圖</strong><small>卡片、工時與工項 Excel 仍保留；Excel 甘特頁不會畫出。正式排程仍會參與重疊提醒。</small></span>
+                            </label>
+                            ${conflictPanel}
                         </div>
                     </div>
 
@@ -893,6 +911,16 @@ const app = {
             app.saveToLocal();
             if (field === 'color') app.renderAll();
             else this.refresh(cardId, source);
+            if (app.state.view === 'gantt') app.renderGantt();
+        },
+
+        updateCardFlag(cardId, field, checked, source = 'timeline') {
+            if (field !== 'excludeFromGantt') return;
+            const card = this.getCard(cardId);
+            if (!card) return;
+            card[field] = !!checked;
+            app.saveToLocal();
+            this.refresh(cardId, source);
             if (app.state.view === 'gantt') app.renderGantt();
         },
 
@@ -1054,8 +1082,39 @@ const app = {
             return this.allCards().filter(({card}) => !card.isMemo);
         },
 
-        ganttCards() {
+        ganttSourceCards() {
             return this.scheduledCards().filter(({card}) => card.dateMode === 'range' && card.dateStart && card.dateEnd);
+        },
+
+        ganttCards() {
+            return this.ganttSourceCards().filter(({card}) => !card.excludeFromGantt);
+        },
+
+        scheduleConflicts(card) {
+            if (!card || card.isMemo) return [];
+            const start = this.parseLocalDate(this.plannedStart(card));
+            const end = this.parseLocalDate(this.plannedEnd(card));
+            if (!start || !end) return [];
+            const currentId = card.id || '';
+            return this.ganttSourceCards()
+                .filter(({card: other}) => other !== card && (!currentId || other.id !== currentId))
+                .map(({card: other, tabId, tabName}) => {
+                    const otherStart = this.parseLocalDate(this.plannedStart(other));
+                    const otherEnd = this.parseLocalDate(this.plannedEnd(other));
+                    if (!otherStart || !otherEnd || otherEnd < start || otherStart > end) return null;
+                    const overlapStart = new Date(Math.max(start.getTime(), otherStart.getTime()));
+                    const overlapEnd = new Date(Math.min(end.getTime(), otherEnd.getTime()));
+                    return {
+                        card: other,
+                        tabId,
+                        tabName,
+                        overlapStart: this.dateKey(overlapStart),
+                        overlapEnd: this.dateKey(overlapEnd),
+                        hiddenFromGantt: !!other.excludeFromGantt
+                    };
+                })
+                .filter(Boolean)
+                .sort((a,b) => a.overlapStart.localeCompare(b.overlapStart) || String(a.card.title || '').localeCompare(String(b.card.title || ''), 'zh-Hant'));
         },
 
         taskExportRows() {
@@ -1066,7 +1125,7 @@ const app = {
                 const progress = this.progressValue(card, true);
                 return [
                     tabName, card.project||'', card.category||'', card.title||'', this.colorConfig(card.color).label,
-                    this.statusLabel(card.status), progress === '' ? '' : progress,
+                    card.excludeFromGantt ? '否' : '是', this.statusLabel(card.status), progress === '' ? '' : progress,
                     this.plannedStart(card), this.plannedEnd(card), Math.round(planned), planned ? Math.round((planned/60)*100)/100 : '',
                     this.derivedActualStart(card), this.derivedActualEnd(card), Math.round(actual), Math.round((actual/60)*100)/100,
                     variance, card.deliverable||'', card.acceptance||'', card.id||''
@@ -1091,9 +1150,9 @@ const app = {
         },
 
         ganttExportRows() {
-            return this.ganttCards().map(({card, tabName}) => [
+            return this.ganttSourceCards().map(({card, tabName}) => [
                 tabName, card.project||'', card.category||'', card.title||'', this.colorConfig(card.color).label,
-                this.statusLabel(card.status), this.progressValue(card, true), card.dateStart||'', card.dateEnd||'',
+                card.excludeFromGantt ? '否' : '是', this.statusLabel(card.status), this.progressValue(card, true), card.dateStart||'', card.dateEnd||'',
                 Math.round(this.plannedMinutes(card)), Math.round(this.totalMinutes(card)),
                 this.derivedActualStart(card), this.derivedActualEnd(card), card.id||''
             ]);
@@ -1145,7 +1204,7 @@ const app = {
         },
 
         copyTasksToExcel() {
-            const header = ['分頁','專案','分類','工項','標記','狀態','進度(%)','預計開始','預計完成','預估工時(分鐘)','預估工時(小時)','實際開始','實際完成','實際工時(分鐘)','實際工時(小時)','工時差異(分鐘)','預期產出','驗收條件','卡片ID'];
+            const header = ['分頁','專案','分類','工項','標記','顯示於甘特','狀態','進度(%)','預計開始','預計完成','預估工時(分鐘)','預估工時(小時)','實際開始','實際完成','實際工時(分鐘)','實際工時(小時)','工時差異(分鐘)','預期產出','驗收條件','卡片ID'];
             const rows = this.taskExportRows();
             const tsv = [header, ...rows].map(r => r.map(v => this.tsvCell(v)).join('\t')).join('\n');
             this.copyText(tsv, `已複製 ${rows.length} 筆排程工項，可直接貼到 Excel。自由卡不會列入工項總表。`);
@@ -1159,7 +1218,7 @@ const app = {
         },
 
         copyGanttSourceToExcel() {
-            const header = ['分頁','專案','分類','工項','標記','狀態','進度(%)','預計開始','預計完成','預估工時(分鐘)','實際工時(分鐘)','實際開始','實際完成','卡片ID'];
+            const header = ['分頁','專案','分類','工項','標記','顯示於甘特','狀態','進度(%)','預計開始','預計完成','預估工時(分鐘)','實際工時(分鐘)','實際開始','實際完成','卡片ID'];
             const rows = this.ganttExportRows();
             const tsv = [header, ...rows].map(r => r.map(v => this.tsvCell(v)).join('\t')).join('\n');
             this.copyText(tsv, `已複製 ${rows.length} 筆甘特來源資料，可直接貼到 Excel。`);
@@ -1183,7 +1242,7 @@ const app = {
                 workbook.created = new Date();
 
                 // 1) 工項總表
-                const taskHeader = ['分頁','專案','分類','工項','標記','狀態','進度(%)','預計開始','預計完成','預估工時(分鐘)','預估工時(小時)','實際開始','實際完成','實際工時(分鐘)','實際工時(小時)','工時差異(分鐘)','預期產出','驗收條件','卡片ID'];
+                const taskHeader = ['分頁','專案','分類','工項','標記','顯示於甘特','狀態','進度(%)','預計開始','預計完成','預估工時(分鐘)','預估工時(小時)','實際開始','實際完成','實際工時(分鐘)','實際工時(小時)','工時差異(分鐘)','預期產出','驗收條件','卡片ID'];
                 const taskSheet = workbook.addWorksheet('工項總表', { views:[{state:'frozen', ySplit:1}] });
                 taskSheet.addRow(taskHeader);
                 this.styleExcelHeader(taskSheet.getRow(1));
@@ -1194,8 +1253,8 @@ const app = {
                     const cfg = this.colorConfig(colorKey);
                     row.getCell(4).fill = { type:'pattern', pattern:'solid', fgColor:{argb:`FF${cfg.light.replace('#','').toUpperCase()}`} };
                 });
-                taskSheet.autoFilter = { from:'A1', to:'S1' };
-                [12,16,16,28,18,14,10,13,13,16,16,13,13,16,16,18,30,30,26].forEach((w,i)=>taskSheet.getColumn(i+1).width=w);
+                taskSheet.autoFilter = { from:'A1', to:'T1' };
+                [12,16,16,28,18,12,14,10,13,13,16,16,13,13,16,16,18,30,30,26].forEach((w,i)=>taskSheet.getColumn(i+1).width=w);
                 taskSheet.eachRow((row, rowNum) => { if (rowNum > 1) row.alignment = { vertical:'top', wrapText:true }; });
 
                 // 2) 工時明細
@@ -2198,6 +2257,7 @@ const app = {
 
         const scheduleEntries = this.worktime.ganttCards();
         const timeEntries = this.worktime.allCards().filter(({card}) => {
+            if (card.excludeFromGantt) return false;
             const hasLogs = this.worktime.getLogs(card).some(log => this.worktime.logMinutes(log) > 0 && log.workDate);
             const hasPlan = !card.isMemo && card.dateMode === 'range' && card.dateStart && card.dateEnd;
             return hasLogs || hasPlan;
@@ -2363,11 +2423,13 @@ const app = {
         const remainingSummary = totalPlanned
             ? (totalRemaining >= 0 ? `依原預估尚餘 ${this.worktime.formatMinutes(totalRemaining)}` : `已超出預估 ${this.worktime.formatMinutes(Math.abs(totalRemaining))}`)
             : '尚未設定總預估工時';
+        const conflictTaskCount = entries.filter(({card}) => this.worktime.scheduleConflicts(card).length > 0).length;
         const summary = `<div class="gantt-summary-strip">
             <span><strong>${entries.length}</strong> 筆工項</span>
             <span>預估 <strong>${totalPlanned ? this.worktime.formatMinutes(totalPlanned) : '未估'}</strong></span>
             <span>實際 <strong>${this.worktime.formatMinutes(totalActual)}</strong></span>
             <span class="${totalRemaining < 0 ? 'over' : ''}">${esc(remainingSummary)}</span>
+            ${conflictTaskCount ? `<span class="gantt-conflict-summary">⚠ <strong>${conflictTaskCount}</strong> 筆可見工項有排程重疊</span>` : '<span class="gantt-conflict-ok">✓ 無可見工項排程重疊</span>'}
             <span>尺度 <strong>${scaleLabel}</strong></span>
         </div>`;
 
@@ -2395,6 +2457,9 @@ const app = {
             const status = this.worktime.statusLabel(card.status);
             const actualText = actualStart ? `${actualStart}${actualEnd ? ` → ${actualEnd}` : ' → …'}` : (actual > 0 ? '已有工時紀錄' : '尚未開始');
             const logs = this.worktime.getLogs(card);
+            const conflicts = this.worktime.scheduleConflicts(card);
+            const conflictTitle = conflicts.length ? conflicts.map(item => `${item.overlapStart}${item.overlapEnd !== item.overlapStart ? `～${item.overlapEnd}` : ''} ${item.card.title || '未命名'}${item.hiddenFromGantt ? '（甘特隱藏）' : ''}`).join('；') : '';
+            const conflictBadge = conflicts.length ? `<span class="gantt-conflict-badge" title="${esc(conflictTitle)}">⚠ ${conflicts.length}</span>` : '';
 
             const progressHtml = `<div class="gantt-progress-value">${progress}%</div><div class="gantt-mini-track"><span style="width:${Math.max(0, Math.min(100, progress))}%;"></span></div>`;
             let remainingText = '未設定預估';
@@ -2449,7 +2514,7 @@ const app = {
             body += `
                 <tr class="gantt-plan-row ${mode === 'time' ? 'gantt-time-focus' : ''}" style="cursor:pointer;" onclick="app.actions.jumpToCard('${card.id}','${tabId}')" title="點擊跳回卡片">
                     <td rowspan="2" class="gantt-left gantt-title-col gantt-rowspan-cell">
-                        <div class="gantt-task-title"><span class="color-chip" style="background:${cfg.hex}"></span><span>${esc(card.title || '未命名')}</span></div>
+                        <div class="gantt-task-title"><span class="color-chip" style="background:${cfg.hex}"></span><span>${esc(card.title || '未命名')}</span>${conflictBadge}</div>
                         <div style="font-size:.68rem;color:#94a3b8;margin-top:2px;">[${esc(tabName)}]${card.isMemo ? ' · 自由卡' : ''}</div>
                     </td>
                     <td rowspan="2" class="gantt-left gantt-status-col gantt-rowspan-cell">${esc(status)}</td>
@@ -2474,7 +2539,7 @@ const app = {
         const granularity = scale === 'day' ? '每天' : (scale === 'week' ? '每週' : '每月');
         const modeNote = mode === 'time'
             ? `<div class="gantt-mode-note">⏱️ 工時模式：下層實際工時依「${scaleLabel}」尺度彙總（${granularity}）；上層預計排程淡化。切換尺度只改顯示，不改原始工時日期。</div>`
-            : `<div class="gantt-mode-note">📅 排程模式：上層顯示預計排程，下層顯示${granularity}實際投入。日／週／月只是檢視尺度，不會改寫卡片資料。</div>`;
+            : `<div class="gantt-mode-note">📅 排程模式：上層顯示預計排程，下層顯示${granularity}實際投入。日／週／月只是檢視尺度，不會改寫卡片資料；設定為「不顯示於甘特」的卡片不會出現在此圖，但正式排程仍會參與重疊提醒。</div>`;
         target.innerHTML = `${filterNote}${warning}${summary}${modeNote}<div class="gantt-table-wrap"><table class="gantt-table gantt-scale-${scale}"><thead><tr>${groupCells}</tr><tr>${periodCells}</tr></thead><tbody>${body}</tbody></table></div>`;
     },
 

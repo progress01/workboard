@@ -131,6 +131,21 @@
         .task-meta-input, .task-meta-textarea, .worktime-input { width:100%; border:1px solid #cbd5e1; border-radius:6px; padding:7px 8px; background:white; color:#334155; outline:none; }
         .task-meta-textarea { min-height:52px; resize:vertical; line-height:1.4; }
         .task-meta-input:focus, .task-meta-textarea:focus, .worktime-input:focus { border-color:#818cf8; box-shadow:0 0 0 2px rgba(99,102,241,.1); }
+        .gantt-visibility-toggle { margin-top:8px; display:flex; align-items:flex-start; gap:8px; padding:8px 10px; background:white; border:1px solid #e2e8f0; border-radius:7px; cursor:pointer; }
+        .gantt-visibility-toggle input { margin-top:3px; transform:scale(1.1); accent-color:#4f46e5; }
+        .gantt-visibility-toggle span { display:flex; flex-direction:column; gap:2px; color:#334155; font-size:.82rem; }
+        .gantt-visibility-toggle small { color:#64748b; font-size:.72rem; line-height:1.45; font-weight:normal; }
+        .schedule-conflict-panel { margin-top:8px; border-radius:7px; padding:8px 10px; font-size:.78rem; line-height:1.45; }
+        .schedule-conflict-panel.has-conflict { border:1px solid #fcd34d; background:#fffbeb; color:#92400e; }
+        .schedule-conflict-panel.no-conflict { border:1px solid #bbf7d0; background:#f0fdf4; color:#047857; }
+        .schedule-conflict-head { font-weight:bold; margin-bottom:6px; }
+        .schedule-conflict-list { display:flex; flex-direction:column; gap:5px; }
+        .schedule-conflict-item { width:100%; display:grid; grid-template-columns:145px minmax(0,1fr) auto; gap:8px; align-items:center; text-align:left; border:1px solid #fde68a; background:white; color:#475569; border-radius:6px; padding:6px 8px; cursor:pointer; }
+        .schedule-conflict-item:hover { background:#fef3c7; }
+        .schedule-conflict-date { color:#b45309; font-weight:bold; white-space:nowrap; }
+        .schedule-conflict-title { color:#334155; font-weight:bold; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .schedule-conflict-meta { color:#94a3b8; font-size:.7rem; white-space:nowrap; }
+        .schedule-conflict-help, .schedule-conflict-more { margin-top:6px; color:#78716c; font-size:.7rem; }
         .worktime-header { padding:8px 10px; background:#eef2ff; display:flex; justify-content:space-between; align-items:center; gap:8px; border-bottom:1px solid #e2e8f0; }
         .worktime-total { font-size:.82rem; color:#4338ca; font-weight:bold; }
         .worktime-form { padding:9px 10px; display:grid; grid-template-columns:120px 90px minmax(150px,1fr) auto; gap:6px; align-items:end; }
@@ -383,6 +398,9 @@
         .gantt-summary-strip { display:flex; gap:14px; flex-wrap:wrap; align-items:center; margin:0 0 8px; padding:8px 10px; background:#fff; border:1px solid #e2e8f0; border-radius:8px; color:#475569; font-size:.8rem; }
         .gantt-summary-strip strong { color:#0f172a; }
         .gantt-summary-strip .over { color:#b91c1c; font-weight:bold; }
+        .gantt-conflict-summary { color:#b45309; font-weight:bold; }
+        .gantt-conflict-ok { color:#047857; }
+        .gantt-conflict-badge { flex-shrink:0; display:inline-flex; align-items:center; padding:1px 5px; border-radius:999px; background:#fef3c7; border:1px solid #fcd34d; color:#b45309; font-size:.66rem; font-weight:bold; }
         .gantt-mode-note { margin:0 0 8px; padding:7px 10px; border-radius:7px; background:#f8fafc; border:1px solid #e2e8f0; color:#64748b; font-size:.78rem; line-height:1.5; }
         .gantt-progress-value { font-weight:bold; color:#334155; margin-bottom:4px; }
         .gantt-mini-track, .gantt-usage-track { height:5px; background:#e5e7eb; border-radius:999px; overflow:hidden; margin:3px auto 0; width:92%; }
@@ -447,6 +465,8 @@
             .worktime-form .worktime-note-field { grid-column:1 / -1; }
             .worktime-form button { grid-column:1 / -1; }
             .worktime-row { grid-template-columns:76px 70px minmax(0,1fr) auto auto; }
+            .schedule-conflict-item { grid-template-columns:1fr; gap:2px; }
+            .schedule-conflict-meta { white-space:normal; }
             .gantt-title-col { min-width:180px; max-width:180px; }
             .gantt-status-col { left:180px; }
             .gantt-progress-col { left:258px; }
@@ -599,7 +619,7 @@
                     <button class="gantt-filter-reset" type="button" onclick="app.worktime.resetGanttFilters()">清除篩選</button>
                 </div>
                 <div class="gantt-toolbar-note">
-                    同一張甘特圖維持「📐 預計 / ⏱️ 實際」雙軌；時間尺度可切換日、週、月。週／月只會把原始每日工時加總後顯示，不會改寫工時紀錄。桌機首次預設「日」，手機首次預設「週」。
+                    同一張甘特圖維持「📐 預計 / ⏱️ 實際」雙軌；時間尺度可切換日、週、月。可在卡片規劃區勾選「不要顯示於甘特圖」降低雜訊；隱藏卡仍保留工時與 Excel 工項資料，也仍會參與排程重疊提醒。
                 </div>
                 <div class="gantt-legend">
                     <span class="gantt-legend-item"><span class="color-chip" style="background:#3b82f6"></span>一般</span>
@@ -608,6 +628,7 @@
                     <span class="gantt-legend-item"><span class="color-chip" style="background:#f59e0b"></span>注意</span>
                     <span class="gantt-legend-item">📐 上層淡色列＝預計排程</span>
                     <span class="gantt-legend-item">⏱️ 下層實色列＝目前尺度的實際工時</span>
+                    <span class="gantt-legend-item">⚠ 數字＝與其他正式排程重疊的工項數</span>
                 </div>
                 <div id="gantt-render-target"></div>
             </div>
