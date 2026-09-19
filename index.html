@@ -433,16 +433,35 @@
         .gantt-table .gantt-day-head { padding:4px 4px; }
         .gantt-table .weekend { background:#f8fafc; }
         .gantt-table .today-col { box-shadow:inset 2px 0 #f59e0b, inset -2px 0 #f59e0b; }
-        .gantt-left { position:sticky; z-index:20; background:white !important; }
-        .gantt-table thead .gantt-left { z-index:40; background:#f8fafc !important; }
-        .gantt-table thead tr:nth-child(2) .gantt-left { z-index:41; }
-        .gantt-title-col { left:0; min-width:220px; max-width:220px; overflow:hidden; text-overflow:ellipsis; text-align:left !important; }
-        .gantt-status-col { left:220px; min-width:78px; text-align:center; }
-        .gantt-progress-col { left:298px; min-width:76px; text-align:center; }
-        .gantt-hours-col { left:374px; min-width:170px; text-align:center; }
-        .gantt-plan-col { left:544px; min-width:168px; text-align:center; }
-        .gantt-actual-col { left:712px; min-width:168px; text-align:center; }
-        .gantt-track-col { left:880px; min-width:76px; width:76px; text-align:center; box-shadow:3px 0 4px rgba(15,23,42,.06); font-weight:bold; }
+        /* 甘特橫向捲動時，只凍結「工項名稱」。
+           舊版把左側 7 欄全部 sticky，固定區接近 900px；窄視窗時固定區本身超過可視寬度，
+           瀏覽器無法穩定維持 sticky，反而讓最重要的工項名稱跟著滑走。 */
+        .gantt-left { background:white !important; }
+        .gantt-table thead .gantt-left { background:#f8fafc !important; }
+        .gantt-title-col {
+            position:sticky !important;
+            left:0;
+            z-index:25;
+            width:220px;
+            min-width:220px;
+            max-width:220px;
+            overflow:hidden;
+            text-overflow:ellipsis;
+            text-align:left !important;
+            box-shadow:4px 0 6px rgba(15,23,42,.10);
+        }
+        /* 左上角同時需要水平與垂直 sticky，因此層級要高於一般表頭。 */
+        .gantt-table thead .gantt-title-col { z-index:60; background:#f8fafc !important; }
+        .gantt-table thead tr:first-child .gantt-title-col { top:0; }
+        .gantt-table thead tr:nth-child(2) .gantt-title-col { top:var(--gantt-head-row1); }
+
+        /* 其餘資訊欄只保留固定欄寬，不再水平 sticky，讓時間軸永遠有可視空間。 */
+        .gantt-status-col { width:78px; min-width:78px; max-width:78px; text-align:center; }
+        .gantt-progress-col { width:76px; min-width:76px; max-width:76px; text-align:center; }
+        .gantt-hours-col { width:170px; min-width:170px; max-width:170px; text-align:center; }
+        .gantt-plan-col { width:168px; min-width:168px; max-width:168px; text-align:center; }
+        .gantt-actual-col { width:168px; min-width:168px; max-width:168px; text-align:center; }
+        .gantt-track-col { width:76px; min-width:76px; max-width:76px; text-align:center; font-weight:bold; }
         .gantt-track-plan { background:#eef2ff !important; color:#4338ca; }
         .gantt-track-actual { background:#ecfdf5 !important; color:#047857; }
         .gantt-plan-row td { border-bottom-style:dashed; }
@@ -474,13 +493,7 @@
             .worktime-row { grid-template-columns:76px 70px minmax(0,1fr) auto auto; }
             .schedule-conflict-item { grid-template-columns:1fr; gap:2px; }
             .schedule-conflict-meta { white-space:normal; }
-            .gantt-title-col { min-width:180px; max-width:180px; }
-            .gantt-status-col { left:180px; }
-            .gantt-progress-col { left:258px; }
-            .gantt-hours-col { left:334px; }
-            .gantt-plan-col { left:504px; }
-            .gantt-actual-col { left:672px; }
-            .gantt-track-col { left:840px; }
+            .gantt-title-col { width:180px; min-width:180px; max-width:180px; }
             .gantt-mode-switch { width:100%; justify-content:center; }
             .gantt-mode-btn { flex:1; }
             .gantt-scale-switch { width:100%; justify-content:center; }
