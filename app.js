@@ -656,6 +656,59 @@ const app = {
             if (card && !card.actualStart && dateStr) card.actualStart = dateStr;
         },
 
+        ensureStarted(card, dateStr = this.localDateString()) {
+            if (!card) return false;
+            let changed = false;
+            // 只把「未開始」推進成「進行中」；卡住與完成都尊重使用者原狀態。
+            if (Number(card.status || 0) === 0) {
+                card.status = 1;
+                changed = true;
+            }
+            if (!card.actualStart && dateStr) {
+                card.actualStart = dateStr;
+                changed = true;
+            }
+            return changed;
+        },
+
+        markCompleted(card, dateStr = this.localDateString()) {
+            if (!card) return;
+            card.status = 2;
+            card.progress = 100;
+            if (!card.actualStart && dateStr) card.actualStart = dateStr;
+            if (!card.actualEnd && dateStr) card.actualEnd = dateStr;
+        },
+
+        reopenCompleted(card, preferredStatus = null) {
+            if (!card || Number(card.status) !== 2) return;
+            if (Number(card.progress) >= 100) delete card.progress;
+            delete card.actualEnd;
+            if (preferredStatus !== null) {
+                card.status = Number(preferredStatus);
+                return;
+            }
+            const hasWork = this.totalMinutes(card) > 0 || !!card.actualStart;
+            card.status = hasWork ? 1 : 0;
+        },
+
+        syncProgressStatus(card) {
+            if (!card) return;
+            const raw = card.progress;
+            if (raw === undefined || raw === null || raw === '') return;
+            const progress = Math.max(0, Math.min(100, Number(raw) || 0));
+            card.progress = progress;
+            if (progress >= 100) {
+                this.markCompleted(card);
+                return;
+            }
+            if (Number(card.status) === 2) {
+                delete card.actualEnd;
+                card.status = (progress > 0 || this.totalMinutes(card) > 0 || !!card.actualStart) ? 1 : 0;
+            } else if (progress > 0 && Number(card.status || 0) === 0) {
+                this.ensureStarted(card);
+            }
+        },
+
         varianceMinutes(card) {
             const planned = this.plannedMinutes(card);
             const actual = this.totalMinutes(card);
@@ -697,6 +750,7 @@ const app = {
             const progress = this.progressValue(card, true);
             const deliverable = esc(card.deliverable || '');
             const acceptance = esc(card.acceptance || '');
+            const nextStep = esc(card.nextStep || '');
             const planStart = this.plannedStart(card);
             const planEnd = this.plannedEnd(card);
             const actualStart = this.derivedActualStart(card);
@@ -831,6 +885,10 @@ const app = {
                                     <strong>${this.formatMinutes(actualMinutes)}</strong>
                                 </div>
                             </div>
+                            <label class="task-meta-field" style="margin-top:8px;">
+                                <span class="task-meta-label">➡ 下一步 <span style="font-weight:normal;color:#94a3b8;">（回到這張卡時，從哪裡接）</span></span>
+                                <input class="task-meta-input" value="${nextStep}" placeholder="例如：拿正式資料跑一次，確認圖表定位規則" onchange="app.worktime.updateCardField('${card.id}','nextStep',this.value,'${source}')">
+                            </label>
                         </div>
                     </div>
                 </div>`;
@@ -903,11 +961,12 @@ const app = {
             if (!card) return;
             if (numeric) {
                 if (String(value).trim() === '') delete card[field];
-                else card[field] = Number(value);
+                else card[field] = field === 'progress' ? Math.max(0, Math.min(100, Number(value) || 0)) : Number(value);
             } else {
                 if (value === '' && (field === 'actualStart' || field === 'actualEnd')) delete card[field];
                 else card[field] = value;
             }
+            if (field === 'progress') this.syncProgressStatus(card);
             app.saveToLocal();
             if (field === 'color') app.renderAll();
             else this.refresh(cardId, source);
@@ -996,7 +1055,7 @@ const app = {
                 note: noteEl?.value.trim() || '手動補登',
                 source: 'manual', createdAt: now, updatedAt: now
             });
-            this.ensureActualStart(card, workDate);
+            this.ensureStarted(card, workDate);
             app.saveToLocal();
             this.refresh(cardId, source);
             app.sandbox.renderTodo();
@@ -1018,7 +1077,7 @@ const app = {
                 note,
                 source: 'timer', createdAt: now, updatedAt: now
             });
-            this.ensureActualStart(card, workDate);
+            this.ensureStarted(card, workDate);
             app.saveToLocal();
             return true;
         },
@@ -1049,7 +1108,7 @@ const app = {
             delete log.seconds;
             log.note = note.trim() || (log.source === 'timer' ? '心流計時' : '手動補登');
             log.updatedAt = new Date().toISOString();
-            this.ensureActualStart(card, log.workDate);
+            this.ensureStarted(card, log.workDate);
             app.saveToLocal();
             this.refresh(cardId, source);
             app.sandbox.renderTodo();
@@ -1480,13 +1539,10 @@ const app = {
             
             const subtasks = this.parseSubtasks(card.content);
             if (subtasks.length > 0 && subtasks.every(st => st.completed)) {
-                card.status = 2;
-                const today = app.worktime.localDateString();
-                if (!card.actualStart) card.actualStart = today;
-                if (!card.actualEnd) card.actualEnd = today;
-                if (card.progress === undefined || card.progress === null || card.progress === '') card.progress = 100;
-            } else if (subtasks.length > 0 && subtasks.some(st => !st.completed) && card.status === 2) {
-                card.status = 0;
+                app.worktime.markCompleted(card);
+            } else if (subtasks.length > 0 && subtasks.some(st => !st.completed) && Number(card.status) === 2) {
+                // 從「全部完成」重新打開任一子任務時，回到可工作的狀態，不保留 100% / 實際完成日。
+                app.worktime.reopenCompleted(card, 1);
             }
             
             app.saveToLocal();
@@ -1509,7 +1565,7 @@ const app = {
                 if (targetCard) {
                     const prefix = targetCard.content && !targetCard.content.endsWith('\n') ? '\n' : '';
                     targetCard.content += `${prefix}- [ ] ${text}\n`;
-                    if (targetCard.status === 2) targetCard.status = 0; 
+                    if (Number(targetCard.status) === 2) app.worktime.reopenCompleted(targetCard, 1); 
                 }
             } 
             
@@ -1537,14 +1593,10 @@ const app = {
         toggleTodoCard(id) {
             const card = this.getActiveCards().find(c => c.id === id);
             if (!card) return;
-            if (card.status === 2) {
-                card.status = 0;
+            if (Number(card.status) === 2) {
+                app.worktime.reopenCompleted(card);
             } else {
-                card.status = 2;
-                const today = app.worktime.localDateString();
-                if (!card.actualStart) card.actualStart = today;
-                if (!card.actualEnd) card.actualEnd = today;
-                if (card.progress === undefined || card.progress === null || card.progress === '') card.progress = 100;
+                app.worktime.markCompleted(card);
             }
             app.saveToLocal(); this.renderTodo(); this.refreshActiveNoteUI();
         },
@@ -1580,18 +1632,24 @@ const app = {
             const titleEl = document.getElementById('sb-activeTaskTitle');
             const iconEl = document.getElementById('sb-activeTaskIcon');
             const noteArea = document.getElementById('sb-activeNoteArea');
+            const nextStepBox = document.getElementById('sb-nextStepBox');
+            const nextStepInput = document.getElementById('sb-nextStepInput');
 
             if (app.state.sandbox.activeTaskId) {
                 const card = this.getActiveCards().find(c => c.id === app.state.sandbox.activeTaskId);
                 if (card) {
                     iconEl.style.display = 'inline'; titleEl.value = card.title; titleEl.style.color = 'var(--primary)';
                     titleEl.readOnly = false; noteArea.value = card.content || "";
+                    if (nextStepBox) nextStepBox.style.display = 'block';
+                    if (nextStepInput) nextStepInput.value = card.nextStep || '';
                     app.entries.renderSandbox(card);
                     return;
                 } else { app.state.sandbox.activeTaskId = null; }
             }
             iconEl.style.display = 'none'; titleEl.value = "📝 全域沙盒草稿 (未綁定單一任務)"; titleEl.style.color = '#334155';
             titleEl.readOnly = true; noteArea.value = app.state.globalNotebook.free || "";
+            if (nextStepBox) nextStepBox.style.display = 'none';
+            if (nextStepInput) nextStepInput.value = '';
             app.entries.renderSandbox(null);
         },
 
@@ -1608,6 +1666,15 @@ const app = {
                 const card = this.getActiveCards().find(c => c.id === app.state.sandbox.activeTaskId);
                 if (card) card.content = noteArea.value;
             } else { app.state.globalNotebook.free = noteArea.value; }
+            app.saveToLocal();
+        },
+
+        saveNextStep() {
+            if (!app.state.sandbox.activeTaskId) return;
+            const card = this.getActiveCards().find(c => c.id === app.state.sandbox.activeTaskId);
+            const input = document.getElementById('sb-nextStepInput');
+            if (!card || !input) return;
+            card.nextStep = input.value;
             app.saveToLocal();
         },
 
@@ -1775,6 +1842,12 @@ const app = {
             if (app.state.sandbox.timerStatus === 'IDLE') {
                 app.state.sandbox.timerTaskId = app.state.sandbox.activeTaskId || null;
                 app.state.sandbox.timerSessionSeconds = 0;
+            }
+            const targetCard = app.state.sandbox.timerTaskId ? app.worktime.getCard(app.state.sandbox.timerTaskId) : null;
+            if (targetCard && app.worktime.ensureStarted(targetCard)) {
+                app.saveToLocal();
+                this.renderTodo();
+                if (app.state.sandbox.activeTaskId === targetCard.id) app.entries.renderSandbox(targetCard);
             }
             app.state.sandbox.timerStatus = 'RUNNING';
             app.state.sandbox.timerSessionStartedAt = new Date().toISOString();
@@ -2768,14 +2841,14 @@ const app = {
         cycleStatus(id) {
             const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id);
             if (!card) return;
-            const next = (Number(card.status || 0) + 1) % 4;
-            card.status = next;
-            const today = app.worktime.localDateString();
-            if (next === 1 && !card.actualStart) card.actualStart = today;
+            const current = Number(card.status || 0);
+            const next = (current + 1) % 4;
             if (next === 2) {
-                if (!card.actualStart) card.actualStart = today;
-                if (!card.actualEnd) card.actualEnd = today;
-                if (card.progress === undefined || card.progress === null || card.progress === '') card.progress = 100;
+                app.worktime.markCompleted(card);
+            } else {
+                if (current === 2) app.worktime.reopenCompleted(card, next);
+                else card.status = next;
+                if (next === 1) app.worktime.ensureStarted(card);
             }
             app.saveToLocal(); app.renderAll();
         },

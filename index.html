@@ -159,6 +159,10 @@
         .excel-copy-btn { border:1px solid #c7d2fe; background:#eef2ff; color:#4338ca; border-radius:6px; padding:8px 12px; cursor:pointer; font-weight:bold; }
         .excel-copy-btn:hover { background:#e0e7ff; }
         .timer-target { margin:8px 0; padding:8px 10px; border-radius:6px; background:#f1f5f9; color:#475569; font-size:.82rem; line-height:1.45; }
+        .next-step-box { display:none; margin:10px 0 2px; padding:9px 10px; border:1px solid #c7d2fe; border-radius:8px; background:#eef2ff; }
+        .next-step-box label { display:block; color:#4338ca; font-size:.78rem; font-weight:bold; margin-bottom:5px; }
+        .next-step-box input { width:100%; border:1px solid #cbd5e1; border-radius:6px; padding:8px 10px; background:white; color:#334155; outline:none; }
+        .next-step-box input:focus { border-color:#818cf8; box-shadow:0 0 0 2px rgba(99,102,241,.1); }
 
         @media (max-width: 768px) {
             .task-meta-grid { grid-template-columns:1fr; }
@@ -419,16 +423,19 @@
         .gantt-toolbar-note { margin:0 auto 12px; max-width:980px; padding:9px 12px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; color:#64748b; font-size:.82rem; line-height:1.5; }
         .gantt-legend { display:flex; gap:10px; flex-wrap:wrap; align-items:center; justify-content:center; margin:8px 0 14px; font-size:.78rem; color:#64748b; }
         .gantt-legend-item { display:inline-flex; align-items:center; gap:5px; }
-        .gantt-table-wrap { width:100%; overflow:auto; border:1px solid #e2e8f0; border-radius:8px; background:white; }
-        .gantt-table { border-collapse:separate; border-spacing:0; min-width:max-content; font-size:.78rem; }
+        .gantt-table-wrap { width:100%; max-height:calc(100vh - 230px); overflow:auto; overscroll-behavior:contain; border:1px solid #e2e8f0; border-radius:8px; background:white; }
+        .gantt-table { --gantt-head-row1:46px; border-collapse:separate; border-spacing:0; min-width:max-content; font-size:.78rem; }
         .gantt-table th, .gantt-table td { border-right:1px solid #e5e7eb; border-bottom:1px solid #e5e7eb; padding:5px 6px; background:white; white-space:nowrap; height:30px; }
-        .gantt-table thead th { position:sticky; top:0; z-index:30; background:#f8fafc; color:#475569; font-weight:bold; text-align:center; }
-        .gantt-table .gantt-month-head { top:0; background:#e2e8f0; color:#334155; }
-        .gantt-table .gantt-day-head { top:31px; padding:4px 4px; }
+        .gantt-table thead th { position:sticky; z-index:30; background:#f8fafc; color:#475569; font-weight:bold; text-align:center; }
+        .gantt-table thead tr:first-child th { top:0; height:var(--gantt-head-row1); }
+        .gantt-table thead tr:nth-child(2) th { top:var(--gantt-head-row1); z-index:31; }
+        .gantt-table .gantt-month-head { background:#e2e8f0; color:#334155; }
+        .gantt-table .gantt-day-head { padding:4px 4px; }
         .gantt-table .weekend { background:#f8fafc; }
         .gantt-table .today-col { box-shadow:inset 2px 0 #f59e0b, inset -2px 0 #f59e0b; }
         .gantt-left { position:sticky; z-index:20; background:white !important; }
         .gantt-table thead .gantt-left { z-index:40; background:#f8fafc !important; }
+        .gantt-table thead tr:nth-child(2) .gantt-left { z-index:41; }
         .gantt-title-col { left:0; min-width:220px; max-width:220px; overflow:hidden; text-overflow:ellipsis; text-align:left !important; }
         .gantt-status-col { left:220px; min-width:78px; text-align:center; }
         .gantt-progress-col { left:298px; min-width:76px; text-align:center; }
@@ -716,6 +723,11 @@
                                            oninput="app.sandbox.renameActiveTask()">
                                 </div>
                             </div>
+                        </div>
+
+                        <div class="next-step-box" id="sb-nextStepBox">
+                            <label for="sb-nextStepInput">➡ 下一步 <span style="font-weight:normal;color:#64748b;">（下次回來直接從這裡接）</span></label>
+                            <input type="text" id="sb-nextStepInput" placeholder="例如：用 6 月正式月報跑一次圖表定位" oninput="app.sandbox.saveNextStep()">
                         </div>
 
                         <!-- 工作紀錄：與時間軸卡片共用同一份 card.entries，預設收合避免干擾心流 -->
