@@ -1,3 +1,18 @@
+// =====================================================================
+// 白板 & 心流沙盒 v3.1
+// ---------------------------------------------------------------------
+// v3.0 重整重點（資料邏輯）：
+// 1. 所有修改只走一個入口 app.saveToLocal()（= store.markDirty）：
+//    0.4 秒後統一寫入本機，寫入失敗會在畫面上明確顯示，不再默默失敗。
+// 2. 每張卡片自動記錄 updatedAt；刪除會留下「刪除紀錄」。
+//    雲端存／載時用它逐張比對，不再整份互相覆蓋。
+// 3. 雲端仍是手動「存雲端／載雲端」，但會先比對：
+//    雲端被其他裝置更新過、或本機有未上傳的修改時，先列出差異，預設「合併」。
+// 4. 任何覆蓋前都會先在本機瀏覽器（IndexedDB）留一份版本備份；
+//    刪除的卡片進「最近刪除」，可以救回來。
+// 5. 計時器改用「開始時間」計算，背景分頁、闔上筆電、重新整理都不會少算或遺失。
+// =====================================================================
+
 // === Firebase 配置 ===
 const firebaseConfig = {
     apiKey: "AIzaSyAIY9PU-bDLktkTpLSmFKRe1uepvWCKEiU",
@@ -12,51 +27,94 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 const provider = new firebase.auth.GoogleAuthProvider();
 
-// === 核心 App 邏輯 ===
-const app = {
-    currentUser: null,
-    state: {
+const APP_VERSION = '3.1';
+const SCHEMA_VERSION = 3;
+const CLOUD_DOC_SOFT_LIMIT = 750 * 1024;   // 超過時提醒
+const CLOUD_DOC_HARD_LIMIT = 1000 * 1000;  // Firestore 單一文件上限約 1 MiB，保守一點
+const POMODORO_MS = 25 * 60 * 1000;
+
+function defaultMeta() {
+    return {
+        schema: SCHEMA_VERSION,
+        updatedAt: 0,        // 最後一次內容變更時間（ms，僅供參考；同步判斷用本機計數，不比時鐘）
+        miscUpdatedAt: 0,    // 分頁名稱、筆記本、詰棋等非卡片資料的變更時間
+        tombstones: { cards: {}, tabs: {}, nodes: {} }  // 刪除紀錄：id → 刪除時間
+    };
+}
+
+function defaultState() {
+    return {
         tabs: [{ id: 'main', name: '主工作區' }],
         activeTabId: 'main',
         workspaces: { 'main': [] },
-        nodes: { 'main': [] }, 
+        nodes: { 'main': [] },
         globalNotebook: { template: 'free', free: '', matrix: { q1:'', q2:'', q3:'', q4:'' } },
         tsumego: { isOpen: false, currentColor: 'black', stones: [] },
         view: 'timeline',
         filters: { keyword: '', activeProject: null },
-        ganttFilters: { project: '', month: '', mode: 'schedule', scale: '' },
+        ganttFilters: { project: '', month: '', mode: 'schedule', scale: 'week' },
         chronicleFilters: { scope: 'all', project: '' },
         showProjectBar: false,
-        
-        // SPA 沙盒專屬狀態
+        meta: defaultMeta(),
+        // 心流沙盒執行期狀態。計時資料另存在 whiteboard_timer_<uid>，不進雲端。
         sandbox: {
             activeTaskId: null,
-            mode: 'FLEXIBLE', timerStatus: 'IDLE', seconds: 0,
-            pomoPhase: 'FOCUS', pomoCount: 0, timerInterval: null,
-            // 以下為執行期計時狀態，不寫入 Firebase / localStorage 設定。
-            timerTaskId: null, timerSessionSeconds: 0, timerSessionStartedAt: null,
+            mode: 'FLEXIBLE', timerStatus: 'IDLE', timerInterval: null,
+            timerTaskId: null, segStart: null, segments: [], lastSeenAt: null,
             deadlineTask: '', deadlineDate: ''
         }
-    },
+    };
+}
+
+function defaultPrefs() {
+    return { view: 'timeline', activeTabId: 'main', ganttScale: 'week', ganttMode: 'schedule', chronicleScope: 'all', showProjectBar: false, collapsedGroups: {}, panels: {} };
+}
+
+function deepClone(value) { return value === undefined ? undefined : JSON.parse(JSON.stringify(value)); }
+
+// === 核心 App 邏輯 ===
+const app = {
+    currentUser: null,
+    state: defaultState(),
+    prefs: defaultPrefs(),
+    _setupDone: false,
 
     // 工作紀錄的畫面狀態只存在記憶體，不寫入 localStorage / Firebase。
-    // 真正資料只放在 card.entries，避免改動既有同步結構。
     entryUi: {},
 
     init() {
+        this.ui.installGlobalHandlers();
         auth.onAuthStateChanged((user) => {
             if (user) {
                 this.currentUser = user;
                 document.getElementById('login-screen').style.display = 'none';
                 document.getElementById('app-content').style.display = 'block';
-                this.injectStarPoints(); 
-                this.loadFromLocal();
-                this.setupMatrixDrag();
-                this.setupTsumegoDrag();
-                this.fetchCloudTime();
-                this.sandbox.initUI();
+                if (!this._setupDone) {
+                    this.injectStarPoints();
+                    this.setupMatrixDrag();
+                    this.setupTsumegoDrag();
+                    this.sandbox.initUI();
+                    this._setupDone = true;
+                }
+                this.state = defaultState();
+                this.entryUi = {};
+                this.worktime.planningUi = {};
+                this.prefs = this.store.loadPrefs();
+                const hadLocal = this.store.loadLocal();
+                this.applyPrefs();
+                this.sandbox.syncDeadlineInputs();
+                this.sandbox.restoreTimer();
+                this.switchView(this.state.view || 'timeline');
+                this.renderTsumegoStones();
+                this.ui.renderSyncStatus();
+                this.cloud.checkOnStartup(hadLocal);
+                this.backup.dailySnapshot();
             } else {
+                this.store.flush();
+                this.sandbox.stopTick();
                 this.currentUser = null;
+                this.state = defaultState();
+                this.entryUi = {};
                 document.getElementById('login-screen').style.display = 'flex';
                 document.getElementById('app-content').style.display = 'none';
             }
@@ -64,83 +122,1520 @@ const app = {
     },
 
     login() { auth.signInWithPopup(provider).catch(err => alert("登入失敗: " + err.message)); },
-    logout() { if(confirm('確定登出？若不想留暫存請先點擊「🧹 清本機」')) auth.signOut(); },
-
-    saveToLocal() {
-        const dataToSave = {
-            tabs: this.state.tabs, workspaces: this.state.workspaces, nodes: this.state.nodes, 
-            globalNotebook: this.state.globalNotebook, tsumego: { stones: this.state.tsumego.stones },
-            sandbox: { deadlineTask: this.state.sandbox.deadlineTask, deadlineDate: this.state.sandbox.deadlineDate }
-        };
-        localStorage.setItem(`whiteboard_state_${this.currentUser.uid}`, JSON.stringify(dataToSave));
-        const statusEl = document.getElementById('local-save-status');
-        if(statusEl) { statusEl.innerText = '💾 儲存中...'; setTimeout(() => { statusEl.innerText = '✅ 已存於本機'; }, 500); }
+    async logout() {
+        this.store.flush();
+        const unsynced = this.cloud.hasUnsynced();
+        const ok = await this.ui.dialog({
+            title: '登出',
+            html: unsynced
+                ? '<p>⚠️ 這台裝置有<strong>還沒上傳到雲端</strong>的修改。登出不會刪除本機資料，下次用同一個帳號登入還在；但若要在別台裝置看到，請先按「☁️ 存雲端」。</p>'
+                : '<p>本機資料與雲端一致。登出不會刪除本機資料。</p>',
+            buttons: [{ label: '取消', value: false }, { label: '登出', value: true, primary: true }]
+        });
+        if (ok) auth.signOut();
     },
 
-    loadFromLocal() {
-        const localData = localStorage.getItem(`whiteboard_state_${this.currentUser.uid}`);
-        if (localData) {
-            const data = JSON.parse(localData);
-            this.state.tabs = data.tabs || [{ id: 'main', name: '主工作區' }];
-            this.state.workspaces = data.workspaces || { 'main': [] };
-            this.state.nodes = data.nodes || { 'main': [] };
-            this.state.globalNotebook = data.globalNotebook || { template: 'free', free: '', matrix: {} };
-            if(data.tsumego && data.tsumego.stones) this.state.tsumego.stones = data.tsumego.stones;
-            if(data.sandbox) {
-                this.state.sandbox.deadlineTask = data.sandbox.deadlineTask || '';
-                this.state.sandbox.deadlineDate = data.sandbox.deadlineDate || '';
-                if(document.getElementById('sb-deadlineTask')) document.getElementById('sb-deadlineTask').value = this.state.sandbox.deadlineTask;
-                if(document.getElementById('sb-deadlineDate')) document.getElementById('sb-deadlineDate').value = this.state.sandbox.deadlineDate;
-                this.sandbox.updateCountdown();
+    // 所有修改後都呼叫這個；實際寫入會延遲 0.4 秒合併處理。
+    saveToLocal() { this.store.markDirty(); },
+
+    applyPrefs() {
+        const p = this.prefs;
+        const s = this.state;
+        s.view = ['timeline','matrix','chronicle','gantt','calendar','report','sandbox'].includes(p.view) ? p.view : 'timeline';
+        if (s.view === 'sandbox') s.view = 'timeline';
+        s.activeTabId = s.tabs.some(t => t.id === p.activeTabId) ? p.activeTabId : s.tabs[0].id;
+        s.ganttFilters.scale = ['day','week','month'].includes(p.ganttScale) ? p.ganttScale : 'week';
+        s.ganttFilters.mode = p.ganttMode === 'time' ? 'time' : 'schedule';
+        s.chronicleFilters.scope = p.chronicleScope === 'current' ? 'current' : 'all';
+        if (p.showProjectBar && !s.showProjectBar) this.toggleProjectBar(true);
+    },
+
+    rememberPrefs() {
+        if (!this.currentUser) return;
+        const s = this.state;
+        Object.assign(this.prefs, {
+            view: s.view, activeTabId: s.activeTabId,
+            ganttScale: s.ganttFilters?.scale || 'week', ganttMode: s.ganttFilters?.mode || 'schedule',
+            chronicleScope: s.chronicleFilters?.scope || 'all', showProjectBar: !!s.showProjectBar
+        });
+        this.store.savePrefs();
+    },
+
+    panelOpen(source, cardId, panel) {
+        const v = this.prefs.panels?.[`${source}:${cardId}`]?.[panel];
+        return v === undefined ? false : !!v;
+    },
+    setPanelOpen(source, cardId, panel, open) {
+        if (!this.prefs.panels) this.prefs.panels = {};
+        const key = `${source}:${cardId}`;
+        if (!this.prefs.panels[key]) this.prefs.panels[key] = {};
+        this.prefs.panels[key][panel] = !!open;
+        this.store.savePrefs();
+    },
+
+    // ==========================================
+    // 💾 本機儲存（唯一寫入點）
+    // ==========================================
+    store: {
+        version: 0,
+        pending: false,
+        flushTimer: null,
+        hashes: null,
+        lastSavedAt: 0,
+        lastSize: 0,
+        sessionId: Math.random().toString(36).slice(2, 10),
+
+        key(kind = 'state') { return `whiteboard_${kind}_${app.currentUser.uid}`; },
+
+        // 同步記帳：只在這台裝置（同一瀏覽器的各分頁共用），不上雲端。
+        // rev 每次內容有變動 +1；syncedRev 是最後一次「本機 = 雲端」時的 rev。只比自己的計數，不比不同裝置的時鐘。
+        syncInfo() {
+            const base = { rev: 0, syncedRev: 0, cloudVersion: 0, cloudSavedAt: 0, lastChangeAt: 0 };
+            try { return { ...base, ...JSON.parse(localStorage.getItem(this.key('sync')) || '{}') }; }
+            catch { return base; }
+        },
+        setSyncInfo(patch) {
+            const info = { ...this.syncInfo(), ...patch };
+            try { localStorage.setItem(this.key('sync'), JSON.stringify(info)); } catch (err) { console.warn('同步記帳未保存', err); }
+            return info;
+        },
+        bumpRev() {
+            const info = this.syncInfo();
+            return this.setSyncInfo({ rev: (info.rev || 0) + 1, lastChangeAt: Date.now() }).rev;
+        },
+
+        serialize() {
+            const s = app.state;
+            return deepClone({
+                tabs: s.tabs, workspaces: s.workspaces, nodes: s.nodes,
+                globalNotebook: s.globalNotebook,
+                tsumego: { stones: s.tsumego.stones },
+                sandbox: { deadlineTask: s.sandbox.deadlineTask, deadlineDate: s.sandbox.deadlineDate },
+                meta: s.meta
+            });
+        },
+
+        // 把一份資料（本機、雲端、備份檔）套用成目前狀態。回傳整理時是否有修正舊資料。
+        apply(data) {
+            const result = app.migrate.normalize(data, true);
+            const doc = result.doc;
+            const s = app.state;
+            s.tabs = doc.tabs; s.workspaces = doc.workspaces; s.nodes = doc.nodes;
+            s.globalNotebook = doc.globalNotebook;
+            s.tsumego.stones = doc.tsumego.stones;
+            s.sandbox.deadlineTask = doc.sandbox.deadlineTask;
+            s.sandbox.deadlineDate = doc.sandbox.deadlineDate;
+            s.meta = doc.meta;
+            if (!s.tabs.some(t => t.id === s.activeTabId)) s.activeTabId = s.tabs[0].id;
+            if (!s.nodes[s.activeTabId]) s.nodes[s.activeTabId] = [];
+            if (s.sandbox.activeTaskId && !app.worktime.getCard(s.sandbox.activeTaskId)) s.sandbox.activeTaskId = null;
+            this.hashes = this.computeHashes();
+            this.version++;
+            return result.changed;
+        },
+
+        // 套用並立刻寫入；用在載入雲端、合併、還原備份。synced=true 表示「現在本機 = 雲端」。
+        applyAndSave(doc, { cloudVersion, synced } = {}) {
+            this.apply(doc);
+            this.pending = true;
+            const ok = this.flush(true);
+            const rev = this.bumpRev();
+            const patch = {};
+            if (cloudVersion !== undefined) patch.cloudVersion = cloudVersion;
+            if (synced && ok) patch.syncedRev = rev;
+            this.setSyncInfo(patch);
+            return ok;
+        },
+
+        loadLocal() {
+            let raw = null;
+            try { raw = localStorage.getItem(this.key()); } catch (err) { console.warn(err); }
+            if (!raw) { this.apply({}); return false; }
+            try {
+                const changed = this.apply(JSON.parse(raw));
+                // 整理舊資料時有修正（例如補上工時紀錄的 id），立刻存回去，下次載入結果才會一致。
+                if (changed) { this.pending = true; this.flush(true); }
+                return true;
+            } catch (err) {
+                console.error('本機資料無法解析', err);
+                app.backup.save('本機資料無法讀取時的原始內容', raw);
+                app.ui.banner('error', '本機資料格式損毀，原始內容已另存在「🗂 資料 → 版本備份」。目前以空白狀態開啟，可以按「📥 載雲端」取回雲端資料。');
+                this.apply({});
+                return false;
             }
-            if (!this.state.nodes[this.state.activeTabId]) this.state.nodes[this.state.activeTabId] = [];
-            this.renderAll(); this.renderTsumegoStones();
-        } else {
-            if(confirm("本機沒有暫存資料。是否要從雲端下載最新進度？")) this.loadFromCloudManual(); else this.renderAll();
+        },
+
+        markDirty() {
+            if (!app.currentUser) return;
+            this.version++;
+            this.pending = true;
+            clearTimeout(this.flushTimer);
+            this.flushTimer = setTimeout(() => this.flush(), 400);
+            app.ui.setSaveState('saving');
+        },
+
+        flush(force = false) {
+            clearTimeout(this.flushTimer);
+            this.flushTimer = null;
+            if (!app.currentUser || (!this.pending && !force)) return true;
+            const changed = this.trackChanges();
+            if (changed) this.bumpRev();
+            try {
+                const data = this.serialize();
+                const json = JSON.stringify({ ...data, meta: { ...data.meta, writer: this.sessionId } });
+                localStorage.setItem(this.key(), json);
+                this.pending = false;
+                this.lastSavedAt = Date.now();
+                this.lastSize = json.length;
+                app.ui.setSaveState('saved');
+                return true;
+            } catch (err) {
+                console.error('本機儲存失敗', err);
+                app.ui.setSaveState('error', err);
+                return false;
+            }
+        },
+
+        cardSig(obj) {
+            if (!obj) return '';
+            const { updatedAt, ...rest } = obj;
+            return JSON.stringify(rest);
+        },
+
+        computeHashes() {
+            const s = app.state;
+            const cards = {}, nodes = {};
+            for (const tabId in s.workspaces) (s.workspaces[tabId] || []).forEach(c => { if (c?.id) cards[c.id] = `${tabId}|${this.cardSig(c)}`; });
+            for (const tabId in s.nodes) (s.nodes[tabId] || []).forEach(n => { if (n?.id) nodes[n.id] = `${tabId}|${this.cardSig(n)}`; });
+            const tabs = {};
+            s.tabs.forEach(t => { tabs[t.id] = t.name; });
+            const misc = JSON.stringify([s.tabs, s.globalNotebook, s.tsumego.stones, s.sandbox.deadlineTask, s.sandbox.deadlineDate]);
+            return { cards, nodes, tabs, misc };
+        },
+
+        // 比對上一次寫入後的差異：有變動的卡片／節點蓋上 updatedAt，刪掉的留下刪除紀錄。回傳是否有變動。
+        trackChanges() {
+            const s = app.state;
+            const prev = this.hashes || this.computeHashes();
+            const next = this.computeHashes();
+            const now = Date.now();
+            const tomb = s.meta.tombstones;
+            let changed = false;
+            for (const tabId in s.workspaces) (s.workspaces[tabId] || []).forEach(c => {
+                if (c?.id && prev.cards[c.id] !== next.cards[c.id]) { c.updatedAt = now; delete tomb.cards[c.id]; changed = true; }
+            });
+            Object.keys(prev.cards).forEach(id => { if (!(id in next.cards)) { tomb.cards[id] = now; changed = true; } });
+            for (const tabId in s.nodes) (s.nodes[tabId] || []).forEach(n => {
+                if (n?.id && prev.nodes[n.id] !== next.nodes[n.id]) { n.updatedAt = now; delete tomb.nodes[n.id]; changed = true; }
+            });
+            Object.keys(prev.nodes).forEach(id => { if (!(id in next.nodes)) { tomb.nodes[id] = now; changed = true; } });
+            Object.keys(prev.tabs).forEach(id => { if (!(id in next.tabs)) { tomb.tabs[id] = now; } });
+            Object.keys(next.tabs).forEach(id => { delete tomb.tabs[id]; });
+            if (prev.misc !== next.misc) { s.meta.miscUpdatedAt = now; changed = true; }
+            if (changed) s.meta.updatedAt = now;
+            this.pruneTombstones();
+            this.hashes = next;
+            return changed;
+        },
+
+        pruneTombstones() {
+            const limit = Date.now() - 365 * 24 * 3600 * 1000;
+            const tomb = app.state.meta.tombstones;
+            ['cards', 'tabs', 'nodes'].forEach(kind => {
+                Object.keys(tomb[kind] || {}).forEach(id => { if (tomb[kind][id] < limit) delete tomb[kind][id]; });
+            });
+        },
+
+        // 另一個分頁寫入同一份資料時同步過來，避免兩個分頁互相蓋掉。
+        onStorage(e) {
+            if (!app.currentUser) return;
+            if (e.key === app.sandbox.timerKey()) { app.sandbox.adoptStoredTimer(); return; }
+            if (e.key === this.key('sync')) { app.ui.renderSyncStatus(); return; }
+            if (e.key !== this.key() || !e.newValue) return;
+            let data;
+            try { data = JSON.parse(e.newValue); } catch { return; }
+            if (data?.meta?.writer === this.sessionId) return;
+            if (this.pending) {
+                if (this.trackChanges()) this.bumpRev();
+                const { doc } = app.sync.mergeDocs(this.serialize(), data, '另一個分頁', null);
+                this.apply(doc);
+                this.pending = true;
+                this.flush(true);
+            } else {
+                this.apply(data);
+            }
+            app.ui.renderWhenIdle();
+            app.ui.renderSyncStatus();
+            app.ui.toast('已同步另一個分頁的修改');
+        },
+
+        loadPrefs() {
+            try {
+                const raw = localStorage.getItem(this.key('ui'));
+                return raw ? { ...defaultPrefs(), ...JSON.parse(raw) } : defaultPrefs();
+            } catch { return defaultPrefs(); }
+        },
+
+        savePrefs() {
+            if (!app.currentUser) return;
+            try { localStorage.setItem(this.key('ui'), JSON.stringify(app.prefs)); } catch (err) { console.warn('偏好設定未保存', err); }
+        },
+
+        sizeOf(obj) {
+            try { return new Blob([JSON.stringify(obj)]).size; } catch { return 0; }
         }
     },
 
-    clearLocalData() {
-        if(!confirm("⚠️ 警告：徹底清除「這台裝置」上的所有暫存進度！確定嗎？")) return;
-        localStorage.removeItem(`whiteboard_state_${this.currentUser.uid}`);
-        this.state.tabs = [{ id: 'main', name: '主工作區' }]; this.state.activeTabId = 'main';
-        this.state.workspaces = { 'main': [] }; this.state.nodes = { 'main': [] };
-        this.state.tsumego.stones = [];
-        this.renderAll(); this.renderTsumegoStones(); alert("🧹 本機資料已清空！");
+    // ==========================================
+    // 🧹 舊資料整理（每次載入都會跑；結果固定，不同裝置整理同一份資料會得到一樣的結果）
+    // ==========================================
+    migrate: {
+        normalize(input, withFlag = false) {
+            const src = (input && typeof input === 'object') ? deepClone(input) : {};
+            const before = JSON.stringify([src.tabs, src.workspaces, src.nodes]);
+            const out = {};
+            const meta = { ...defaultMeta(), ...(src.meta && typeof src.meta === 'object' ? src.meta : {}) };
+            ['writer', 'cloudSyncedAt', 'cloudVersion', 'cloudSavedAt'].forEach(k => delete meta[k]);
+            meta.tombstones = {
+                cards: { ...(meta.tombstones?.cards || {}) },
+                tabs: { ...(meta.tombstones?.tabs || {}) },
+                nodes: { ...(meta.tombstones?.nodes || {}) }
+            };
+            meta.schema = SCHEMA_VERSION;
+            out.meta = meta;
+
+            let tabs = Array.isArray(src.tabs) ? src.tabs.filter(t => t && t.id) : [];
+            const seenTab = new Set();
+            tabs = tabs.filter(t => { if (seenTab.has(t.id)) return false; seenTab.add(t.id); return true; })
+                .map(t => ({ id: String(t.id), name: String(t.name ?? '未命名分頁') }));
+            if (!tabs.some(t => t.id === 'main')) tabs.unshift({ id: 'main', name: '主工作區' });
+
+            const workspaces = (src.workspaces && typeof src.workspaces === 'object') ? src.workspaces : {};
+            const nodes = (src.nodes && typeof src.nodes === 'object') ? src.nodes : {};
+
+            // 有卡片或發想節點、但沒有對應分頁的資料（舊版雲端合併殘留）：建立看得到的分頁，讓你決定留或刪。
+            const orphanIds = new Set([
+                ...Object.keys(workspaces).filter(id => Array.isArray(workspaces[id]) && workspaces[id].length),
+                ...Object.keys(nodes).filter(id => Array.isArray(nodes[id]) && nodes[id].length)
+            ]);
+            [...orphanIds].sort().forEach(tabId => {
+                if (!tabs.some(t => t.id === tabId)) tabs.push({ id: tabId, name: '♻ 找回的舊分頁' });
+            });
+            out.tabs = tabs;
+
+            // 舊資料沒有 id 的工時／工作紀錄：用「內容 + 第幾筆」產生固定 id，兩台裝置會算出一樣的結果。
+            const fixListIds = (list, prefix, owner) => {
+                if (!Array.isArray(list)) return list;
+                const seen = {};
+                const used = new Set();
+                return list.filter(x => x && typeof x === 'object').map(x => {
+                    if (x.id && !used.has(x.id)) { used.add(x.id); return x; }
+                    const { id, ...rest } = x;
+                    const key = `${owner}|${JSON.stringify(rest)}`;
+                    seen[key] = (seen[key] || 0) + 1;
+                    let nid = `${prefix}_legacy_${app.sync.hash(key)}_${seen[key]}`;
+                    while (used.has(nid)) nid += 'x';
+                    used.add(nid);
+                    return { ...x, id: nid };
+                });
+            };
+
+            // 先找出重複的卡片 id：重複的每一張都依「自己的內容」改成固定的新 id（不看排列順序），兩台裝置會算出一樣的結果。
+            const idCount = {};
+            tabs.forEach(t => (Array.isArray(workspaces[t.id]) ? workspaces[t.id] : []).forEach(c => { if (c && c.id) idCount[c.id] = (idCount[c.id] || 0) + 1; }));
+            const cardFingerprint = c => app.sync.hash([c.title || '', c.content || '', c.project || '', c.dateSingle || '', c.dateStart || '', (Array.isArray(c.workLogs) ? c.workLogs : []).map(l => l?.id || l?.workDate || '').join(',')].join('|'));
+            const seenCard = {};
+            const fpSeen = {};
+            out.workspaces = {};
+            tabs.forEach(t => {
+                const list = Array.isArray(workspaces[t.id]) ? workspaces[t.id] : [];
+                out.workspaces[t.id] = list.filter(c => c && typeof c === 'object').map(card => {
+                    if (!card.id || idCount[card.id] > 1) {
+                        // 沒有 id，或舊版同一毫秒建立造成 id 撞號
+                        const baseId = card.id ? `${card.id}__` : 'card_legacy_';
+                        const fp = `${baseId}${cardFingerprint(card)}`;
+                        fpSeen[fp] = (fpSeen[fp] || 0) + 1;
+                        card.id = fpSeen[fp] > 1 ? `${fp}_${fpSeen[fp]}` : fp;
+                    }
+                    while (seenCard[card.id]) card.id += 'x';
+                    seenCard[card.id] = true;
+                    if (card.title === undefined || card.title === null) card.title = '';
+                    if (card.content === undefined || card.content === null) card.content = '';
+                    if (card.project === undefined || card.project === null) card.project = '';
+                    if (card.workLogs !== undefined) card.workLogs = Array.isArray(card.workLogs) ? fixListIds(card.workLogs, 'work', card.id) : [];
+                    if (card.entries !== undefined) card.entries = Array.isArray(card.entries) ? fixListIds(card.entries, 'entry', card.id) : [];
+                    if (!card.color) card.color = 'blue';
+                    if (card.status === undefined || card.status === null || card.status === '') card.status = 0;
+                    if (typeof card.status !== 'number') card.status = Number(card.status) || 0;
+                    // workflow 舊白板用 nextAction；這版以 nextStep 為主。只在 nextStep 空著時帶入，不覆蓋任何一邊。
+                    if (!String(card.nextStep || '').trim() && String(card.nextAction || '').trim()) card.nextStep = card.nextAction;
+                    if (String(card.nextStep || '').trim() && !String(card.nextAction || '').trim()) card.nextAction = card.nextStep;
+                    return card;
+                });
+            });
+
+            out.nodes = {};
+            const nodeCount = {};
+            tabs.forEach(t => (Array.isArray(nodes[t.id]) ? nodes[t.id] : []).forEach(n => { if (n && n.id) nodeCount[n.id] = (nodeCount[n.id] || 0) + 1; }));
+            const seenNode = {};
+            const nodeFp = {};
+            tabs.forEach(t => {
+                const list = Array.isArray(nodes[t.id]) ? nodes[t.id] : [];
+                out.nodes[t.id] = list.filter(n => n && typeof n === 'object').map(n => {
+                    if (!n.id || nodeCount[n.id] > 1) {
+                        const fp = `${n.id ? n.id + '__' : 'node_legacy_'}${app.sync.hash(`${n.text || ''}|${n.tag || ''}|${n.project || ''}`)}`;
+                        nodeFp[fp] = (nodeFp[fp] || 0) + 1;
+                        n.id = nodeFp[fp] > 1 ? `${fp}_${nodeFp[fp]}` : fp;
+                    }
+                    while (seenNode[n.id]) n.id += 'x';
+                    seenNode[n.id] = true;
+                    return n;
+                });
+            });
+
+            const nb = src.globalNotebook && typeof src.globalNotebook === 'object' ? src.globalNotebook : {};
+            out.globalNotebook = {
+                template: nb.template === 'matrix' ? 'matrix' : 'free',
+                free: String(nb.free ?? ''),
+                matrix: { q1: '', q2: '', q3: '', q4: '', ...(nb.matrix || {}) }
+            };
+            out.tsumego = { stones: Array.isArray(src.tsumego?.stones) ? src.tsumego.stones : [] };
+            out.sandbox = {
+                deadlineTask: String(src.sandbox?.deadlineTask ?? ''),
+                deadlineDate: String(src.sandbox?.deadlineDate ?? '')
+            };
+            if (!withFlag) return out;
+            return { doc: out, changed: JSON.stringify([out.tabs, out.workspaces, out.nodes]) !== before };
+        }
     },
 
-    saveToCloudManual() {
-        const btn = document.querySelector('.btn-cloud-save'); const orig = btn.innerText; btn.innerText = "上傳中...";
-        const payload = { tabs: this.state.tabs, workspaces: this.state.workspaces, nodes: this.state.nodes, globalNotebook: this.state.globalNotebook, updatedAt: firebase.firestore.FieldValue.serverTimestamp() };
-        db.collection('Whiteboard_Data').doc(this.currentUser.uid).set(payload, { merge: true }).then(() => {
-            alert("✅ 備份至雲端。"); this.fetchCloudTime(); 
-        }).catch(err => alert("失敗：" + err.message)).finally(() => btn.innerText = orig);
+    makeId(prefix = 'card') { return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`; },
+
+    // 從卡片 id 推回建立時間（card_<毫秒>...）
+    idTime(id) {
+        const m = String(id || '').match(/_(\d{12,14})/);
+        return m ? Number(m[1]) : 0;
     },
 
-    loadFromCloudManual() {
-        if(!confirm("⚠️ 將覆蓋目前畫面上所有資料。確定繼續？")) return;
-        const btn = document.querySelector('.btn-cloud-load'); const orig = btn.innerText; btn.innerText = "下載中...";
-        db.collection('Whiteboard_Data').doc(this.currentUser.uid).get().then((doc) => {
-            if (doc.exists) {
-                const data = doc.data();
-                this.state.tabs = data.tabs || [{ id: 'main', name: '主工作區' }]; this.state.workspaces = data.workspaces || { 'main': [] }; this.state.nodes = data.nodes || { 'main': [] };
-                this.state.globalNotebook = data.globalNotebook || { template: 'free', free: '', matrix: {} };
-                if (!this.state.tabs.find(t => t.id === this.state.activeTabId)) this.state.activeTabId = this.state.tabs[0].id;
-                if (!this.state.nodes[this.state.activeTabId]) this.state.nodes[this.state.activeTabId] = [];
-                this.saveToLocal(); this.renderAll(); this.fetchCloudTime(); alert("📥 載入成功！");
-            } else { alert("雲端目前沒有備份資料喔！"); }
-        }).catch(err => alert("下載失敗：" + err.message)).finally(() => btn.innerText = orig);
-    },
+    // ==========================================
+    // 🔀 合併：逐張卡片、逐個欄位比對，不整份覆蓋
+    // ==========================================
+    sync: {
+        TEXT_FIELDS: { title: '標題', content: '內容', project: '專案', nextStep: '下一步', nextAction: '下一步（舊）', deliverable: '要交出什麼', acceptance: '怎樣算完成', chronicleSummary: '大事記摘要', category: '任務分類', waitingWho: '在等誰', waitingWhat: '在等什麼' },
+        FIELD_LABELS: { followUpDate: '追蹤日', status: '狀態', color: '標記', dateSingle: '日期', dateStart: '開始日', dateEnd: '結束日', dateMode: '日期模式', isMemo: '卡片用途', progress: '進度', plannedMinutes: '預估工時', actualStart: '實際開始', actualEnd: '實際完成', chroniclePinned: '大事記', chronicleDate: '大事記日期', excludeFromGantt: '甘特顯示' },
+        BLOCK_TEXT: ['content', 'deliverable', 'acceptance', 'chronicleSummary'],
+        LIST_FIELDS: ['workLogs', 'entries'],
 
-    fetchCloudTime() {
-        db.collection('Whiteboard_Data').doc(this.currentUser.uid).get().then(doc => {
-            const displayEl = document.getElementById('cloud-time-display');
-            if (doc.exists && doc.data().updatedAt) {
-                const d = doc.data().updatedAt.toDate();
-                displayEl.innerText = `☁️ 雲端: ${d.getMonth()+1}/${d.getDate()} ${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`;
-                displayEl.style.display = 'inline-block';
+        isBlankCard(c) {
+            return !String(c?.title || '').trim() && !String(c?.content || '').trim()
+                && !(c?.workLogs || []).length && !(c?.entries || []).length
+                && !String(c?.nextStep || '').trim() && !String(c?.deliverable || '').trim();
+        },
+
+        hash(str) {
+            let h = 0x811c9dc5;
+            const s = String(str);
+            for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+            return (h >>> 0).toString(36);
+        },
+        fieldHash(v) { return this.hash(v === undefined ? 'undefined' : JSON.stringify(v)); },
+        cardHash(c) { return this.hash(app.store.cardSig(c)); },
+        isEmpty(v) { return v === undefined || v === null || v === '' || (Array.isArray(v) && !v.length); },
+
+        miscFields(doc) {
+            const nb = doc.globalNotebook || {};
+            return {
+                template: nb.template, free: nb.free,
+                q1: nb.matrix?.q1, q2: nb.matrix?.q2, q3: nb.matrix?.q3, q4: nb.matrix?.q4,
+                stones: doc.tsumego?.stones || [],
+                deadlineTask: doc.sandbox?.deadlineTask, deadlineDate: doc.sandbox?.deadlineDate
+            };
+        },
+
+        // 「上次和雲端一致時」的指紋，用來判斷是哪一邊改了什麼。只存在本機。
+        buildBase(docRaw) {
+            const doc = app.migrate.normalize(docRaw);
+            const cards = {};
+            Object.entries(doc.workspaces).forEach(([tabId, list]) => list.forEach(c => {
+                const f = {};
+                Object.keys(c).forEach(k => { if (k !== 'updatedAt' && !this.LIST_FIELDS.includes(k)) f[k] = this.fieldHash(c[k]); });
+                cards[c.id] = { h: this.cardHash(c), tab: tabId, f, logs: (c.workLogs || []).map(x => x?.id).filter(Boolean), entries: (c.entries || []).map(x => x?.id).filter(Boolean) };
+            }));
+            const nodes = {};
+            Object.entries(doc.nodes).forEach(([tabId, list]) => list.forEach(n => { nodes[n.id] = { h: this.cardHash(n), tab: tabId }; }));
+            const tabs = {};
+            doc.tabs.forEach(t => { tabs[t.id] = this.fieldHash(t.name); });
+            const misc = {};
+            Object.entries(this.miscFields(doc)).forEach(([k, v]) => { misc[k] = this.fieldHash(v); });
+            return { at: Date.now(), cards, nodes, tabs, misc };
+        },
+        baseKey() { return app.store.key('syncbase'); },
+        loadBase() {
+            try { const raw = localStorage.getItem(this.baseKey()); return raw ? JSON.parse(raw) : null; } catch { return null; }
+        },
+        saveBase(docRaw) {
+            try { localStorage.setItem(this.baseKey(), JSON.stringify(this.buildBase(docRaw))); return true; }
+            catch (err) { console.warn('同步基準未保存（下次合併會較保守）', err); this.clearBase(); return false; }
+        },
+        clearBase() { try { localStorage.removeItem(this.baseKey()); } catch {} },
+
+        // 整份內容是否相同（不看時間戳與記帳欄位）
+        docSig(docRaw) {
+            const d = app.migrate.normalize(docRaw);
+            const cards = [];
+            Object.entries(d.workspaces).forEach(([tabId, list]) => list.forEach(c => cards.push(`${c.id}|${tabId}|${app.store.cardSig(c)}`)));
+            const nodes = [];
+            Object.entries(d.nodes).forEach(([tabId, list]) => list.forEach(n => nodes.push(`${n.id}|${tabId}|${app.store.cardSig(n)}`)));
+            return this.hash(JSON.stringify([cards.sort(), nodes.sort(), d.tabs.map(t => `${t.id}|${t.name}`).sort(), this.miscFields(d)]));
+        },
+        sameContent(a, b) { return this.docSig(a) === this.docSig(b); },
+
+        // 三方比對一個值：base 指紋可為 undefined（沒有基準）。回傳 { value, conflict, rescuedText }
+        pick(av, bv, baseHash, aWins) {
+            if (JSON.stringify(av) === JSON.stringify(bv)) return { value: av };
+            if (baseHash !== undefined) {
+                if (this.fieldHash(av) === baseHash) return { value: bv };
+                if (this.fieldHash(bv) === baseHash) return { value: av };
+            } else {
+                if (this.isEmpty(av)) return { value: bv };
+                if (this.isEmpty(bv)) return { value: av };
             }
-        }).catch(err => console.log("無法取得雲端時間", err));
+            return { value: aWins ? av : bv, loser: aWins ? bv : av, conflict: true };
+        },
+
+        mergeList(la, lb, baseIds, preferA) {
+            if (!Array.isArray(la) && !Array.isArray(lb)) return undefined;
+            const baseSet = baseIds ? new Set(baseIds) : null;
+            const ida = new Set((la || []).map(x => x?.id).filter(Boolean));
+            const idb = new Set((lb || []).map(x => x?.id).filter(Boolean));
+            const byIdB = new Map((lb || []).filter(x => x?.id).map(x => [x.id, x]));
+            const out = [];
+            const seen = new Set();
+            (la || []).forEach(x => {
+                if (!x?.id) { out.push(deepClone(x)); return; }
+                if (baseSet && baseSet.has(x.id) && !idb.has(x.id)) return; // 另一邊刪掉了
+                const y = byIdB.get(x.id);
+                let pick = x;
+                if (y && JSON.stringify(x) !== JSON.stringify(y)) {
+                    const ux = String(x.updatedAt || ''), uy = String(y.updatedAt || '');
+                    pick = ux === uy ? (preferA ? x : y) : (ux > uy ? x : y);
+                }
+                seen.add(x.id);
+                out.push(deepClone(pick));
+            });
+            (lb || []).forEach(y => {
+                if (!y?.id) { if (!(la || []).some(x => !x?.id && JSON.stringify(x) === JSON.stringify(y))) out.push(deepClone(y)); return; }
+                if (seen.has(y.id)) return;
+                if (baseSet && baseSet.has(y.id) && !ida.has(y.id)) return; // 這邊刪掉了
+                seen.add(y.id);
+                out.push(deepClone(y));
+            });
+            return out;
+        },
+
+        // 沒有同步基準也沒有時間戳時，猜哪一邊比較完整（內容包含另一邊、工時較多）
+        aLooksNewer(a, b) {
+            const ua = Number(a.updatedAt) || 0, ub = Number(b.updatedAt) || 0;
+            if (ua && ub && ua !== ub) return ua > ub;
+            if (ua && !ub) return true;
+            if (ub && !ua) return false;
+            const ca = String(a.content || ''), cb = String(b.content || '');
+            const ids = c => new Set([...(c.workLogs || []), ...(c.entries || [])].map(x => x?.id).filter(Boolean));
+            const ia = ids(a), ib = ids(b);
+            const bCovers = (cb.length > ca.length && cb.includes(ca.trim())) || (ib.size > ia.size && [...ia].every(x => ib.has(x)));
+            const aCovers = (ca.length > cb.length && ca.includes(cb.trim())) || (ia.size > ib.size && [...ib].every(x => ia.has(x)));
+            if (bCovers && !aCovers) return false;
+            return true;
+        },
+
+        // 回傳 { card, status: same | tookA | tookB | merged, conflicts: [欄位名], rescued: bool }
+        mergeCard(a, b, labelB, bc) {
+            if (app.store.cardSig(a) === app.store.cardSig(b)) return { card: deepClone((a.updatedAt || 0) >= (b.updatedAt || 0) ? a : b), status: 'same', conflicts: [] };
+            if (bc) {
+                const ha = this.cardHash(a), hb = this.cardHash(b);
+                if (hb === bc.h) return { card: deepClone(a), status: 'tookA', conflicts: [] };
+                if (ha === bc.h) return { card: deepClone(b), status: 'tookB', conflicts: [] };
+            }
+            const aWins = bc ? ((Number(a.updatedAt) || 0) >= (Number(b.updatedAt) || 0)) : this.aLooksNewer(a, b);
+            const loserLabel = aWins ? labelB : '本機';
+            const merged = {};
+            const conflicts = [];
+            const notes = [];
+            const keys = new Set([...Object.keys(a), ...Object.keys(b)].filter(k => k !== 'updatedAt' && !this.LIST_FIELDS.includes(k)));
+            keys.forEach(k => {
+                const baseHash = bc ? (bc.f?.[k] ?? this.fieldHash(undefined)) : undefined;
+                const r = this.pick(a[k], b[k], baseHash, aWins);
+                let value = r.value;
+                if (r.conflict) {
+                    const label = this.TEXT_FIELDS[k] || this.FIELD_LABELS[k] || k;
+                    conflicts.push(label);
+                    const loser = typeof r.loser === 'string' ? r.loser.trim() : '';
+                    const winner = typeof value === 'string' ? value.trim() : '';
+                    if (this.TEXT_FIELDS[k] && k !== 'nextAction' && loser && !winner.includes(loser)) {
+                        if (this.BLOCK_TEXT.includes(k)) value = `${winner ? winner + '\n\n' : ''}—— 合併時保留的${loserLabel}版本 ——\n${loser}`;
+                        else notes.push(`（${loserLabel}版本的${label}）${loser}`);
+                    }
+                }
+                if (value !== undefined) merged[k] = deepClone(value);
+            });
+            if (notes.length) merged.content = `${String(merged.content || '').trim() ? String(merged.content).trim() + '\n\n' : ''}—— 合併時保留的${loserLabel}版本 ——\n${notes.join('\n')}`;
+            this.LIST_FIELDS.forEach(k => {
+                const v = this.mergeList(a[k], b[k], bc ? (k === 'workLogs' ? bc.logs : bc.entries) : null, aWins);
+                if (v !== undefined) merged[k] = v;
+            });
+            const sig = app.store.cardSig(merged);
+            const status = sig === app.store.cardSig(a) ? 'tookA' : (sig === app.store.cardSig(b) ? 'tookB' : 'merged');
+            merged.updatedAt = Math.max(Number(a.updatedAt) || 0, Number(b.updatedAt) || 0) || undefined;
+            if (status === 'merged') merged.updatedAt = Date.now();
+            if (merged.updatedAt === undefined) delete merged.updatedAt;
+            return { card: merged, status, conflicts, rescued: notes.length > 0 || conflicts.some(c => this.BLOCK_TEXT.some(k => this.TEXT_FIELDS[k] === c)) };
+        },
+
+        // a = 這邊（通常是本機），b = 另一邊（雲端／備份／另一分頁）；base = 上次同步時的指紋（可為 null）
+        mergeDocs(aRaw, bRaw, labelB = '雲端', base = null) {
+            const A = app.migrate.normalize(aRaw);
+            const B = app.migrate.normalize(bRaw);
+            const tA = A.meta.tombstones, tB = B.meta.tombstones;
+            const bCards = base?.cards || null, bNodes = base?.nodes || null, bTabs = base?.tabs || null, bMisc = base?.misc || null;
+            const report = { onlyA: [], onlyB: [], fromB: [], changed: [], conflicts: [], deletedByA: [], deletedByB: [], keptEdited: [], misc: [], nodes: 0 };
+            const title = c => String(c?.title || '').trim() || '（未命名卡片）';
+
+            // --- 卡片 ---
+            const index = doc => {
+                const map = new Map();
+                Object.entries(doc.workspaces).forEach(([tabId, list]) => list.forEach(c => map.set(c.id, { card: c, tabId })));
+                return map;
+            };
+            const mapA = index(A), mapB = index(B);
+            const placed = new Map(); // tabId -> cards
+            const place = (tabId, card) => { if (!placed.has(tabId)) placed.set(tabId, []); placed.get(tabId).push(card); };
+            const handled = new Set();
+            const visit = (id) => {
+                if (handled.has(id)) return;
+                handled.add(id);
+                const a = mapA.get(id), b = mapB.get(id);
+                const bc = bCards ? bCards[id] : null;
+                if (a && b) {
+                    const res = this.mergeCard(a.card, b.card, labelB, bc);
+                    if (res.conflicts.length) report.conflicts.push(`${title(res.card)}（${res.conflicts.join('、')}）`);
+                    else if (res.status === 'tookB') report.fromB.push(title(res.card));
+                    else if (res.status === 'merged') report.changed.push(title(res.card));
+                    let tabId;
+                    if (bc) tabId = a.tabId !== bc.tab ? a.tabId : b.tabId;
+                    else tabId = ((Number(b.card.updatedAt) || 0) > (Number(a.card.updatedAt) || 0)) ? b.tabId : a.tabId;
+                    place(tabId, res.card);
+                } else if (a || b) {
+                    const mine = a || b;
+                    const otherTomb = a ? tB.cards[id] : tA.cards[id];
+                    const edited = bc ? this.cardHash(mine.card) !== bc.h : null;
+                    let deleted;
+                    if (bc) deleted = !edited;                    // 上次同步時還在、這邊沒改過 → 另一邊刪掉了
+                    else deleted = !!(otherTomb && otherTomb >= (Number(mine.card.updatedAt) || 0));
+                    if (deleted) (a ? report.deletedByB : report.deletedByA).push(title(mine.card));
+                    else {
+                        if (bc && edited) report.keptEdited.push(title(mine.card));
+                        else (a ? report.onlyA : report.onlyB).push(title(mine.card));
+                        place(mine.tabId, deepClone(mine.card));
+                    }
+                }
+            };
+            const allTabOrder = [...A.tabs.map(t => t.id), ...B.tabs.map(t => t.id).filter(id => !A.tabs.some(t => t.id === id))];
+            allTabOrder.forEach(tid => {
+                (A.workspaces[tid] || []).forEach(c => visit(c.id));
+                (B.workspaces[tid] || []).forEach(c => visit(c.id));
+            });
+            mapA.forEach((_, id) => visit(id));
+            mapB.forEach((_, id) => visit(id));
+
+            // --- 發想節點 ---
+            const nodesPlaced = new Map();
+            const placeNode = (tabId, n) => { if (!nodesPlaced.has(tabId)) nodesPlaced.set(tabId, []); nodesPlaced.get(tabId).push(n); };
+            const nodeIndex = doc => { const m = new Map(); Object.entries(doc.nodes).forEach(([tabId, list]) => list.forEach(n => m.set(n.id, { n, tabId }))); return m; };
+            const nA = nodeIndex(A), nB = nodeIndex(B);
+            new Set([...nA.keys(), ...nB.keys()]).forEach(id => {
+                const a = nA.get(id), b = nB.get(id);
+                const bn = bNodes ? bNodes[id] : null;
+                if (a && b) {
+                    let pickB;
+                    if (app.store.cardSig(a.n) === app.store.cardSig(b.n)) pickB = false;
+                    else if (bn && this.cardHash(b.n) === bn.h) pickB = false;
+                    else if (bn && this.cardHash(a.n) === bn.h) pickB = true;
+                    else pickB = (Number(b.n.updatedAt) || 0) > (Number(a.n.updatedAt) || 0);
+                    if (pickB) report.nodes++;
+                    const src = pickB ? b : a;
+                    placeNode(src.tabId, deepClone(src.n));
+                } else {
+                    const mine = a || b;
+                    let deleted;
+                    if (bn) deleted = this.cardHash(mine.n) === bn.h;
+                    else { const t = a ? tB.nodes[id] : tA.nodes[id]; deleted = !!(t && t >= (Number(mine.n.updatedAt) || 0)); }
+                    if (!deleted) placeNode(mine.tabId, deepClone(mine.n));
+                    if ((a && deleted) || (b && !a && !deleted)) report.nodes++;
+                }
+            });
+
+            // --- 分頁：兩邊都有的保留；只在一邊的，若另一邊刪掉了且裡面已經沒有卡片就移除 ---
+            const aMiscNewer = (A.meta.miscUpdatedAt || 0) >= (B.meta.miscUpdatedAt || 0);
+            const tabs = [];
+            allTabOrder.forEach(tid => {
+                const ta = A.tabs.find(t => t.id === tid), tb = B.tabs.find(t => t.id === tid);
+                const hasContent = (placed.get(tid) || []).length || (nodesPlaced.get(tid) || []).length;
+                if (ta && tb) {
+                    const r = this.pick(ta.name, tb.name, bTabs ? bTabs[tid] : undefined, aMiscNewer);
+                    if (r.value !== ta.name) report.misc.push(`分頁名稱：${r.value}`);
+                    tabs.push({ id: tid, name: r.value });
+                    return;
+                }
+                const t = ta || tb;
+                let deleted;
+                if (bTabs) deleted = tid in bTabs;
+                else deleted = !!(ta ? tB.tabs[tid] : tA.tabs[tid]);
+                if (tid === 'main' || hasContent || !deleted) {
+                    tabs.push({ ...t });
+                    if (tb && !ta) report.misc.push(`新分頁：${t.name}`);
+                } else if (ta) report.misc.push(`${labelB}刪除的分頁：${t.name}`);
+            });
+            const tabIds = new Set(tabs.map(t => t.id));
+            const workspaces = {}, nodesOut = {};
+            tabs.forEach(t => { workspaces[t.id] = []; nodesOut[t.id] = []; });
+            placed.forEach((list, tid) => { (workspaces[tabIds.has(tid) ? tid : 'main']).push(...list); });
+            nodesPlaced.forEach((list, tid) => { (nodesOut[tabIds.has(tid) ? tid : 'main']).push(...list); });
+
+            // --- 筆記本／詰棋／死線：逐欄位比對，文字衝突時兩邊都留 ---
+            const ma = this.miscFields(A), mb = this.miscFields(B);
+            const miscLabels = { template: '筆記本模式', free: '全域筆記', q1: '四象限：重要緊急', q2: '四象限：重要不急', q3: '四象限：緊急不重', q4: '四象限：不重不急', stones: '詰棋盤', deadlineTask: '死線倒數名稱', deadlineDate: '死線倒數日期' };
+            const mm = {};
+            Object.keys(ma).forEach(k => {
+                const r = this.pick(ma[k], mb[k], bMisc ? bMisc[k] : undefined, aMiscNewer);
+                let value = r.value;
+                if (r.conflict && ['free', 'q1', 'q2', 'q3', 'q4'].includes(k)) {
+                    const loser = String(r.loser || '').trim(), winner = String(value || '').trim();
+                    if (loser && !winner.includes(loser)) value = `${winner ? winner + '\n\n' : ''}—— 合併時保留的另一版本 ——\n${loser}`;
+                }
+                if (JSON.stringify(value) !== JSON.stringify(ma[k])) report.misc.push(miscLabels[k]);
+                mm[k] = value;
+            });
+
+            const tomb = { cards: {}, tabs: {}, nodes: {} };
+            ['cards', 'tabs', 'nodes'].forEach(k => {
+                [tA[k], tB[k]].forEach(src => Object.entries(src || {}).forEach(([id, ts]) => { tomb[k][id] = Math.max(tomb[k][id] || 0, ts); }));
+            });
+            Object.values(workspaces).flat().forEach(c => { delete tomb.cards[c.id]; });
+            Object.values(nodesOut).flat().forEach(n => { delete tomb.nodes[n.id]; });
+            tabs.forEach(t => { delete tomb.tabs[t.id]; });
+
+            const doc = {
+                tabs, workspaces, nodes: nodesOut,
+                globalNotebook: { template: mm.template === 'matrix' ? 'matrix' : 'free', free: mm.free ?? '', matrix: { q1: mm.q1 ?? '', q2: mm.q2 ?? '', q3: mm.q3 ?? '', q4: mm.q4 ?? '' } },
+                tsumego: { stones: mm.stones || [] },
+                sandbox: { deadlineTask: mm.deadlineTask ?? '', deadlineDate: mm.deadlineDate ?? '' },
+                meta: { ...A.meta, tombstones: tomb, miscUpdatedAt: Math.max(A.meta.miscUpdatedAt || 0, B.meta.miscUpdatedAt || 0), updatedAt: Math.max(A.meta.updatedAt || 0, B.meta.updatedAt || 0) }
+            };
+            return { doc, report };
+        },
+
+        reportHtml(r, labelA = '本機', labelB = '雲端') {
+            const esc = s => app.entries.escapeHtml(s);
+            const block = (icon, text, list) => list.length
+                ? `<div class="diff-block"><div class="diff-head">${icon} ${text} <b>${list.length}</b></div><div class="diff-list">${list.slice(0, 10).map(t => `<span>${esc(t)}</span>`).join('')}${list.length > 10 ? `<span class="diff-more">…另有 ${list.length - 10} 項</span>` : ''}</div></div>`
+                : '';
+            const html = [
+                block('☁️', `${labelB}新增的卡片（會加進來）`, r.onlyB),
+                block('🔄', `${labelB}改過、${labelA}沒動的卡片（會更新成${labelB}版本）`, r.fromB),
+                block('✏️', `兩邊改了不同的地方（自動合在一起）`, r.changed),
+                block('⚠️', `同一欄位兩邊不一樣（保留較新的；文字類的另一版本會附在後面，其他欄位請自己確認）`, r.conflicts),
+                block('🗑️', `${labelB}已刪除（合併後移除）`, r.deletedByB),
+                block('🖥️', `只在${labelA}的卡片（會保留）`, r.onlyA),
+                block('🗑️', `${labelA}已刪除（合併後不會再出現）`, r.deletedByA),
+                block('🧷', `一邊刪除、另一邊卻修改過（保留下來，請自己判斷）`, r.keptEdited),
+                block('📝', `其他資料有變動`, r.misc),
+                r.nodes ? `<div class="diff-block"><div class="diff-head">💡 發想棋盤有 <b>${r.nodes}</b> 個節點來自${esc(labelB)}或被${esc(labelB)}刪除</div></div>` : ''
+            ].join('');
+            return html || `<p>內容一致。</p>`;
+        }
+    },
+
+    // ==========================================
+    // ☁️ 雲端（手動存／載，但有防呆）
+    // ==========================================
+    cloud: {
+        remoteInfo: null,
+        busy: false,
+
+        docRef() { return db.collection('Whiteboard_Data').doc(app.currentUser.uid); },
+
+        // 雲端版本 = 伺服器寫入時間。舊版白板用 merge 寫入時也會更新它，所以一定看得到。
+        versionOf(data) {
+            if (!data) return 0;
+            if (data.updatedAt?.toMillis) return data.updatedAt.toMillis();
+            return Number(data.clientUpdatedAt) || 0;
+        },
+
+        timeOf(data) {
+            const ms = this.versionOf(data);
+            return ms ? app.ui.fmtTime(ms) : '未知時間';
+        },
+
+        toLocalShape(data) {
+            return {
+                tabs: data.tabs, workspaces: data.workspaces, nodes: data.nodes,
+                globalNotebook: data.globalNotebook, tsumego: data.tsumego || { stones: [] },
+                sandbox: data.sandbox || {}, meta: data.meta || {}
+            };
+        },
+
+        hasUnsynced() {
+            if (!app.currentUser) return false;
+            const i = app.store.syncInfo();
+            return i.rev !== i.syncedRev || app.store.pending;
+        },
+
+        deviceLabel() {
+            const ua = navigator.userAgent || '';
+            const os = /iPhone|iPad/.test(ua) ? 'iOS' : (/Android/.test(ua) ? 'Android' : (/Mac/.test(ua) ? 'Mac' : (/Windows/.test(ua) ? 'Windows' : '其他')));
+            const br = /Edg\//.test(ua) ? 'Edge' : (/Chrome\//.test(ua) ? 'Chrome' : (/Safari\//.test(ua) ? 'Safari' : (/Firefox\//.test(ua) ? 'Firefox' : '瀏覽器')));
+            return `${os} · ${br}`;
+        },
+
+        async fetch() {
+            const doc = await this.docRef().get();
+            return doc.exists ? doc.data() : null;
+        },
+
+        setBusy(which, busy) {
+            this.busy = busy;
+            const btn = document.querySelector(which === 'save' ? '.btn-cloud-save' : '.btn-cloud-load');
+            if (!btn) return;
+            if (busy) { btn.dataset.label = btn.innerHTML; btn.innerHTML = which === 'save' ? '上傳中…' : '下載中…'; btn.disabled = true; }
+            else { if (btn.dataset.label) btn.innerHTML = btn.dataset.label; btn.disabled = false; }
+        },
+
+        errorDialog(title, err) {
+            console.error(err);
+            return app.ui.dialog({ title, html: `<p>${app.entries.escapeHtml(err?.message || String(err))}</p><p>本機資料沒有受影響。</p>`, buttons: [{ label: '知道了', value: true, primary: true }] });
+        },
+
+        async save() {
+            if (this.busy) return;
+            this.setBusy('save', true);
+            try {
+                if (!app.store.flush(true)) { await app.ui.dialog({ title: '本機儲存失敗，先不上傳', html: '<p>本機目前無法寫入（可能是空間已滿）。請先到「🗂 資料」匯出完整備份。</p>' }); return; }
+                let asked = false;
+                for (let attempt = 0; attempt < 3; attempt++) {
+                    const remote = await this.fetch();
+                    const rv = this.versionOf(remote);
+                    const info = app.store.syncInfo();
+                    if (remote && rv !== info.cloudVersion) {
+                        // 雲端在這台裝置上次同步之後被改過：一定先合併，上傳的是合併結果。
+                        const remoteDoc = this.toLocalShape(remote);
+                        const base = app.sync.loadBase();
+                        let { doc: merged, report } = app.sync.mergeDocs(app.store.serialize(), remoteDoc, '雲端', base);
+                        let choice = 'merge';
+                        const needsAsk = !app.sync.sameContent(merged, app.store.serialize()) || report.conflicts.length;
+                        if (needsAsk && !asked) {
+                            asked = true;
+                            choice = await app.ui.dialog({
+                                title: base ? '雲端有其他裝置的新內容' : '第一次同步：本機和雲端有差異',
+                                html: `<p>雲端版本：<b>${this.timeOf(remote)}</b>${remote.savedFrom ? `（${app.entries.escapeHtml(remote.savedFrom)}）` : ''}。直接上傳會蓋掉這些內容，建議先合併：</p>${app.sync.reportHtml(report, '本機', '雲端')}`,
+                                wide: true,
+                                buttons: [
+                                    { label: '取消', value: null },
+                                    { label: '用本機覆蓋雲端', value: 'overwrite', danger: true },
+                                    { label: '合併後上傳（建議）', value: 'merge', primary: true }
+                                ]
+                            });
+                            if (!choice) return;
+                            if (choice === 'overwrite') asked = false; // 若要重試，覆蓋前會再問一次
+                        }
+                        if (choice === 'merge' && needsAsk) {
+                            // 對話框開著的期間可能又有修改（計時停止、另一分頁），用「現在」的資料重新合併。
+                            app.store.flush(true);
+                            ({ doc: merged } = app.sync.mergeDocs(app.store.serialize(), remoteDoc, '雲端', base));
+                            await app.backup.save('合併前的本機版本', app.store.serialize());
+                            if (!app.store.applyAndSave(merged, {})) throw new Error('合併結果無法寫入本機');
+                            app.rerender();
+                        }
+                    }
+                    app.store.flush(true);
+                    const revAtUpload = app.store.syncInfo().rev;
+                    const doc = app.store.serialize();
+                    const result = await this.upload(doc, rv, remote);
+                    if (result === 'retry') continue;
+                    if (!result) return;
+                    if (result.foreign) {
+                        // 上傳成功，但緊接著有別台裝置寫入：不把雲端當成和本機一致，下次存／載會先比對。
+                        app.store.setSyncInfo({ cloudSavedAt: Date.now() });
+                        app.ui.toast('已上傳，但雲端剛好也被另一台裝置更新；之後存／載時會先比對合併。', 'warn', 6000);
+                        return;
+                    }
+                    app.store.setSyncInfo({ syncedRev: revAtUpload, cloudVersion: result.version, cloudSavedAt: Date.now() });
+                    app.sync.saveBase(doc);
+                    this.remoteInfo = { version: result.version, at: result.version, from: this.deviceLabel() };
+                    app.ui.clearBanner('cloud');
+                    app.ui.toast(`☁️ 已上傳到雲端（${Math.round(result.size / 1024)} KB）`);
+                    if (result.size > CLOUD_DOC_SOFT_LIMIT) {
+                        app.ui.banner('warn', `雲端資料已用掉約 ${Math.round(result.size / CLOUD_DOC_HARD_LIMIT * 100)}%（${Math.round(result.size / 1024)} KB / 約 1 MB）。可到「🗂 資料」看看哪些舊資料可以整理。`, [], 'size');
+                    }
+                    return;
+                }
+                app.ui.toast('雲端剛好也在被其他裝置更新，這次沒有上傳。請稍後再按一次。', 'warn', 6000);
+            } catch (err) {
+                this.errorDialog('上傳失敗', err);
+            } finally {
+                this.setBusy('save', false);
+                app.ui.renderSyncStatus();
+            }
+        },
+
+        // 回傳 { version, size }；雲端在這段期間又變了就回傳 'retry'；太大或失敗回傳 null。
+        async upload(doc, expectedVersion, previousRemote) {
+            const writeId = app.makeId('write');
+            const body = JSON.parse(JSON.stringify({ ...doc, schema: SCHEMA_VERSION, appVersion: APP_VERSION, clientUpdatedAt: Date.now(), savedFrom: this.deviceLabel(), writeId }));
+            const size = app.store.sizeOf(body);
+            if (size > CLOUD_DOC_HARD_LIMIT) {
+                await app.ui.dialog({
+                    title: '資料太大，這次沒有上傳',
+                    html: `<p>目前資料約 <b>${Math.round(size / 1024)} KB</b>，超過雲端單一文件的上限（約 1 MB）。本機資料完整，沒有遺失。</p><p>請先到「🗂 資料」匯出完整備份檔，再整理不需要的舊卡片或工作紀錄。</p>`,
+                    buttons: [{ label: '打開「資料」', value: true, primary: true }]
+                });
+                app.dataCenter.open();
+                return null;
+            }
+            // 寫入前再確認一次雲端沒有在這段時間被別台裝置改掉。
+            const latest = await this.fetch();
+            if (this.versionOf(latest) !== expectedVersion) return 'retry';
+            if (latest || previousRemote) await app.backup.save('上傳前的雲端版本', this.toLocalShape(latest || previousRemote));
+            // 不用 merge:true —— 這樣在本機刪掉的分頁／卡片，雲端才會真的跟著消失。
+            await this.docRef().set({ ...body, updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
+            const after = await this.fetch();
+            // 讀回來的不是自己剛寫的（別台裝置剛好也寫入）：不記這個版本，下次存雲端會強制先合併。
+            if (after?.writeId !== writeId) return { version: expectedVersion, size, foreign: true };
+            return { version: this.versionOf(after), size };
+        },
+
+        async load() {
+            if (this.busy) return;
+            this.setBusy('load', true);
+            try {
+                app.store.flush(true);
+                const remote = await this.fetch();
+                if (!remote) { app.ui.toast('雲端目前沒有備份資料'); return; }
+                const remoteDoc = this.toLocalShape(remote);
+                const rv = this.versionOf(remote);
+                const info = app.store.syncInfo();
+                const base = app.sync.loadBase();
+                const unsynced = this.hasUnsynced();
+
+                if (!unsynced && base && rv === info.cloudVersion) { app.ui.toast('本機已經是最新的雲端版本'); app.ui.clearBanner('cloud'); return; }
+                await app.backup.save('載入雲端前的本機版本', app.store.serialize());
+
+                if (!unsynced && base) {
+                    // 這台裝置上次同步後沒有改過任何東西 → 直接用雲端版本。
+                    if (app.store.applyAndSave(remoteDoc, { cloudVersion: rv, synced: true })) app.sync.saveBase(remoteDoc);
+                    app.rerender();
+                    app.ui.clearBanner('cloud');
+                    app.ui.toast(`📥 已載入雲端版本（${this.timeOf(remote)}）`);
+                    return;
+                }
+
+                // 這台裝置有沒上傳的修改，或是第一次同步（沒有比對基準）：一律先比對。
+                let { doc: merged, report } = app.sync.mergeDocs(app.store.serialize(), remoteDoc, '雲端', base);
+                if (app.sync.sameContent(merged, remoteDoc) && !report.conflicts.length) {
+                    if (app.store.applyAndSave(remoteDoc, { cloudVersion: rv, synced: true })) app.sync.saveBase(remoteDoc);
+                    app.rerender();
+                    app.ui.clearBanner('cloud');
+                    app.ui.toast(`📥 已載入雲端版本（${this.timeOf(remote)}）`);
+                    return;
+                }
+                if (app.sync.sameContent(merged, app.store.serialize()) && !report.conflicts.length) {
+                    app.store.setSyncInfo({ cloudVersion: rv });
+                    app.sync.saveBase(remoteDoc);
+                    app.ui.clearBanner('cloud');
+                    app.ui.toast('雲端沒有新的內容；這台裝置的修改還沒上傳，記得按「☁️ 存雲端」。', 'info', 5000);
+                    return;
+                }
+                const choice = await app.ui.dialog({
+                    title: base ? '這台裝置有還沒上傳的修改' : '第一次同步：本機和雲端有差異',
+                    html: `<p>雲端版本：<b>${this.timeOf(remote)}</b>${remote.savedFrom ? `（${app.entries.escapeHtml(remote.savedFrom)}）` : ''}。直接載入會蓋掉本機的內容，建議合併（兩邊都保留）：</p>${app.sync.reportHtml(report, '本機', '雲端')}`,
+                    wide: true,
+                    buttons: [
+                        { label: '取消', value: null },
+                        { label: '用雲端覆蓋本機', value: 'overwrite', danger: true },
+                        { label: '合併（建議）', value: 'merge', primary: true }
+                    ]
+                });
+                if (!choice) return;
+                if (choice === 'merge') {
+                    app.store.flush(true);
+                    ({ doc: merged } = app.sync.mergeDocs(app.store.serialize(), remoteDoc, '雲端', base));
+                    if (app.store.applyAndSave(merged, { cloudVersion: rv })) app.sync.saveBase(remoteDoc);
+                    app.ui.toast('已合併。合併結果還沒上傳，確認沒問題後按「☁️ 存雲端」。', 'warn', 6000);
+                } else {
+                    if (app.store.applyAndSave(remoteDoc, { cloudVersion: rv, synced: true })) app.sync.saveBase(remoteDoc);
+                    app.ui.toast('📥 已用雲端版本覆蓋本機（覆蓋前的本機版本在「🗂 資料 → 版本備份」）', 'info', 6000);
+                }
+                app.ui.clearBanner('cloud');
+                app.rerender();
+            } catch (err) {
+                this.errorDialog('下載失敗', err);
+            } finally {
+                this.setBusy('load', false);
+                app.ui.renderSyncStatus();
+            }
+        },
+
+        async checkOnStartup(hadLocal) {
+            const revAtStart = app.store.syncInfo().rev;
+            try {
+                const remote = await this.fetch();
+                if (!remote) { this.remoteInfo = null; app.ui.renderSyncStatus(); return; }
+                const version = this.versionOf(remote);
+                this.remoteInfo = { version, at: version, from: remote.savedFrom || '' };
+                const info = app.store.syncInfo();
+                const untouched = info.rev === revAtStart && !app.store.pending;
+                if (!hadLocal && untouched && app.sync.sameContent(app.store.serialize(), {})) {
+                    if (app.store.applyAndSave(this.toLocalShape(remote), { cloudVersion: version, synced: true })) app.sync.saveBase(this.toLocalShape(remote));
+                    app.rerender();
+                    app.ui.toast(`這台裝置沒有本機資料，已自動載入雲端版本（${this.timeOf(remote)}）`, 'info', 5000);
+                } else if (version && version !== info.cloudVersion) {
+                    const msg = info.cloudVersion
+                        ? `雲端有其他裝置上傳的較新版本（${this.timeOf(remote)}${remote.savedFrom ? '，' + remote.savedFrom : ''}）。`
+                        : `新版同步第一次使用：雲端備份是 ${this.timeOf(remote)}。建議按「比對並載入」，系統會先列出差異再合併，不會直接覆蓋。`;
+                    app.ui.banner('info', msg, [{ label: '比對並載入', action: () => this.load() }], 'cloud');
+                }
+            } catch (err) {
+                console.warn('無法檢查雲端版本', err);
+            }
+            app.ui.renderSyncStatus();
+        },
+
+        lastQuietCheck: 0,
+        async quietCheck() {
+            if (!app.currentUser || this.busy || Date.now() - this.lastQuietCheck < 10 * 60 * 1000) return;
+            this.lastQuietCheck = Date.now();
+            try {
+                const remote = await this.fetch();
+                if (!remote) return;
+                const version = this.versionOf(remote);
+                this.remoteInfo = { version, at: version, from: remote.savedFrom || '' };
+                const info = app.store.syncInfo();
+                if (version && info.cloudVersion && version !== info.cloudVersion) {
+                    app.ui.banner('info', `雲端有其他裝置上傳的較新版本（${this.timeOf(remote)}）。`, [{ label: '比對並載入', action: () => this.load() }], 'cloud');
+                }
+                app.ui.renderSyncStatus();
+            } catch (err) { console.warn(err); }
+        }
+    },
+
+    // ==========================================
+    // 🗂 本機版本備份（IndexedDB，只在這台裝置）
+    // ==========================================
+    backup: {
+        dbPromise: null,
+        MAX_SNAPSHOTS: 30,
+        MAX_TRASH: 300,
+
+        open() {
+            if (this.dbPromise) return this.dbPromise;
+            this.dbPromise = new Promise((resolve, reject) => {
+                if (!('indexedDB' in window)) return reject(new Error('此瀏覽器不支援 IndexedDB'));
+                const req = indexedDB.open('whiteboard_backups', 1);
+                req.onupgradeneeded = () => {
+                    const d = req.result;
+                    if (!d.objectStoreNames.contains('snapshots')) d.createObjectStore('snapshots', { keyPath: 'id', autoIncrement: true }).createIndex('uid', 'uid');
+                    if (!d.objectStoreNames.contains('trash')) d.createObjectStore('trash', { keyPath: 'id', autoIncrement: true }).createIndex('uid', 'uid');
+                };
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error);
+            });
+            this.dbPromise.catch(() => { this.dbPromise = null; });
+            return this.dbPromise;
+        },
+
+        async run(storeName, mode, fn) {
+            const d = await this.open();
+            return new Promise((resolve, reject) => {
+                const tx = d.transaction(storeName, mode);
+                const store = tx.objectStore(storeName);
+                let result;
+                Promise.resolve(fn(store)).then(r => { result = r; });
+                tx.oncomplete = () => resolve(result);
+                tx.onerror = () => reject(tx.error);
+                tx.onabort = () => reject(tx.error);
+            });
+        },
+
+        reqP(req) { return new Promise((res, rej) => { req.onsuccess = () => res(req.result); req.onerror = () => rej(req.error); }); },
+
+        async list(storeName = 'snapshots') {
+            try {
+                const uid = app.currentUser?.uid;
+                const d = await this.open();
+                const rows = await this.reqP(d.transaction(storeName).objectStore(storeName).index('uid').getAll(uid));
+                return rows.sort((a, b) => b.at - a.at);
+            } catch (err) { console.warn(err); return []; }
+        },
+
+        async get(storeName, id) {
+            try { const d = await this.open(); return await this.reqP(d.transaction(storeName).objectStore(storeName).get(id)); }
+            catch { return null; }
+        },
+
+        async remove(storeName, id) {
+            try { await this.run(storeName, 'readwrite', s => { s.delete(id); }); } catch (err) { console.warn(err); }
+        },
+
+        async prune(storeName, max, label = null) {
+            const all = await this.list(storeName);
+            // 每日備份與其他備份分開計算，存雲端很頻繁時也不會把每日備份擠掉。
+            const rows = label === null ? all : all.filter(r => (r.label === '每日自動備份') === (label === '每日自動備份'));
+            const extra = rows.slice(max);
+            if (extra.length) await this.run(storeName, 'readwrite', s => { extra.forEach(r => s.delete(r.id)); });
+        },
+
+        async save(label, data) {
+            try {
+                if (!app.currentUser) return;
+                const json = typeof data === 'string' ? data : JSON.stringify(data);
+                await this.run('snapshots', 'readwrite', s => { s.add({ uid: app.currentUser.uid, label, at: Date.now(), size: json.length, json }); });
+                await this.prune('snapshots', label === '每日自動備份' ? 14 : this.MAX_SNAPSHOTS, label);
+                return true;
+            } catch (err) { console.warn('版本備份失敗（不影響主要資料）', err); return false; }
+        },
+
+        // 放進「最近刪除」；存不進去時先問，不默默刪掉。回傳是否可以繼續刪除。
+        async trashOrConfirm(items, reason = '刪除') {
+            if (await this.trashCards(items, reason)) return true;
+            return await app.ui.confirm('無法保存到「最近刪除」',
+                '<p>這個瀏覽器目前無法保存刪除紀錄（可能是無痕模式或空間不足），刪除後<b>無法從「最近刪除」救回</b>。</p><p>仍要刪除嗎？（雲端上次的版本仍在，可以從雲端取回）</p>', '仍要刪除', true);
+        },
+
+        async trashCards(items, reason = '刪除') {
+            try {
+                if (!app.currentUser || !items.length) return true;
+                const at = Date.now();
+                await this.run('trash', 'readwrite', s => {
+                    items.forEach(({ card, tabId }) => s.add({ uid: app.currentUser.uid, at, reason, tabId, tabName: app.state.tabs.find(t => t.id === tabId)?.name || '', card: deepClone(card) }));
+                });
+                await this.prune('trash', this.MAX_TRASH);
+                return true;
+            } catch (err) { console.warn('最近刪除保存失敗', err); return false; }
+        },
+
+        async dailySnapshot() {
+            try {
+                const key = `whiteboard_lastdaily_${app.currentUser.uid}`;
+                const today = app.worktime.localDateString();
+                if (localStorage.getItem(key) === today) return;
+                await this.save('每日自動備份', app.store.serialize());
+                localStorage.setItem(key, today);
+            } catch (err) { console.warn(err); }
+        }
+    },
+
+    rerender() {
+        this.renderAll();
+        if (this.state.view === 'sandbox') { this.sandbox.refreshActiveNoteUI(); this.sandbox.renderTodo(); }
+        this.renderTsumegoStones();
+        this.sandbox.syncDeadlineInputs();
+        this.ui.renderSyncStatus();
+    },
+
+    // ==========================================
+    // 🪟 介面小工具：提示、對話框、同步狀態、避免打字中被重繪
+    // ==========================================
+    ui: {
+        pointerDown: false,
+        deferred: [],
+        idleRenderTimer: null,
+        saveState: 'saved',
+        saveError: null,
+
+        installGlobalHandlers() {
+            document.addEventListener('pointerdown', () => { this.pointerDown = true; }, true);
+            const release = () => {
+                if (!this.pointerDown) return;
+                this.pointerDown = false;
+                // 等這次點擊事件跑完再更新畫面，避免「點了沒反應」。
+                setTimeout(() => this.runDeferred(), 0);
+            };
+            document.addEventListener('pointerup', release, true);
+            document.addEventListener('pointercancel', release, true);
+            window.addEventListener('storage', e => app.store.onStorage(e));
+            window.addEventListener('beforeunload', () => { app.store.flush(); app.sandbox.persistTimer(); });
+            window.addEventListener('pagehide', () => { app.store.flush(); app.sandbox.persistTimer(); });
+            document.addEventListener('visibilitychange', () => {
+                if (document.visibilityState === 'hidden') { app.store.flush(); app.sandbox.persistTimer(); }
+                else if (app.currentUser) { app.sandbox.updateDisplay(); app.cloud.quietCheck(); }
+            });
+            window.addEventListener('resize', () => {
+                if (app.state.view === 'matrix') app.renderMatrix();
+                if (app.state.tsumego.isOpen) app.renderTsumegoStones();
+            });
+        },
+
+        // 在目前這次點擊／輸入事件結束後才執行，並盡量保住游標位置。
+        defer(fn) {
+            this.deferred.push(fn);
+            if (!this.pointerDown) setTimeout(() => this.runDeferred(), 0);
+        },
+        runDeferred() {
+            if (this.pointerDown) return;
+            const list = this.deferred.splice(0);
+            if (!list.length) return;
+            this.withFocus(() => list.forEach(fn => { try { fn(); } catch (err) { console.error(err); } }));
+        },
+
+        withFocus(fn) {
+            const el = document.activeElement;
+            const key = el?.dataset?.fk;
+            let selStart = null, selEnd = null;
+            try { selStart = el?.selectionStart; selEnd = el?.selectionEnd; } catch {}
+            const scrollY = window.scrollY;
+            fn();
+            if (key) {
+                const next = document.querySelector(`[data-fk="${CSS.escape(key)}"]`);
+                if (next && next !== el) {
+                    next.focus({ preventScroll: true });
+                    try { if (selStart !== null && selStart !== undefined) next.setSelectionRange(selStart, selEnd); } catch {}
+                }
+            }
+            if (Math.abs(window.scrollY - scrollY) > 2) window.scrollTo(0, scrollY);
+        },
+
+        isEditingInMain() {
+            const el = document.activeElement;
+            if (!el) return false;
+            const editable = el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && !['button', 'checkbox', 'radio', 'submit'].includes(el.type)) || el.isContentEditable;
+            return editable && !!el.closest('.main-area');
+        },
+
+        // 正在輸入時先不重排（例如改專案名稱後卡片要換群組），等離開輸入框再更新。
+        renderWhenIdle() {
+            clearTimeout(this.idleRenderTimer);
+            const attempt = (tries = 0) => {
+                if ((this.isEditingInMain() || this.pointerDown) && tries < 240) {
+                    this.idleRenderTimer = setTimeout(() => attempt(tries + 1), 500);
+                    return;
+                }
+                this.withFocus(() => app.renderAll());
+            };
+            this.idleRenderTimer = setTimeout(() => attempt(0), 50);
+        },
+
+        fmtTime(ms) {
+            if (!ms) return '';
+            const d = new Date(ms);
+            const now = new Date();
+            const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+            if (d.toDateString() === now.toDateString()) return `今天 ${hm}`;
+            return `${d.getFullYear() !== now.getFullYear() ? d.getFullYear() + '/' : ''}${d.getMonth() + 1}/${d.getDate()} ${hm}`;
+        },
+
+        setSaveState(state, err = null) {
+            this.saveState = state;
+            this.saveError = err;
+            this.renderSyncStatus();
+            if (state === 'error') {
+                const quota = err && (err.name === 'QuotaExceededError' || /quota/i.test(err.message || ''));
+                this.banner('error', quota
+                    ? '⚠️ 本機儲存空間已滿，最新修改「沒有」存進本機！請立刻按「☁️ 存雲端」或到「🗂 資料」匯出備份，再整理舊資料。'
+                    : `⚠️ 本機儲存失敗：${err?.message || err}。請先按「☁️ 存雲端」或匯出備份。`, [{ label: '打開資料管理', action: () => app.dataCenter.open() }], 'save-error');
+            } else if (state === 'saved') {
+                this.clearBanner('save-error');
+            }
+        },
+
+        renderSyncStatus() {
+            const el = document.getElementById('sync-status');
+            const saveBtn = document.querySelector('.btn-cloud-save');
+            if (!el || !app.currentUser) return;
+            const info = app.store.syncInfo();
+            const local = this.saveState === 'error' ? '<span class="sync-bad">⚠ 本機未存</span>'
+                : (this.saveState === 'saving' ? '<span>💾 儲存中…</span>' : `<span>💾 已存</span>`);
+            const unsynced = app.cloud.hasUnsynced();
+            const cloudAt = info.cloudVersion || app.cloud.remoteInfo?.at || 0;
+            const cloud = cloudAt ? `☁️ ${this.fmtTime(cloudAt)}` : '☁️ 尚未同步';
+            el.innerHTML = `<span class="sync-line">${local}<span class="sync-sep">·</span><span>${cloud}</span></span>${unsynced ? '<span class="sync-line sync-warn" title="這台裝置有修改還沒上傳到雲端">● 有修改未上傳</span>' : ''}`;
+            if (saveBtn) saveBtn.classList.toggle('has-unsynced', unsynced);
+        },
+
+        toast(message, type = 'info', duration = 3200) {
+            let root = document.getElementById('toast-root');
+            if (!root) { root = document.createElement('div'); root.id = 'toast-root'; document.body.appendChild(root); }
+            const el = document.createElement('div');
+            el.className = `toast toast-${type}`;
+            el.textContent = message;
+            root.appendChild(el);
+            setTimeout(() => { el.classList.add('hide'); setTimeout(() => el.remove(), 300); }, duration);
+        },
+
+        banner(type, message, actions = [], id = null) {
+            let root = document.getElementById('banner-root');
+            if (!root) { root = document.createElement('div'); root.id = 'banner-root'; document.body.appendChild(root); }
+            if (id) root.querySelector(`[data-banner-id="${id}"]`)?.remove();
+            const el = document.createElement('div');
+            el.className = `app-banner banner-${type}`;
+            if (id) el.dataset.bannerId = id;
+            const text = document.createElement('span');
+            text.className = 'banner-text';
+            text.textContent = message;
+            el.appendChild(text);
+            actions.forEach(a => {
+                const b = document.createElement('button');
+                b.className = 'banner-btn';
+                b.textContent = a.label;
+                b.onclick = () => { el.remove(); a.action(); };
+                el.appendChild(b);
+            });
+            const close = document.createElement('button');
+            close.className = 'banner-close';
+            close.textContent = '✕';
+            close.title = '關閉';
+            close.onclick = () => el.remove();
+            el.appendChild(close);
+            root.appendChild(el);
+        },
+
+        clearBanner(id) { document.querySelector(`#banner-root [data-banner-id="${id}"]`)?.remove(); },
+
+        // 取代 confirm()：可放差異清單與多個選項。回傳被點的 value。
+        dialog({ title, html, buttons = [{ label: '確定', value: true, primary: true }], wide = false }) {
+            return new Promise(resolve => {
+                const overlay = document.createElement('div');
+                overlay.className = 'app-dialog-overlay';
+                const box = document.createElement('div');
+                box.className = `app-dialog${wide ? ' wide' : ''}`;
+                box.innerHTML = `<div class="app-dialog-title"></div><div class="app-dialog-body">${html || ''}</div><div class="app-dialog-actions"></div>`;
+                box.querySelector('.app-dialog-title').textContent = title || '';
+                const actions = box.querySelector('.app-dialog-actions');
+                const done = value => { overlay.remove(); document.removeEventListener('keydown', onKey); resolve(value); };
+                buttons.forEach(b => {
+                    const btn = document.createElement('button');
+                    btn.className = `app-dialog-btn${b.primary ? ' primary' : ''}${b.danger ? ' danger' : ''}`;
+                    btn.textContent = b.label;
+                    btn.onclick = () => done(b.value);
+                    actions.appendChild(btn);
+                });
+                const cancelValue = buttons.find(b => b.value === null || b.value === false)?.value ?? null;
+                const onKey = e => { if (e.key === 'Escape') done(cancelValue); };
+                document.addEventListener('keydown', onKey);
+                overlay.addEventListener('click', e => { if (e.target === overlay) done(cancelValue); });
+                overlay.appendChild(box);
+                document.body.appendChild(overlay);
+                box.querySelector('.app-dialog-btn.primary')?.focus();
+            });
+        },
+
+        async confirm(title, html, okLabel = '確定', danger = false) {
+            return await this.dialog({ title, html, buttons: [{ label: '取消', value: false }, { label: okLabel, value: true, primary: !danger, danger }] });
+        }
+    },
+
+    // ==========================================
+    // 🗂 資料管理：大小、備份、還原、最近刪除、空白卡
+    // ==========================================
+    dataCenter: {
+        async open() {
+            app.store.flush();
+            const overlay = document.getElementById('modal-data');
+            overlay.style.display = 'flex';
+            await this.render();
+        },
+        close() { document.getElementById('modal-data').style.display = 'none'; },
+
+        blankCards() {
+            return app.worktime.allCards().filter(({ card }) => app.sync.isBlankCard(card));
+        },
+
+        async render() {
+            const esc = s => app.entries.escapeHtml(s);
+            const target = document.getElementById('data-render-target');
+            const doc = app.store.serialize();
+            const size = app.store.sizeOf(doc);
+            const pct = Math.min(100, Math.round(size / CLOUD_DOC_HARD_LIMIT * 100));
+            const info = app.store.syncInfo();
+            const cards = app.worktime.allCards();
+            const logs = cards.reduce((n, { card }) => n + (card.workLogs || []).length, 0);
+            const entries = cards.reduce((n, { card }) => n + (card.entries || []).length, 0);
+            const blanks = this.blankCards();
+            const [snaps, trash] = await Promise.all([app.backup.list('snapshots'), app.backup.list('trash')]);
+
+            const snapRows = snaps.length ? snaps.map(s => `<div class="data-row"><span class="data-row-main"><b>${esc(s.label)}</b><small>${esc(app.ui.fmtTime(s.at))} · ${Math.round(s.size / 1024)} KB</small></span><span class="data-row-actions"><button class="worklog-action-btn" onclick="app.dataCenter.downloadSnapshot(${s.id})">下載</button><button class="worklog-action-btn" onclick="app.dataCenter.restoreSnapshot(${s.id})">還原…</button></span></div>`).join('')
+                : '<div class="data-empty">還沒有版本備份。每天第一次開啟、以及每次雲端存／載前，都會自動留一份。</div>';
+            const trashRows = trash.length ? trash.slice(0, 60).map(t => `<div class="data-row"><span class="data-row-main"><b>${esc(String(t.card?.title || '').trim() || '（未命名卡片）')}</b><small>${esc(app.ui.fmtTime(t.at))} · ${esc(t.reason || '刪除')} · 原分頁：${esc(t.tabName || '')}${(t.card?.workLogs || []).length ? ` · 含 ${t.card.workLogs.length} 筆工時` : ''}</small></span><span class="data-row-actions"><button class="worklog-action-btn" onclick="app.dataCenter.restoreTrash(${t.id})">救回</button></span></div>`).join('')
+                : '<div class="data-empty">沒有最近刪除的卡片。</div>';
+            const blankRows = blanks.length ? blanks.map(({ card, tabName }) => {
+                const t = app.idTime(card.id);
+                return `<div class="data-row"><span class="data-row-main"><b>（空白卡片）</b><small>${esc(tabName)} · 建立於 ${t ? esc(app.ui.fmtTime(t)) : '未知'}</small></span><span class="data-row-actions"><button class="worklog-action-btn" onclick="app.dataCenter.jump('${card.id}')">看一下</button></span></div>`;
+            }).join('') : '<div class="data-empty">沒有空白卡片。</div>';
+
+            target.innerHTML = `
+                <section class="data-section">
+                    <h4>目前狀態</h4>
+                    <div class="data-stats">
+                        <span><b>${cards.length}</b> 張卡片</span><span><b>${logs}</b> 筆工時</span><span><b>${entries}</b> 筆工作紀錄</span>
+                    </div>
+                    <div class="data-meter"><span style="width:${pct}%" class="${pct > 75 ? 'warn' : ''}"></span></div>
+                    <div class="data-note">資料大小約 <b>${Math.round(size / 1024)} KB</b>，雲端單一文件上限約 1 MB（已用 ${pct}%）。</div>
+                    <div class="data-note">本機最後修改：${info.lastChangeAt ? esc(app.ui.fmtTime(info.lastChangeAt)) : '—'}　·　這台裝置上次上傳：${info.cloudSavedAt ? esc(app.ui.fmtTime(info.cloudSavedAt)) : '—'}　·　${app.cloud.hasUnsynced() ? '<b style="color:#c2410c">有修改未上傳</b>' : '與雲端一致'}</div>
+                </section>
+                <section class="data-section">
+                    <h4>完整備份檔</h4>
+                    <div class="data-note">備份檔是一個 .json，存在你自己的電腦。匯入時會先列出差異，可以選合併或取代。</div>
+                    <div class="data-actions">
+                        <button class="excel-copy-btn" onclick="app.dataCenter.exportJson()">⬇️ 匯出完整備份</button>
+                        <button class="excel-copy-btn" onclick="document.getElementById('data-import-input').click()">⬆️ 匯入備份檔…</button>
+                        <input type="file" id="data-import-input" accept=".json,application/json" style="display:none" onchange="app.dataCenter.importJson(this)">
+                    </div>
+                </section>
+                <section class="data-section">
+                    <h4>空白卡片 <span class="data-count">${blanks.length}</span></h4>
+                    <div class="data-note">沒有標題、內容、工時、工作紀錄的卡片。移除後會先放進「最近刪除」。</div>
+                    ${blankRows}
+                    ${blanks.length ? `<div class="data-actions"><button class="excel-copy-btn" onclick="app.dataCenter.removeBlanks()">🧹 移除這 ${blanks.length} 張空白卡</button></div>` : ''}
+                </section>
+                <section class="data-section">
+                    <h4>最近刪除 <span class="data-count">${trash.length}</span></h4>
+                    <div class="data-note">只存在這台裝置的瀏覽器裡。救回的卡片會放回原分頁（分頁不在了就放主工作區）。</div>
+                    <div class="data-scroll">${trashRows}</div>
+                </section>
+                <section class="data-section">
+                    <h4>版本備份（自動）<span class="data-count">${snaps.length}</span></h4>
+                    <div class="data-note">只存在這台裝置的瀏覽器裡，保留最近 ${app.backup.MAX_SNAPSHOTS} 份。</div>
+                    <div class="data-scroll">${snapRows}</div>
+                </section>
+                <section class="data-section danger-zone">
+                    <h4>危險區</h4>
+                    <div class="data-note">清除「這台裝置」的白板資料（雲端與版本備份不受影響）。</div>
+                    <div class="data-actions"><button class="excel-copy-btn danger" onclick="app.dataCenter.clearLocal()">🧹 清除本機資料</button></div>
+                </section>`;
+        },
+
+        download(filename, text) {
+            const blob = new Blob([text], { type: 'application/json;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = filename;
+            document.body.appendChild(a); a.click(); a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+        },
+
+        exportJson() {
+            app.store.flush();
+            const stamp = app.worktime.localDateString().replace(/-/g, '');
+            const data = { exportedAt: new Date().toISOString(), appVersion: APP_VERSION, ...app.store.serialize() };
+            this.download(`白板完整備份_${stamp}.json`, JSON.stringify(data, null, 1));
+        },
+
+        async importJson(input) {
+            const file = input.files?.[0];
+            input.value = '';
+            if (!file) return;
+            let data;
+            try { data = JSON.parse(await file.text()); }
+            catch { return app.ui.dialog({ title: '無法讀取', html: '<p>這個檔案不是有效的 JSON 備份檔。</p>' }); }
+            await this.mergeOrReplace(data, `備份檔「${file.name}」`);
+        },
+
+        async mergeOrReplace(data, label) {
+            app.store.flush(true);
+            let { doc: merged, report } = app.sync.mergeDocs(app.store.serialize(), data, label, null);
+            if (app.sync.sameContent(app.store.serialize(), data)) { app.ui.toast('內容與目前一致，不需要還原'); return; }
+            const choice = await app.ui.dialog({
+                title: `還原：${label}`,
+                html: `<p>和目前資料的差異：</p>${app.sync.reportHtml(report, '目前', label)}`,
+                buttons: [
+                    { label: '取消', value: null },
+                    { label: '完全取代目前資料', value: 'replace', danger: true },
+                    { label: '合併（建議）', value: 'merge', primary: true }
+                ]
+            });
+            if (!choice) return;
+            await app.backup.save('還原前的本機版本', app.store.serialize());
+            app.store.flush(true);
+            if (choice === 'merge') {
+                ({ doc: merged } = app.sync.mergeDocs(app.store.serialize(), data, label, null));
+                app.store.applyAndSave(merged, {});
+            } else {
+                // 完全取代時，原本的卡片要記成「刪除」，之後同步才不會把它們從雲端帶回來。
+                const replaced = app.migrate.normalize(data);
+                const now = Date.now();
+                const keep = new Set(Object.values(replaced.workspaces).flat().map(c => c.id));
+                app.worktime.allCards().forEach(({ card }) => { if (!keep.has(card.id)) replaced.meta.tombstones.cards[card.id] = now; });
+                replaced.meta.updatedAt = now;
+                app.store.applyAndSave(replaced, {});
+            }
+            app.rerender();
+            app.ui.toast('已還原。記得確認後按「☁️ 存雲端」。', 'info', 5000);
+            this.render();
+        },
+
+        async downloadSnapshot(id) {
+            const snap = await app.backup.get('snapshots', id);
+            if (!snap) return;
+            const d = new Date(snap.at);
+            this.download(`白板版本備份_${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}_${String(d.getHours()).padStart(2, '0')}${String(d.getMinutes()).padStart(2, '0')}.json`, snap.json);
+        },
+
+        async restoreSnapshot(id) {
+            const snap = await app.backup.get('snapshots', id);
+            if (!snap) return;
+            let data;
+            try { data = JSON.parse(snap.json); } catch { return app.ui.toast('這份備份無法解析，只能下載原始內容', 'warn'); }
+            await this.mergeOrReplace(data, `${snap.label}（${app.ui.fmtTime(snap.at)}）`);
+        },
+
+        async restoreTrash(id) {
+            const item = await app.backup.get('trash', id);
+            if (!item?.card) return;
+            const card = deepClone(item.card);
+            if (app.worktime.getCard(card.id)) card.id = app.makeId('card');
+            const tabId = app.state.workspaces[item.tabId] ? item.tabId : 'main';
+            app.state.workspaces[tabId].push(card);
+            delete app.state.meta.tombstones.cards[card.id];
+            await app.backup.remove('trash', id);
+            app.saveToLocal();
+            app.rerender();
+            app.ui.toast(`已救回「${String(card.title || '').trim() || '未命名卡片'}」`);
+            this.render();
+        },
+
+        async removeBlanks() {
+            const blanks = this.blankCards();
+            if (!blanks.length) return;
+            if (!await app.ui.confirm('移除空白卡片', `<p>移除 ${blanks.length} 張完全空白的卡片？之後仍可在「最近刪除」救回。</p>`, '移除')) return;
+            if (!await app.backup.trashOrConfirm(blanks.map(({ card, tabId }) => ({ card, tabId })), '清理空白卡')) return;
+            const ids = new Set(blanks.map(b => b.card.id));
+            Object.keys(app.state.workspaces).forEach(tabId => { app.state.workspaces[tabId] = app.state.workspaces[tabId].filter(c => !ids.has(c.id)); });
+            if (ids.has(app.state.sandbox.activeTaskId)) app.state.sandbox.activeTaskId = null;
+            app.saveToLocal();
+            app.rerender();
+            this.render();
+        },
+
+        jump(cardId) {
+            const row = app.worktime.allCards().find(r => r.card.id === cardId);
+            if (!row) return;
+            this.close();
+            app.actions.jumpToCard(cardId, row.tabId);
+        },
+
+        async clearLocal() {
+            const unsynced = app.cloud.hasUnsynced();
+            if (!await app.ui.confirm('清除本機資料',
+                `<p>會清除<b>這台裝置</b>上的白板資料。${unsynced ? '<br><b style="color:#b91c1c">⚠️ 目前有修改還沒上傳到雲端，清除後就只剩版本備份能找回。</b>' : ''}</p><p>清除前會先自動留一份版本備份。</p>`, '清除', true)) return;
+            await app.backup.save('清除本機前的版本', app.store.serialize());
+            app.sandbox.resetTimerState();
+            try { localStorage.removeItem(app.store.key()); } catch {}
+            app.sync.clearBase();
+            try { localStorage.removeItem(app.store.key('sync')); } catch {}
+            app.store.pending = false;
+            app.store.apply({});
+            app.rerender();
+            this.close();
+            app.ui.toast('🧹 本機資料已清除，可以按「📥 載雲端」取回雲端版本');
+        }
     },
 
     // ==========================================
@@ -169,7 +1664,7 @@ const app = {
                     mode: 'list',
                     selectedId: null,
                     editingId: null,
-                    expanded: source !== 'sandbox'
+                    expanded: app.panelOpen(source, cardId, 'notes')
                 };
             }
             return app.entryUi[key];
@@ -214,10 +1709,10 @@ const app = {
             const entries = this.getSortedEntries(card);
             const ui = this.getUi(card.id, source);
 
-            if (source === 'sandbox' && !ui.expanded) {
+            if (!ui.expanded) {
                 const latest = entries[0];
                 return `
-                    <div class="worklog-collapsed" onclick="app.entries.toggleExpanded('${card.id}', 'sandbox')">
+                    <div class="worklog-collapsed" onclick="app.entries.toggleExpanded('${card.id}', '${source}')">
                         <div class="worklog-collapsed-main">
                             <span style="font-size:0.84rem;font-weight:bold;color:#475569;">📚 工作紀錄</span>
                             <span class="worklog-count">${entries.length}</span>
@@ -234,7 +1729,7 @@ const app = {
                 return `
                     <div class="worklog-header">
                         <div class="worklog-heading">${ui.mode === 'new' ? '＋ 新增工作紀錄' : '✏️ 修改工作紀錄'}</div>
-                        ${source === 'sandbox' ? `<button class="worklog-action-btn" onclick="app.entries.toggleExpanded('${card.id}', 'sandbox')">收合</button>` : ''}
+                        <button class="worklog-action-btn" onclick="app.entries.toggleExpanded('${card.id}', '${source}')">收合</button>
                     </div>
                     <div class="worklog-form">
                         <input id="worklog-title-${source}-${card.id}" class="worklog-title-input" type="text" value="${this.escapeHtml(title)}" placeholder="隨意取一個之後找得到的標題">
@@ -259,7 +1754,7 @@ const app = {
                 return `
                     <div class="worklog-header">
                         <button class="worklog-back-btn" onclick="app.entries.backToList('${card.id}', '${source}')">← 紀錄列表</button>
-                        <div class="worklog-heading" style="justify-content:flex-end;">${source === 'sandbox' ? `<button class="worklog-action-btn" onclick="app.entries.toggleExpanded('${card.id}', 'sandbox')">收合</button>` : ''}</div>
+                        <div class="worklog-heading" style="justify-content:flex-end;"><button class="worklog-action-btn" onclick="app.entries.toggleExpanded('${card.id}', '${source}')">收合</button></div>
                     </div>
                     <div class="worklog-detail">
                         <div class="worklog-detail-title">${this.escapeHtml(entry.title || '未命名紀錄')}</div>
@@ -285,7 +1780,7 @@ const app = {
                     <div class="worklog-heading">📚 工作紀錄 <span class="worklog-count">${entries.length}</span></div>
                     <div style="display:flex;gap:6px;align-items:center;">
                         <button class="worklog-add-btn" onclick="app.entries.startNew('${card.id}', '${source}')">＋ 新增</button>
-                        ${source === 'sandbox' ? `<button class="worklog-action-btn" onclick="app.entries.toggleExpanded('${card.id}', 'sandbox')">收合</button>` : ''}
+                        <button class="worklog-action-btn" onclick="app.entries.toggleExpanded('${card.id}', '${source}')">收合</button>
                     </div>
                 </div>
                 <div class="worklog-list">${rows}</div>`;
@@ -317,6 +1812,7 @@ const app = {
         toggleExpanded(cardId, source = 'sandbox') {
             const ui = this.getUi(cardId, source);
             ui.expanded = !ui.expanded;
+            app.setPanelOpen(source, cardId, 'notes', ui.expanded);
             if (!ui.expanded) {
                 ui.mode = 'list';
                 ui.selectedId = null;
@@ -330,7 +1826,7 @@ const app = {
             ui.mode = 'new';
             ui.selectedId = null;
             ui.editingId = null;
-            if (source === 'sandbox') ui.expanded = true;
+            ui.expanded = true;
             this.refresh(cardId, source);
             setTimeout(() => document.getElementById(`worklog-title-${source}-${cardId}`)?.focus(), 0);
         },
@@ -340,7 +1836,7 @@ const app = {
             ui.mode = 'detail';
             ui.selectedId = entryId;
             ui.editingId = null;
-            if (source === 'sandbox') ui.expanded = true;
+            ui.expanded = true;
             this.refresh(cardId, source);
         },
 
@@ -479,7 +1975,7 @@ const app = {
         getGanttScale() {
             const raw = app.state.ganttFilters?.scale;
             if (raw === 'day' || raw === 'week' || raw === 'month') return raw;
-            return (typeof window !== 'undefined' && window.innerWidth <= 768) ? 'week' : 'day';
+            return 'week';
         },
 
         ganttScaleLabel(scale = this.getGanttScale()) {
@@ -726,7 +2222,7 @@ const app = {
         getPlanningUi(cardId, source = 'timeline') {
             const key = `${source}:${cardId}`;
             if (!this.planningUi) this.planningUi = {};
-            if (!this.planningUi[key]) this.planningUi[key] = { expanded: false };
+            if (!this.planningUi[key]) this.planningUi[key] = { expanded: app.panelOpen(source, cardId, 'plan') };
             return this.planningUi[key];
         },
 
@@ -735,22 +2231,49 @@ const app = {
             if (!card) return;
             const ui = this.getPlanningUi(cardId, source);
             ui.expanded = !ui.expanded;
-            if (source === 'sandbox') {
-                app.entries.renderSandbox(card);
-                return;
-            }
-            const panel = document.getElementById(`task-meta-${source}-${cardId}`);
-            if (panel) panel.outerHTML = this.renderPlanningPanel(card, source);
+            app.setPanelOpen(source, cardId, 'plan', ui.expanded);
+            this.refresh(cardId, source);
+        },
+
+        planSummary(card) {
+            const W = this;
+            const parts = [];
+            const deliverable = String(card.deliverable || '').trim();
+            if (deliverable) parts.push(`交付：${deliverable.length > 18 ? deliverable.slice(0, 18) + '…' : deliverable}`);
+            const s = W.plannedStart(card), e = W.plannedEnd(card);
+            if (!card.isMemo && (s || e)) parts.push(s && e && s !== e ? `${s.slice(5)}～${e.slice(5)}` : (e || s).slice(5));
+            const progress = W.progressValue(card, true);
+            if (progress !== '') parts.push(`${progress}%`);
+            const planned = W.plannedMinutes(card), actual = W.totalMinutes(card);
+            if (planned || actual) parts.push(`工時 ${W.formatMinutes(actual)}${planned ? ` / ${W.formatMinutes(planned)}` : ''}`);
+            if (String(card.waitingWho || '').trim()) parts.push(`⏳ 等 ${card.waitingWho.trim()}`);
+            const conflicts = card.isMemo ? 0 : W.scheduleConflicts(card).length;
+            if (conflicts) parts.push(`⚠ ${conflicts} 個排程重疊`);
+            if (!parts.length) parts.push(card.isMemo ? '自由卡（還沒補交付與日期）' : '尚未填寫');
+            return parts.join(' · ');
         },
 
         renderPlanningPanel(card, source = 'timeline') {
             const esc = app.entries.escapeHtml.bind(app.entries);
+            const id = card.id;
+            const fk = field => `data-fk="${esc(`${source}:${id}:${field}`)}"`;
+            const ui = this.getPlanningUi(id, source);
+            const summary = this.planSummary(card);
+
+            if (!ui.expanded) {
+                return `
+                    <div class="task-meta-panel task-meta-collapsed" id="task-meta-${source}-${id}">
+                        <button class="pm-collapse-toggle" type="button" onclick="app.worktime.togglePlanning('${id}','${source}')" aria-expanded="false">
+                            <span class="pm-collapse-title">📦 交付與進度</span>
+                            <span class="pm-collapse-summary">${esc(summary)}</span>
+                            <span class="pm-collapse-icon">展開 ▾</span>
+                        </button>
+                    </div>`;
+            }
+
             const category = esc(card.category || '');
             const planned = this.plannedParts(card);
             const progress = this.progressValue(card, true);
-            const deliverable = esc(card.deliverable || '');
-            const acceptance = esc(card.acceptance || '');
-            const nextStep = esc(card.nextStep || '');
             const planStart = this.plannedStart(card);
             const planEnd = this.plannedEnd(card);
             const actualStart = this.derivedActualStart(card);
@@ -763,61 +2286,86 @@ const app = {
             const isScheduled = !card.isMemo;
             const excludedFromGantt = !!card.excludeFromGantt;
             const conflicts = isScheduled ? this.scheduleConflicts(card) : [];
-            const ui = this.getPlanningUi(card.id, source);
-            const collapsedSummary = `${isScheduled ? '排程工項' : '自由卡'} · 預估 ${this.plannedMinutes(card) ? this.formatMinutes(this.plannedMinutes(card)) : '未填'} · 實際 ${this.formatMinutes(actualMinutes)}${excludedFromGantt ? ' · 甘特隱藏' : ''}${conflicts.length ? ` · ⚠ ${conflicts.length} 個排程重疊` : ''}`;
             const conflictRows = conflicts.slice(0, 8).map(item => {
                 const overlap = item.overlapStart === item.overlapEnd ? item.overlapStart : `${item.overlapStart} → ${item.overlapEnd}`;
                 const project = item.card.project?.trim() || '未分類專案';
-                const hiddenNote = item.hiddenFromGantt ? ' · 甘特隱藏' : '';
-                return `<button type="button" class="schedule-conflict-item" onclick="app.actions.jumpToCard('${item.card.id}','${item.tabId}')" title="跳到重疊工項"><span class="schedule-conflict-date">${esc(overlap)}</span><span class="schedule-conflict-title">${esc(item.card.title || '未命名')}</span><span class="schedule-conflict-meta">#${esc(project)} · ${esc(item.tabName)}${esc(hiddenNote)}</span></button>`;
+                return `<button type="button" class="schedule-conflict-item" onclick="app.actions.jumpToCard('${item.card.id}','${item.tabId}')" title="跳到重疊工項"><span class="schedule-conflict-date">${esc(overlap)}</span><span class="schedule-conflict-title">${esc(item.card.title || '未命名')}</span><span class="schedule-conflict-meta">#${esc(project)} · ${esc(item.tabName)}${item.hiddenFromGantt ? ' · 甘特隱藏' : ''}</span></button>`;
             }).join('');
-            const conflictPanel = isScheduled && planStart && planEnd
-                ? (conflicts.length
-                    ? `<div class="schedule-conflict-panel has-conflict"><div class="schedule-conflict-head">⚠️ 排程重疊：此工項與 ${conflicts.length} 個排程日期有交集</div><div class="schedule-conflict-list">${conflictRows}</div>${conflicts.length > 8 ? `<div class="schedule-conflict-more">另有 ${conflicts.length - 8} 筆，請至甘特圖查看。</div>` : ''}<div class="schedule-conflict-help">僅提醒，不會阻止儲存；即使另一工項設定「不顯示於甘特圖」，仍會列入重疊檢查。</div></div>`
-                    : `<div class="schedule-conflict-panel no-conflict">✓ 目前沒有其他正式排程與此日期區間重疊。</div>`)
+            const conflictPanel = isScheduled && planStart && planEnd && conflicts.length
+                ? `<div class="schedule-conflict-panel has-conflict"><div class="schedule-conflict-head">⚠️ 排程重疊：此工項與 ${conflicts.length} 個排程日期有交集（只是提醒）</div><div class="schedule-conflict-list">${conflictRows}</div></div>`
                 : '';
-
-            if (!ui.expanded) {
-                return `
-                    <div class="task-meta-panel task-meta-collapsed" id="task-meta-${source}-${card.id}">
-                        <button class="pm-collapse-toggle" type="button" onclick="app.worktime.togglePlanning('${card.id}','${source}')" aria-expanded="false">
-                            <span class="pm-collapse-title">📐 規劃 / ✅ 實際</span>
-                            <span class="pm-collapse-summary">${esc(collapsedSummary)}</span>
-                            <span class="pm-collapse-icon">展開 ▾</span>
-                        </button>
-                    </div>`;
-            }
+            const moreOpen = app.panelOpen(source, id, 'more');
+            const waitingSet = String(card.waitingWho || '').trim() || String(card.waitingWhat || '').trim();
 
             return `
-                <div class="task-meta-panel" id="task-meta-${source}-${card.id}">
-                    <button class="pm-collapse-toggle pm-collapse-toggle-open" type="button" onclick="app.worktime.togglePlanning('${card.id}','${source}')" aria-expanded="true">
-                        <span class="pm-collapse-title">📐 規劃 / ✅ 實際</span>
-                        <span class="pm-collapse-summary">${esc(collapsedSummary)}</span>
+                <div class="task-meta-panel" id="task-meta-${source}-${id}">
+                    <button class="pm-collapse-toggle pm-collapse-toggle-open" type="button" onclick="app.worktime.togglePlanning('${id}','${source}')" aria-expanded="true">
+                        <span class="pm-collapse-title">📦 交付與進度</span>
+                        <span class="pm-collapse-summary">${esc(summary)}</span>
                         <span class="pm-collapse-icon">收合 ▴</span>
                     </button>
                     <div class="pm-section pm-section-plan">
-                        <div class="pm-section-title">
-                            <span>📐 規劃</span>
-                            <span class="pm-summary">預估 ${this.plannedMinutes(card) ? this.formatMinutes(this.plannedMinutes(card)) : '未填'} · ${planStart || '未排'}${planEnd && planEnd !== planStart ? ` → ${planEnd}` : ''}</span>
+                        <div class="pm-section-body">
+                            <div class="task-meta-grid" style="grid-template-columns:1fr 1fr;">
+                                <label class="task-meta-field">
+                                    <span class="task-meta-label">要交出什麼 <span class="pm-hint">（交付物：做完別人拿得到的東西）</span></span>
+                                    <textarea class="task-meta-textarea" ${fk('deliverable')} placeholder="例如：月報圖表自動插入的可用版本" oninput="app.worktime.editText('${id}','deliverable',this.value,'${source}')">${esc(card.deliverable || '')}</textarea>
+                                </label>
+                                <label class="task-meta-field">
+                                    <span class="task-meta-label">怎樣算完成 <span class="pm-hint">（誰看了會說 OK）</span></span>
+                                    <textarea class="task-meta-textarea" ${fk('acceptance')} placeholder="例如：用 6 月正式資料跑過一次，主管確認格式" oninput="app.worktime.editText('${id}','acceptance',this.value,'${source}')">${esc(card.acceptance || '')}</textarea>
+                                </label>
+                            </div>
+                            <div class="task-meta-grid" style="margin-top:8px;grid-template-columns:1fr 1fr 110px;">
+                                <label class="task-meta-field">
+                                    <span class="task-meta-label">預計開始</span>
+                                    <input class="task-meta-input" ${fk('planStart')} type="date" value="${esc(planStart)}" onchange="app.worktime.updatePlannedDate('${id}','start',this.value,'${source}')">
+                                </label>
+                                <label class="task-meta-field">
+                                    <span class="task-meta-label">預計完成</span>
+                                    <input class="task-meta-input" ${fk('planEnd')} type="date" value="${esc(planEnd)}" onchange="app.worktime.updatePlannedDate('${id}','end',this.value,'${source}')">
+                                </label>
+                                <label class="task-meta-field">
+                                    <span class="task-meta-label">進度 %</span>
+                                    <input class="task-meta-input" ${fk('progress')} type="number" min="0" max="100" step="10" value="${progress}" placeholder="選填" onchange="app.worktime.updateCardField('${id}','progress',this.value,'${source}',true)">
+                                </label>
+                            </div>
+                            <label class="task-meta-field" style="margin-top:8px;">
+                                <span class="task-meta-label">➡ 下一步 <span class="pm-hint">（回到這張卡時，從哪裡接）</span></span>
+                                <input class="task-meta-input" ${fk('nextStep')} value="${esc(card.nextStep || '')}" placeholder="例如：拿正式資料跑一次，確認圖表定位規則" oninput="app.worktime.editText('${id}','nextStep',this.value,'${source}')">
+                            </label>
+                            <div class="waiting-box ${waitingSet ? 'active' : ''}">
+                                <div class="task-meta-label">⏳ 在等別人？ <span class="pm-hint">（寫清楚等誰、等什麼、哪天要追，週報會自動列出來）</span></div>
+                                <div class="task-meta-grid" style="grid-template-columns:1fr 1.6fr 140px auto;margin-top:4px;">
+                                    <input class="task-meta-input" ${fk('waitingWho')} value="${esc(card.waitingWho || '')}" placeholder="等誰" oninput="app.worktime.editText('${id}','waitingWho',this.value,'${source}')">
+                                    <input class="task-meta-input" ${fk('waitingWhat')} value="${esc(card.waitingWhat || '')}" placeholder="等什麼（例如：確認規格、提供資料）" oninput="app.worktime.editText('${id}','waitingWhat',this.value,'${source}')">
+                                    <input class="task-meta-input" ${fk('followUpDate')} type="date" value="${esc(card.followUpDate || '')}" title="哪天要追" onchange="app.worktime.updateCardField('${id}','followUpDate',this.value,'${source}')">
+                                    ${waitingSet ? `<button type="button" class="worklog-action-btn" onclick="app.worktime.clearWaiting('${id}','${source}')" title="已收到回覆，清除等待">✓ 收到了</button>` : '<span></span>'}
+                                </div>
+                            </div>
+                            ${conflictPanel}
                         </div>
+                    </div>
+                    <details class="pm-more" ${moreOpen ? 'open' : ''} ontoggle="app.setPanelOpen('${source}','${id}','more',this.open)">
+                        <summary>更多（選填）：卡片用途、分類、標記、預估工時、實際日期、甘特顯示</summary>
                         <div class="pm-section-body">
                             <div class="task-meta-grid">
                                 <label class="task-meta-field">
                                     <span class="task-meta-label">卡片用途</span>
-                                    <select class="task-meta-input" onchange="app.worktime.updateCardMode('${card.id}',this.value,'${source}')">
+                                    <select class="task-meta-input" ${fk('mode')} onchange="app.worktime.updateCardMode('${id}',this.value,'${source}')">
                                         <option value="free" ${!isScheduled ? 'selected' : ''}>自由卡（不進甘特／工項 Excel）</option>
                                         <option value="scheduled" ${isScheduled ? 'selected' : ''}>排程工項</option>
                                     </select>
                                 </label>
-                                <label class="task-meta-field" title="工作包（Work Package）就是同一專案中可一起管理的一組相關工作。這裡當作任務分類使用，可留白。">
-                                    <span class="task-meta-label">任務分類 <span style="font-weight:normal;color:#94a3b8;">（工作包，可留白）</span></span>
-                                    <input class="task-meta-input" value="${category}" placeholder="例如：圖表處理、目錄處理" onchange="app.worktime.updateCardField('${card.id}','category',this.value,'${source}')">
+                                <label class="task-meta-field">
+                                    <span class="task-meta-label">任務分類（可留白）</span>
+                                    <input class="task-meta-input" ${fk('category')} value="${category}" placeholder="例如：圖表處理" oninput="app.worktime.editText('${id}','category',this.value,'${source}')">
                                 </label>
                                 <label class="task-meta-field">
-                                    <span class="task-meta-label">任務標記</span>
+                                    <span class="task-meta-label">標記</span>
                                     <span class="color-select-wrap">
                                         <span class="color-chip" style="background:${colorCfg.hex}"></span>
-                                        <select class="task-meta-input" onchange="app.worktime.updateCardField('${card.id}','color',this.value,'${source}')">
+                                        <select class="task-meta-input" ${fk('color')} onchange="app.worktime.updateCardField('${id}','color',this.value,'${source}')">
                                             <option value="blue" ${color === 'blue' ? 'selected' : ''}>一般</option>
                                             <option value="green" ${color === 'green' ? 'selected' : ''}>穩定</option>
                                             <option value="red" ${color === 'red' ? 'selected' : ''}>關鍵／重要（人工）</option>
@@ -828,132 +2376,168 @@ const app = {
                             </div>
                             <div class="task-meta-grid" style="margin-top:8px;">
                                 <label class="task-meta-field">
-                                    <span class="task-meta-label">預計開始</span>
-                                    <input class="task-meta-input" type="date" value="${planStart}" onchange="app.worktime.updatePlannedDate('${card.id}','start',this.value,'${source}')">
-                                </label>
-                                <label class="task-meta-field">
-                                    <span class="task-meta-label">預計完成</span>
-                                    <input class="task-meta-input" type="date" value="${planEnd}" onchange="app.worktime.updatePlannedDate('${card.id}','end',this.value,'${source}')">
-                                </label>
-                                <label class="task-meta-field">
-                                    <span class="task-meta-label">預估工時</span>
+                                    <span class="task-meta-label">預估工時（選填）</span>
                                     <span class="duration-grid">
-                                        <input class="task-meta-input" type="number" min="0" step="1" value="${planned.hours || ''}" placeholder="小時" onchange="app.worktime.updatePlannedPart('${card.id}','hours',this.value,'${source}')">
-                                        <input class="task-meta-input" type="number" min="0" step="1" value="${planned.minutes || ''}" placeholder="分鐘" onchange="app.worktime.updatePlannedPart('${card.id}','minutes',this.value,'${source}')">
+                                        <input class="task-meta-input" ${fk('planH')} type="number" min="0" step="1" value="${planned.hours || ''}" placeholder="小時" onchange="app.worktime.updatePlannedPart('${id}','hours',this.value,'${source}')">
+                                        <input class="task-meta-input" ${fk('planM')} type="number" min="0" step="1" value="${planned.minutes || ''}" placeholder="分鐘" onchange="app.worktime.updatePlannedPart('${id}','minutes',this.value,'${source}')">
                                     </span>
                                 </label>
-                            </div>
-                            <div class="task-meta-grid" style="margin-top:8px;grid-template-columns:120px 1fr 1fr;">
-                                <label class="task-meta-field">
-                                    <span class="task-meta-label">進度（%）</span>
-                                    <input class="task-meta-input" type="number" min="0" max="100" step="5" value="${progress}" placeholder="0-100" onchange="app.worktime.updateCardField('${card.id}','progress',this.value,'${source}',true)">
-                                </label>
-                                <label class="task-meta-field">
-                                    <span class="task-meta-label">預期產出</span>
-                                    <textarea class="task-meta-textarea" placeholder="做完會得到什麼" onchange="app.worktime.updateCardField('${card.id}','deliverable',this.value,'${source}')">${deliverable}</textarea>
-                                </label>
-                                <label class="task-meta-field">
-                                    <span class="task-meta-label">驗收條件</span>
-                                    <textarea class="task-meta-textarea" placeholder="怎樣算完成" onchange="app.worktime.updateCardField('${card.id}','acceptance',this.value,'${source}')">${acceptance}</textarea>
-                                </label>
-                            </div>
-                            <label class="gantt-visibility-toggle">
-                                <input type="checkbox" ${excludedFromGantt ? 'checked' : ''} onchange="app.worktime.updateCardFlag('${card.id}','excludeFromGantt',this.checked,'${source}')">
-                                <span><strong>不要顯示於甘特圖</strong><small>卡片、工時與工項 Excel 仍保留；Excel 甘特頁不會畫出。正式排程仍會參與重疊提醒。</small></span>
-                            </label>
-                            ${conflictPanel}
-                        </div>
-                    </div>
-
-                    <div class="pm-section pm-section-actual">
-                        <div class="pm-section-title">
-                            <span>✅ 實際</span>
-                            <span class="pm-summary">已投入 ${this.formatMinutes(actualMinutes)} · <span class="${varianceClass}">${this.formatVariance(card)}</span></span>
-                        </div>
-                        <div class="pm-section-body">
-                            <div class="task-meta-grid">
                                 <label class="task-meta-field">
                                     <span class="task-meta-label">實際開始</span>
-                                    <input class="task-meta-input" type="date" value="${actualStart}" onchange="app.worktime.updateCardField('${card.id}','actualStart',this.value,'${source}')">
+                                    <input class="task-meta-input" ${fk('actualStart')} type="date" value="${esc(actualStart)}" onchange="app.worktime.updateCardField('${id}','actualStart',this.value,'${source}')">
                                 </label>
                                 <label class="task-meta-field">
                                     <span class="task-meta-label">實際完成</span>
-                                    <input class="task-meta-input" type="date" value="${actualEnd}" onchange="app.worktime.updateCardField('${card.id}','actualEnd',this.value,'${source}')">
+                                    <input class="task-meta-input" ${fk('actualEnd')} type="date" value="${esc(actualEnd)}" onchange="app.worktime.updateCardField('${id}','actualEnd',this.value,'${source}')">
                                 </label>
-                                <div class="actual-metric">
-                                    <span class="task-meta-label">實際工時（由紀錄加總）</span>
-                                    <strong>${this.formatMinutes(actualMinutes)}</strong>
-                                </div>
                             </div>
-                            <label class="task-meta-field" style="margin-top:8px;">
-                                <span class="task-meta-label">➡ 下一步 <span style="font-weight:normal;color:#94a3b8;">（回到這張卡時，從哪裡接）</span></span>
-                                <input class="task-meta-input" value="${nextStep}" placeholder="例如：拿正式資料跑一次，確認圖表定位規則" onchange="app.worktime.updateCardField('${card.id}','nextStep',this.value,'${source}')">
+                            <div class="data-note" style="margin-top:6px;">已投入 ${this.formatMinutes(actualMinutes)} · <span class="${varianceClass}">${this.formatVariance(card)}</span></div>
+                            <label class="gantt-visibility-toggle">
+                                <input type="checkbox" ${excludedFromGantt ? 'checked' : ''} onchange="app.worktime.updateCardFlag('${id}','excludeFromGantt',this.checked,'${source}')">
+                                <span><strong>不要顯示於甘特圖</strong><small>卡片、工時與 Excel 仍保留；正式排程仍會參與重疊提醒。</small></span>
                             </label>
                         </div>
-                    </div>
+                    </details>
                 </div>`;
         },
 
+        clearWaiting(cardId, source = 'timeline') {
+            const card = this.getCard(cardId);
+            if (!card) return;
+            const who = String(card.waitingWho || '').trim();
+            const what = String(card.waitingWhat || '').trim();
+            delete card.waitingWho; delete card.waitingWhat; delete card.followUpDate;
+            if (Number(card.status) === 3) card.status = 1;
+            // 留一筆紀錄，之後回顧知道等了什麼、何時收到。
+            if (who || what) {
+                if (!Array.isArray(card.entries)) card.entries = [];
+                const now = new Date().toISOString();
+                card.entries.push({ id: app.makeId('entry'), title: `收到回覆：${who || '對方'}`, content: what ? `原本在等：${what}` : '', createdAt: now, updatedAt: now });
+            }
+            app.saveToLocal();
+            app.refreshCard(cardId, source);
+            app.ui.toast('已清除等待，並在工作紀錄留下一筆');
+        },
+
+        logEditing: {},
+
         renderPanel(card, source = 'timeline') {
             const esc = app.entries.escapeHtml.bind(app.entries);
+            const id = card.id;
             const logs = [...this.getLogs(card)].sort((a,b) => {
                 const da = `${a.workDate || ''} ${a.createdAt || ''}`;
-                const db = `${b.workDate || ''} ${b.createdAt || ''}`;
-                return db.localeCompare(da);
+                const dbb = `${b.workDate || ''} ${b.createdAt || ''}`;
+                return dbb.localeCompare(da);
             });
             const total = this.totalMinutes(card);
             const planned = this.plannedMinutes(card);
             const plannedText = planned > 0 ? ` / 預估 ${this.formatMinutes(planned)}` : '';
+            const open = app.panelOpen(source, id, 'time');
+
+            if (!open) {
+                const last = logs[0];
+                return `
+                    <div class="worktime-panel worktime-collapsed" id="worktime-panel-${source}-${id}">
+                        <button type="button" class="worktime-collapsed-btn" onclick="app.worktime.toggleTimePanel('${id}','${source}')">
+                            <span style="font-weight:bold;color:#475569;">⏱️ 工時</span>
+                            <span class="worktime-total">實際 ${this.formatMinutes(total)}${plannedText}</span>
+                            <span class="worktime-last">${last ? `最近 ${esc(last.workDate || '')}` : '尚無紀錄'}</span>
+                            <span class="worktime-open">補登／明細 ▾</span>
+                        </button>
+                    </div>`;
+            }
+
             const defaultDate = this.localDateString();
-            const rows = logs.length ? logs.slice(0, 30).map(log => `
+            const editingId = this.logEditing[`${source}:${id}`];
+            const rows = logs.length ? logs.slice(0, 50).map(log => {
+                if (log.id === editingId) {
+                    const mins = Math.round(this.logMinutes(log));
+                    return `
+                    <div class="worktime-row worktime-row-edit">
+                        <input id="logedit-date-${source}-${id}" class="worktime-input" type="date" value="${esc(log.workDate || defaultDate)}">
+                        <span class="duration-grid">
+                            <input id="logedit-h-${source}-${id}" class="worktime-input" type="number" min="0" step="1" value="${Math.floor(mins / 60) || ''}" placeholder="小時">
+                            <input id="logedit-m-${source}-${id}" class="worktime-input" type="number" min="0" step="1" value="${mins % 60 || ''}" placeholder="分鐘">
+                        </span>
+                        <input id="logedit-note-${source}-${id}" class="worktime-input" type="text" value="${esc(log.note || '')}" placeholder="工作內容" onkeydown="if(event.key==='Enter') app.worktime.saveLogEdit('${id}','${log.id}','${source}')">
+                        <button class="worklog-action-btn" onclick="app.worktime.cancelLogEdit('${id}','${source}')">取消</button>
+                        <button class="worklog-action-btn" style="color:#4338ca;border-color:#c7d2fe;" onclick="app.worktime.saveLogEdit('${id}','${log.id}','${source}')">儲存</button>
+                    </div>`;
+                }
+                return `
                 <div class="worktime-row">
                     <span>${esc(log.workDate || '')}</span>
                     <strong>${this.formatMinutes(this.logMinutes(log))}</strong>
                     <span class="worktime-row-note" title="${esc(log.note || '')}">${esc(log.note || (log.source === 'timer' ? '心流計時' : '手動補登'))} <span class="worktime-source">${log.source === 'timer' ? '· 計時' : '· 手動'}</span></span>
-                    <button class="worktime-edit" title="修改此筆工時" onclick="app.worktime.editLog('${card.id}','${log.id}','${source}')">✏️</button>
-                    <button class="worktime-delete" title="刪除此筆工時" onclick="app.worktime.deleteLog('${card.id}','${log.id}','${source}')">×</button>
-                </div>`).join('') : `<div class="worktime-empty">尚無工時紀錄。心流計時停止後會自動寫入，也可手動補登分鐘或小時。</div>`;
+                    <button class="worktime-edit" title="修改此筆工時" onclick="app.worktime.startLogEdit('${id}','${log.id}','${source}')">✏️</button>
+                    <button class="worktime-delete" title="刪除此筆工時" onclick="app.worktime.deleteLog('${id}','${log.id}','${source}')">×</button>
+                </div>`;
+            }).join('') : `<div class="worktime-empty">尚無工時紀錄。按卡片上的 ⏱️ 開始計時，停止後會自動寫入；忘了計時也可以在上面補登。</div>`;
+            const more = logs.length > 50 ? `<div class="worktime-empty">只顯示最近 50 筆，完整明細請用甘特圖頁的「複製工時明細」。</div>` : '';
 
             return `
-                <div class="worktime-panel" id="worktime-panel-${source}-${card.id}">
+                <div class="worktime-panel" id="worktime-panel-${source}-${id}">
                     <div class="worktime-header">
                         <span style="font-weight:bold;color:#475569;">⏱️ 工時明細</span>
-                        <span class="worktime-total">實際 ${this.formatMinutes(total)}${plannedText}</span>
+                        <span style="display:flex;gap:8px;align-items:center;">
+                            <span class="worktime-total">實際 ${this.formatMinutes(total)}${plannedText}</span>
+                            <button class="worklog-action-btn" onclick="app.worktime.toggleTimePanel('${id}','${source}')">收合</button>
+                        </span>
                     </div>
                     <div class="worktime-form">
                         <label class="task-meta-field">
                             <span class="task-meta-label">日期</span>
-                            <input id="worktime-date-${source}-${card.id}" class="worktime-input" type="date" value="${defaultDate}">
+                            <input id="worktime-date-${source}-${id}" class="worktime-input" type="date" value="${defaultDate}">
                         </label>
                         <label class="task-meta-field">
                             <span class="task-meta-label">小時</span>
-                            <input id="worktime-hours-${source}-${card.id}" class="worktime-input" type="number" min="0" step="0.25" placeholder="1.5">
+                            <input id="worktime-hours-${source}-${id}" class="worktime-input" type="number" min="0" step="0.25" placeholder="1.5">
                         </label>
                         <label class="task-meta-field">
                             <span class="task-meta-label">分鐘</span>
-                            <input id="worktime-minutes-${source}-${card.id}" class="worktime-input" type="number" min="0" step="1" placeholder="30">
+                            <input id="worktime-minutes-${source}-${id}" class="worktime-input" type="number" min="0" step="1" placeholder="30">
                         </label>
                         <label class="task-meta-field worktime-note-field">
                             <span class="task-meta-label">工作內容</span>
-                            <input id="worktime-note-${source}-${card.id}" class="worktime-input" type="text" placeholder="例如：圖表定位規則測試">
+                            <input id="worktime-note-${source}-${id}" class="worktime-input" type="text" placeholder="例如：圖表定位規則測試" onkeydown="if(event.key==='Enter') app.worktime.addManual('${id}','${source}')">
                         </label>
-                        <button class="worklog-add-btn" onclick="app.worktime.addManual('${card.id}','${source}')">＋ 補登</button>
+                        <button class="worklog-add-btn" onclick="app.worktime.addManual('${id}','${source}')">＋ 補登</button>
                     </div>
-                    <div class="worktime-list">${rows}</div>
+                    <div class="worktime-list">${rows}${more}</div>
                 </div>`;
         },
 
+        toggleTimePanel(cardId, source = 'timeline') {
+            app.setPanelOpen(source, cardId, 'time', !app.panelOpen(source, cardId, 'time'));
+            this.refresh(cardId, source);
+        },
+
+        // 面板局部更新：等目前的點擊／輸入結束後才換，不會吃掉下一下點擊。
         refresh(cardId, source = 'timeline') {
+            app.ui.defer(() => this.refreshNow(cardId, source));
+        },
+
+        refreshNow(cardId, source = 'timeline') {
             const card = this.getCard(cardId);
             if (!card) return;
-            if (source === 'sandbox') {
-                app.entries.renderSandbox(card);
-                return;
-            }
+            if (source === 'sandbox') { app.entries.renderSandbox(card); return; }
             const p = document.getElementById(`task-meta-${source}-${cardId}`);
             if (p) p.outerHTML = this.renderPlanningPanel(card, source);
             const w = document.getElementById(`worktime-panel-${source}-${cardId}`);
             if (w) w.outerHTML = this.renderPanel(card, source);
+        },
+
+        // 文字欄位：邊打邊存，不重畫畫面（游標不會跳走）。
+        editText(cardId, field, value, source = 'timeline') {
+            const card = this.getCard(cardId);
+            if (!card) return;
+            card[field] = value;
+            if (field === 'nextStep') card.nextAction = value;
+            app.saveToLocal();
+            const sum = document.querySelector(`#task-meta-${source}-${cardId} .pm-collapse-summary`);
+            if (sum) sum.textContent = this.planSummary(card);
+            if (field === 'nextStep') app.updateNextStepPreview(cardId);
+            if (field === 'waitingWho' || field === 'waitingWhat') app.updateCardBadges(cardId);
         },
 
         updateCardField(cardId, field, value, source = 'timeline', numeric = false) {
@@ -966,11 +2550,12 @@ const app = {
                 if (value === '' && (field === 'actualStart' || field === 'actualEnd')) delete card[field];
                 else card[field] = value;
             }
+            if (field === 'nextStep') card.nextAction = value;
             if (field === 'progress') this.syncProgressStatus(card);
             app.saveToLocal();
-            if (field === 'color') app.renderAll();
+            if (['color', 'progress', 'followUpDate'].includes(field)) app.refreshCard(cardId, source);
             else this.refresh(cardId, source);
-            if (app.state.view === 'gantt') app.renderGantt();
+            if (field === 'progress') app.sandbox.renderTodo();
         },
 
         updateCardFlag(cardId, field, checked, source = 'timeline') {
@@ -980,7 +2565,6 @@ const app = {
             card[field] = !!checked;
             app.saveToLocal();
             this.refresh(cardId, source);
-            if (app.state.view === 'gantt') app.renderGantt();
         },
 
         updateCardMode(cardId, mode, source = 'timeline') {
@@ -994,8 +2578,7 @@ const app = {
                 card.dateEnd = today;
             }
             app.saveToLocal();
-            app.renderAll();
-            if (source === 'sandbox') app.entries.renderSandbox(card);
+            app.refreshCard(cardId, source);
         },
 
         updatePlannedDate(cardId, which, value, source = 'timeline') {
@@ -1013,8 +2596,7 @@ const app = {
                 else card.dateStart = card.dateEnd;
             }
             app.saveToLocal();
-            app.renderAll();
-            if (source === 'sandbox') app.entries.renderSandbox(card);
+            app.refreshCard(cardId, source);
         },
 
         updatePlannedPart(cardId, part, value, source = 'timeline') {
@@ -1044,12 +2626,16 @@ const app = {
             const hours = Math.max(0, Number(hoursEl?.value) || 0);
             const minutes = Math.max(0, Number(minutesEl?.value) || 0);
             const totalMinutes = Math.round((hours * 60 + minutes) * 100) / 100;
-            if (!Number.isFinite(totalMinutes) || totalMinutes <= 0) return alert('請輸入工時。小時、分鐘可擇一填寫，也可以一起填。');
+            if (!Number.isFinite(totalMinutes) || totalMinutes <= 0) {
+                app.ui.toast('請輸入工時：小時、分鐘擇一填寫即可。', 'warn');
+                (hoursEl || minutesEl)?.focus();
+                return;
+            }
+            const workDate = this.parseLocalDate(dateEl?.value) ? dateEl.value : this.localDateString();
             if (!Array.isArray(card.workLogs)) card.workLogs = [];
             const now = new Date().toISOString();
-            const workDate = dateEl?.value || this.localDateString();
             card.workLogs.push({
-                id: `work_${Date.now()}_${Math.random().toString(36).slice(2,7)}`,
+                id: app.makeId('work'),
                 workDate,
                 minutes: totalMinutes,
                 note: noteEl?.value.trim() || '手動補登',
@@ -1057,75 +2643,76 @@ const app = {
             });
             this.ensureStarted(card, workDate);
             app.saveToLocal();
-            this.refresh(cardId, source);
+            app.refreshCard(cardId, source);
             app.sandbox.renderTodo();
-            if (app.state.view === 'gantt') app.renderGantt();
+            app.ui.toast(`已補登 ${this.formatMinutes(totalMinutes)}`);
         },
 
-        addTimerLog(cardId, seconds, note = '心流計時') {
+        addTimerLog(cardId, seconds, note = '心流計時', workDate = null) {
             const card = this.getCard(cardId);
             const sec = Math.round(Number(seconds) || 0);
             if (!card || sec <= 0) return false;
             if (!Array.isArray(card.workLogs)) card.workLogs = [];
             const now = new Date().toISOString();
-            const workDate = this.localDateString();
+            const day = workDate || this.localDateString();
             card.workLogs.push({
-                id: `work_${Date.now()}_${Math.random().toString(36).slice(2,7)}`,
-                workDate,
+                id: app.makeId('work'),
+                workDate: day,
                 minutes: Math.round((sec / 60) * 100) / 100,
                 seconds: sec,
                 note,
                 source: 'timer', createdAt: now, updatedAt: now
             });
-            this.ensureStarted(card, workDate);
+            this.ensureStarted(card, day);
             app.saveToLocal();
             return true;
         },
 
-        editLog(cardId, logId, source = 'timeline') {
+        startLogEdit(cardId, logId, source = 'timeline') {
+            this.logEditing[`${source}:${cardId}`] = logId;
+            this.refresh(cardId, source);
+            setTimeout(() => document.getElementById(`logedit-note-${source}-${cardId}`)?.focus(), 30);
+        },
+
+        cancelLogEdit(cardId, source = 'timeline') {
+            delete this.logEditing[`${source}:${cardId}`];
+            this.refresh(cardId, source);
+        },
+
+        saveLogEdit(cardId, logId, source = 'timeline') {
             const card = this.getCard(cardId);
-            if (!card) return;
             const log = this.getLogs(card).find(l => l.id === logId);
-            if (!log) return;
-            const currentMins = Math.round(this.logMinutes(log));
-            const curHours = Math.floor(currentMins / 60);
-            const curMinutes = currentMins % 60;
-            const date = prompt('工作日期（YYYY-MM-DD）', log.workDate || this.localDateString());
-            if (date === null) return;
-            const hoursRaw = prompt('小時（可填 0；例如 1.5）', String(curHours));
-            if (hoursRaw === null) return;
-            const minutesRaw = prompt('分鐘（可填 0，也可直接填 90）', String(curMinutes));
-            if (minutesRaw === null) return;
-            const hours = Math.max(0, Number(hoursRaw) || 0);
-            const minutes = Math.max(0, Number(minutesRaw) || 0);
-            const totalMinutes = Math.round((hours * 60 + minutes) * 100) / 100;
-            if (totalMinutes <= 0) return alert('工時必須大於 0。');
-            const note = prompt('工作內容', log.note || '') ;
-            if (note === null) return;
-            log.workDate = date || this.localDateString();
+            if (!card || !log) return;
+            const date = document.getElementById(`logedit-date-${source}-${cardId}`)?.value || '';
+            const h = Math.max(0, Number(document.getElementById(`logedit-h-${source}-${cardId}`)?.value) || 0);
+            const m = Math.max(0, Number(document.getElementById(`logedit-m-${source}-${cardId}`)?.value) || 0);
+            const note = document.getElementById(`logedit-note-${source}-${cardId}`)?.value || '';
+            const totalMinutes = Math.round((h * 60 + m) * 100) / 100;
+            if (!this.parseLocalDate(date)) { app.ui.toast('日期格式不正確', 'warn'); return; }
+            if (totalMinutes <= 0) { app.ui.toast('工時必須大於 0；不要的紀錄請按 × 刪除', 'warn'); return; }
+            log.workDate = date;
             log.minutes = totalMinutes;
             delete log.hours;
             delete log.seconds;
             log.note = note.trim() || (log.source === 'timer' ? '心流計時' : '手動補登');
             log.updatedAt = new Date().toISOString();
             this.ensureStarted(card, log.workDate);
+            delete this.logEditing[`${source}:${cardId}`];
             app.saveToLocal();
-            this.refresh(cardId, source);
+            app.refreshCard(cardId, source);
             app.sandbox.renderTodo();
-            if (app.state.view === 'gantt') app.renderGantt();
         },
 
-        deleteLog(cardId, logId, source = 'timeline') {
+        async deleteLog(cardId, logId, source = 'timeline') {
             const card = this.getCard(cardId);
             if (!card || !Array.isArray(card.workLogs)) return;
             const log = card.workLogs.find(l => l.id === logId);
             if (!log) return;
-            if (!confirm(`刪除這筆 ${this.formatMinutes(this.logMinutes(log))} 的工時紀錄？`)) return;
+            if (!await app.ui.confirm('刪除工時紀錄', `<p>刪除 ${app.entries.escapeHtml(log.workDate || '')} 這筆 ${this.formatMinutes(this.logMinutes(log))} 的工時紀錄？</p>`, '刪除', true)) return;
             card.workLogs = card.workLogs.filter(l => l.id !== logId);
             app.saveToLocal();
-            this.refresh(cardId, source);
+            app.refreshCard(cardId, source);
             app.sandbox.renderTodo();
-            if (app.state.view === 'gantt') app.renderGantt();
         },
 
         allCards() {
@@ -1149,31 +2736,50 @@ const app = {
             return this.ganttSourceCards().filter(({card}) => !card.excludeFromGantt);
         },
 
+        // 排程重疊：每次資料變動後只算一次（掃描線），不再每張卡各算一輪。
+        conflictIndex() {
+            const version = app.store.version;
+            if (this._conflictCache && this._conflictCache.version === version) return this._conflictCache;
+            const rows = this.ganttSourceCards().map(r => ({
+                ...r, s: this.parseLocalDate(r.card.dateStart), e: this.parseLocalDate(r.card.dateEnd)
+            })).filter(r => r.s && r.e && r.e >= r.s).sort((a, b) => a.s - b.s);
+            const map = new Map();
+            const add = (owner, other, s, e) => {
+                if (!map.has(owner.card.id)) map.set(owner.card.id, []);
+                map.get(owner.card.id).push({
+                    card: other.card, tabId: other.tabId, tabName: other.tabName,
+                    overlapStart: this.dateKey(s), overlapEnd: this.dateKey(e), hiddenFromGantt: !!other.card.excludeFromGantt
+                });
+            };
+            for (let i = 0; i < rows.length; i++) {
+                for (let j = i + 1; j < rows.length && rows[j].s <= rows[i].e; j++) {
+                    const a = rows[i], b = rows[j];
+                    if (a.card.id === b.card.id) continue;
+                    const s = new Date(Math.max(a.s, b.s));
+                    const e = new Date(Math.min(a.e, b.e));
+                    add(a, b, s, e);
+                    add(b, a, s, e);
+                }
+            }
+            const sorter = (x, y) => x.overlapStart.localeCompare(y.overlapStart) || String(x.card.title || '').localeCompare(String(y.card.title || ''), 'zh-Hant');
+            map.forEach(list => list.sort(sorter));
+            this._conflictCache = { version, map, rows, sorter };
+            return this._conflictCache;
+        },
+
         scheduleConflicts(card) {
             if (!card || card.isMemo) return [];
             const start = this.parseLocalDate(this.plannedStart(card));
             const end = this.parseLocalDate(this.plannedEnd(card));
             if (!start || !end) return [];
-            const currentId = card.id || '';
-            return this.ganttSourceCards()
-                .filter(({card: other}) => other !== card && (!currentId || other.id !== currentId))
-                .map(({card: other, tabId, tabName}) => {
-                    const otherStart = this.parseLocalDate(this.plannedStart(other));
-                    const otherEnd = this.parseLocalDate(this.plannedEnd(other));
-                    if (!otherStart || !otherEnd || otherEnd < start || otherStart > end) return null;
-                    const overlapStart = new Date(Math.max(start.getTime(), otherStart.getTime()));
-                    const overlapEnd = new Date(Math.min(end.getTime(), otherEnd.getTime()));
-                    return {
-                        card: other,
-                        tabId,
-                        tabName,
-                        overlapStart: this.dateKey(overlapStart),
-                        overlapEnd: this.dateKey(overlapEnd),
-                        hiddenFromGantt: !!other.excludeFromGantt
-                    };
-                })
-                .filter(Boolean)
-                .sort((a,b) => a.overlapStart.localeCompare(b.overlapStart) || String(a.card.title || '').localeCompare(String(b.card.title || ''), 'zh-Hant'));
+            const idx = this.conflictIndex();
+            if (card.dateMode === 'range' && card.dateStart && card.dateEnd) return idx.map.get(card.id) || [];
+            // 單日卡片：和所有區間排程比一次。
+            return idx.rows.filter(r => r.card.id !== card.id && !(r.e < start || r.s > end)).map(r => ({
+                card: r.card, tabId: r.tabId, tabName: r.tabName,
+                overlapStart: this.dateKey(new Date(Math.max(start, r.s))), overlapEnd: this.dateKey(new Date(Math.min(end, r.e))),
+                hiddenFromGantt: !!r.card.excludeFromGantt
+            })).sort(idx.sorter);
         },
 
         taskExportRows() {
@@ -1228,10 +2834,10 @@ const app = {
                 const ta = document.createElement('textarea'); ta.value = text;
                 ta.style.position = 'fixed'; ta.style.opacity = '0'; document.body.appendChild(ta);
                 ta.select(); document.execCommand('copy'); document.body.removeChild(ta);
-                alert(successMessage);
+                app.ui.toast(successMessage, 'info', 4500);
             };
             if (navigator.clipboard && window.isSecureContext) {
-                navigator.clipboard.writeText(text).then(() => alert(successMessage)).catch(fallback);
+                navigator.clipboard.writeText(text).then(() => app.ui.toast(successMessage, 'info', 4500)).catch(fallback);
             } else fallback();
         },
 
@@ -1245,6 +2851,7 @@ const app = {
         setGanttMode(mode) {
             if (!app.state.ganttFilters) app.state.ganttFilters = { project:'', month:'', mode:'schedule', scale:'' };
             app.state.ganttFilters.mode = mode === 'time' ? 'time' : 'schedule';
+            app.rememberPrefs();
             app.renderGantt();
         },
 
@@ -1252,6 +2859,7 @@ const app = {
             if (!app.state.ganttFilters) app.state.ganttFilters = { project:'', month:'', mode:'schedule', scale:'' };
             if (!['day','week','month'].includes(scale)) return;
             app.state.ganttFilters.scale = scale;
+            app.rememberPrefs();
             app.renderGantt();
         },
 
@@ -1331,8 +2939,8 @@ const app = {
                 const exportScale = this.getGanttScale();
                 const exportScaleLabel = this.ganttScaleLabel(exportScale);
                 const entries = this.ganttCards().sort((a,b) => {
-                    const ga = `${a.card.project||''} ${a.card.category||''}`;
-                    const gb = `${b.card.project||''} ${b.card.category||''}`;
+                    const ga = `${a.card.project||''}\u0000${a.card.category||''}`;
+                    const gb = `${b.card.project||''}\u0000${b.card.category||''}`;
                     return ga.localeCompare(gb) || String(a.card.dateStart).localeCompare(String(b.card.dateStart));
                 });
                 const leftHeaders = ['工項','專案','分類','狀態','進度','預估 / 實際','預計起迄','實際起迄','分頁','軌道'];
@@ -1479,14 +3087,17 @@ const app = {
     // ==========================================
     sandbox: {
         GIF_URL: "https://media.giphy.com/media/JIX9t2j0ZTN9S/giphy.gif",
-        
+        tickHandle: null,
+        lastShownStatus: null,
+        lastPersistAt: 0,
+
         initUI() {
             this.updateDisplay();
             const textarea = document.getElementById('sb-activeNoteArea');
-            if(textarea) {
+            if (textarea) {
                 textarea.addEventListener('keydown', function(e) {
                     if (e.key === 'Tab') {
-                        e.preventDefault(); 
+                        e.preventDefault();
                         const start = this.selectionStart; const end = this.selectionEnd;
                         this.value = this.value.substring(0, start) + "    " + this.value.substring(end);
                         this.selectionStart = this.selectionEnd = start + 4;
@@ -1504,39 +3115,28 @@ const app = {
         },
 
         getActiveCards() { return app.state.workspaces[app.state.activeTabId] || []; },
+        activeCard() { const id = app.state.sandbox.activeTaskId; return id ? app.worktime.getCard(id) : null; },
 
         parseSubtasks(content) {
             if (!content) return [];
-            const lines = content.split('\n');
             const subtasks = [];
             const regex = /^\s*[-*]\s+\[([ xX])\]\s+(.*)$/;
-            lines.forEach((line, index) => {
+            content.split('\n').forEach((line, index) => {
                 const match = line.match(regex);
-                if (match) {
-                    subtasks.push({
-                        lineIndex: index,
-                        completed: match[1].toLowerCase() === 'x',
-                        text: match[2],
-                        raw: line
-                    });
-                }
+                if (match) subtasks.push({ lineIndex: index, completed: match[1].toLowerCase() === 'x', text: match[2], raw: line });
             });
             return subtasks;
         },
 
         toggleSubtask(cardId, lineIndex) {
-            const card = this.getActiveCards().find(c => c.id === cardId);
+            const card = app.worktime.getCard(cardId);
             if (!card) return;
-            const lines = card.content.split('\n');
-            const line = lines[lineIndex];
-            
-            if (line.includes('[ ]')) {
-                lines[lineIndex] = line.replace('[ ]', '[x]');
-            } else if (line.includes('[x]') || line.includes('[X]')) {
-                lines[lineIndex] = line.replace(/\[x\]/i, '[ ]');
-            }
+            const lines = String(card.content || '').split('\n');
+            const line = lines[lineIndex] ?? '';
+            if (line.includes('[ ]')) lines[lineIndex] = line.replace('[ ]', '[x]');
+            else if (/\[x\]/i.test(line)) lines[lineIndex] = line.replace(/\[x\]/i, '[ ]');
             card.content = lines.join('\n');
-            
+
             const subtasks = this.parseSubtasks(card.content);
             if (subtasks.length > 0 && subtasks.every(st => st.completed)) {
                 app.worktime.markCompleted(card);
@@ -1544,82 +3144,78 @@ const app = {
                 // 從「全部完成」重新打開任一子任務時，回到可工作的狀態，不保留 100% / 實際完成日。
                 app.worktime.reopenCompleted(card, 1);
             }
-            
             app.saveToLocal();
             this.renderTodo();
-            if (app.state.sandbox.activeTaskId === cardId) {
-                document.getElementById('sb-activeNoteArea').value = card.content;
-            }
+            if (app.state.sandbox.activeTaskId === cardId) document.getElementById('sb-activeNoteArea').value = card.content;
         },
 
         addTodo() {
             const input = document.getElementById('sb-newTodoTask');
             const text = input.value.trim();
             if (!text) return;
-
-            let targetCardId = app.state.sandbox.activeTaskId;
-            let targetCard = null;
-
-            if (targetCardId) {
-                targetCard = this.getActiveCards().find(c => c.id === targetCardId);
-                if (targetCard) {
-                    const prefix = targetCard.content && !targetCard.content.endsWith('\n') ? '\n' : '';
-                    targetCard.content += `${prefix}- [ ] ${text}\n`;
-                    if (Number(targetCard.status) === 2) app.worktime.reopenCompleted(targetCard, 1); 
-                }
-            } 
-            
-            if (!targetCard) {
-                targetCard = this.getActiveCards().find(c => c.title === '今日雜項');
+            const today = app.worktime.localDateString();
+            let targetCard = this.activeCard();
+            if (targetCard) {
+                const prefix = targetCard.content && !targetCard.content.endsWith('\n') ? '\n' : '';
+                targetCard.content = `${targetCard.content || ''}${prefix}- [ ] ${text}\n`;
+                if (Number(targetCard.status) === 2) app.worktime.reopenCompleted(targetCard, 1);
+            } else {
+                // 沒有聚焦卡片時，收進「今天」的今日雜項（不會一直塞進很久以前那張）。
+                targetCard = this.getActiveCards().find(c => c.title === '今日雜項' && (c.dateSingle === today || c.dateStart === today));
                 if (!targetCard) {
-                    targetCard = { 
-                        id: 'card_' + Date.now(), title: '今日雜項', content: '', project: '日常', 
-                        dateMode: 'single', dateSingle: new Date().toISOString().split('T')[0], 
-                        color: 'blue', status: 0, isMemo: false 
+                    targetCard = {
+                        id: app.makeId('card'), title: '今日雜項', content: '', project: '日常',
+                        dateMode: 'single', dateSingle: today, color: 'blue', status: 0, isMemo: false
                     };
                     app.state.workspaces[app.state.activeTabId].unshift(targetCard);
                 }
                 app.state.sandbox.activeTaskId = targetCard.id;
                 const prefix = targetCard.content && !targetCard.content.endsWith('\n') ? '\n' : '';
-                targetCard.content += `${prefix}- [ ] ${text}\n`;
+                targetCard.content = `${targetCard.content || ''}${prefix}- [ ] ${text}\n`;
             }
-
             input.value = '';
             app.saveToLocal();
+            this.persistTimer();
             this.renderTodo();
             this.refreshActiveNoteUI();
         },
 
         toggleTodoCard(id) {
-            const card = this.getActiveCards().find(c => c.id === id);
+            const card = app.worktime.getCard(id);
             if (!card) return;
-            if (Number(card.status) === 2) {
-                app.worktime.reopenCompleted(card);
-            } else {
-                app.worktime.markCompleted(card);
-            }
+            if (Number(card.status) === 2) app.worktime.reopenCompleted(card);
+            else app.worktime.markCompleted(card);
             app.saveToLocal(); this.renderTodo(); this.refreshActiveNoteUI();
         },
 
-        clearCompletedCards() {
-            app.state.workspaces[app.state.activeTabId] = this.getActiveCards().filter(c => c.status !== 2);
-            if(app.state.sandbox.activeTaskId && !this.getActiveCards().find(c => c.id === app.state.sandbox.activeTaskId)) {
-                this.setActiveTask(null);
-            }
+        async clearCompletedCards() {
+            const done = this.getActiveCards().filter(c => Number(c.status) === 2);
+            if (!done.length) { app.ui.toast('這個分頁沒有已完成的卡片'); return; }
+            const mins = done.reduce((sum, c) => sum + app.worktime.totalMinutes(c), 0);
+            const pinned = done.filter(c => c.chroniclePinned).length;
+            const ok = await app.ui.confirm('清除已完成卡片',
+                `<p>會從這個分頁移除 <b>${done.length}</b> 張已完成卡片${mins ? `（含 <b>${app.worktime.formatMinutes(mins)}</b> 工時紀錄）` : ''}${pinned ? `，其中 ${pinned} 張在大事記裡` : ''}。</p><p>移除後甘特圖與 Excel 都不會再算進這些工時。卡片會先放進「🗂 資料 → 最近刪除」，需要時可以救回。</p>`, '移除', true);
+            if (!ok) return;
+            const ids = new Set(done.map(c => c.id));
+            if (ids.has(app.state.sandbox.timerTaskId) && app.state.sandbox.timerStatus !== 'IDLE') this.stopTimer();
+            if (!await app.backup.trashOrConfirm(done.map(card => ({ card, tabId: app.state.activeTabId })), '清除已完成')) return;
+            app.state.workspaces[app.state.activeTabId] = this.getActiveCards().filter(c => !ids.has(c.id));
+            if (ids.has(app.state.sandbox.activeTaskId)) this.setActiveTask(null);
             app.saveToLocal(); this.renderTodo();
         },
-        
+
         setActiveTask(id) {
-            const oldId = app.state.sandbox.activeTaskId;
-            if (oldId !== id && app.state.sandbox.timerStatus !== 'IDLE') {
+            const sb = app.state.sandbox;
+            const oldId = sb.activeTaskId;
+            if (oldId !== id && sb.timerStatus !== 'IDLE' && sb.timerTaskId !== id) {
                 this.commitTimerSession('心流計時（切換任務自動結算）');
-                app.state.sandbox.timerTaskId = id || null;
-                app.state.sandbox.timerSessionSeconds = 0;
-                app.state.sandbox.timerSessionStartedAt = app.state.sandbox.timerStatus === 'RUNNING' ? new Date().toISOString() : null;
+                sb.timerTaskId = id || null;
             }
-            app.state.sandbox.activeTaskId = id;
-            if (app.state.sandbox.timerStatus === 'IDLE') app.state.sandbox.timerTaskId = id || null;
-            this.refreshActiveNoteUI(); this.renderTodo(); this.updateDisplay();
+            sb.activeTaskId = id;
+            if (sb.timerStatus === 'IDLE') sb.timerTaskId = id || null;
+            this.persistTimer();
+            this.refreshActiveNoteUI(); this.renderTodo(); this.updateDisplay(true);
+            app.refreshTimerButtons();
         },
 
         focusTaskForTimer(id) {
@@ -1634,18 +3230,17 @@ const app = {
             const noteArea = document.getElementById('sb-activeNoteArea');
             const nextStepBox = document.getElementById('sb-nextStepBox');
             const nextStepInput = document.getElementById('sb-nextStepInput');
-
-            if (app.state.sandbox.activeTaskId) {
-                const card = this.getActiveCards().find(c => c.id === app.state.sandbox.activeTaskId);
-                if (card) {
-                    iconEl.style.display = 'inline'; titleEl.value = card.title; titleEl.style.color = 'var(--primary)';
-                    titleEl.readOnly = false; noteArea.value = card.content || "";
-                    if (nextStepBox) nextStepBox.style.display = 'block';
-                    if (nextStepInput) nextStepInput.value = card.nextStep || '';
-                    app.entries.renderSandbox(card);
-                    return;
-                } else { app.state.sandbox.activeTaskId = null; }
+            if (!titleEl || !noteArea) return;
+            const card = this.activeCard();
+            if (card) {
+                iconEl.style.display = 'inline'; titleEl.value = card.title || ''; titleEl.style.color = 'var(--primary)';
+                titleEl.readOnly = false; noteArea.value = card.content || "";
+                if (nextStepBox) nextStepBox.style.display = 'block';
+                if (nextStepInput) nextStepInput.value = card.nextStep || '';
+                app.entries.renderSandbox(card);
+                return;
             }
+            app.state.sandbox.activeTaskId = null;
             iconEl.style.display = 'none'; titleEl.value = "📝 全域沙盒草稿 (未綁定單一任務)"; titleEl.style.color = '#334155';
             titleEl.readOnly = true; noteArea.value = app.state.globalNotebook.free || "";
             if (nextStepBox) nextStepBox.style.display = 'none';
@@ -1654,27 +3249,31 @@ const app = {
         },
 
         renameActiveTask() {
-            if (!app.state.sandbox.activeTaskId) return;
-            const newName = document.getElementById('sb-activeTaskTitle').value;
-            const card = this.getActiveCards().find(c => c.id === app.state.sandbox.activeTaskId);
-            if (card) { card.title = newName; app.saveToLocal(); this.renderTodo(); }
+            const card = this.activeCard();
+            if (!card) return;
+            card.title = document.getElementById('sb-activeTaskTitle').value;
+            app.saveToLocal();
+            clearTimeout(this._renameTimer);
+            this._renameTimer = setTimeout(() => this.renderTodo(), 300);
         },
 
         saveActiveNote() {
             const noteArea = document.getElementById('sb-activeNoteArea');
-            if (app.state.sandbox.activeTaskId) {
-                const card = this.getActiveCards().find(c => c.id === app.state.sandbox.activeTaskId);
-                if (card) card.content = noteArea.value;
-            } else { app.state.globalNotebook.free = noteArea.value; }
+            const card = this.activeCard();
+            if (card) card.content = noteArea.value;
+            else app.state.globalNotebook.free = noteArea.value;
             app.saveToLocal();
+            // 打「- [ ] 事項」時左側子任務即時出現（稍微延遲，避免每個字都重畫）。
+            clearTimeout(this._todoTimer);
+            this._todoTimer = setTimeout(() => this.renderTodo(), 350);
         },
 
         saveNextStep() {
-            if (!app.state.sandbox.activeTaskId) return;
-            const card = this.getActiveCards().find(c => c.id === app.state.sandbox.activeTaskId);
+            const card = this.activeCard();
             const input = document.getElementById('sb-nextStepInput');
             if (!card || !input) return;
             card.nextStep = input.value;
+            card.nextAction = input.value;
             app.saveToLocal();
         },
 
@@ -1684,21 +3283,21 @@ const app = {
             const selectedText = noteArea.value.substring(start, end);
             noteArea.value = noteArea.value.substring(0, start) + prefix + selectedText + suffix + noteArea.value.substring(end);
             noteArea.focus(); noteArea.selectionStart = noteArea.selectionEnd = selectedText.length === 0 ? start + prefix.length : start + prefix.length + selectedText.length + suffix.length;
-            this.saveActiveNote(); this.renderTodo(); 
+            this.saveActiveNote();
         },
 
         insertPrefix(prefix) {
             const noteArea = document.getElementById('sb-activeNoteArea'); const start = noteArea.selectionStart;
             noteArea.value = noteArea.value.substring(0, start) + prefix + noteArea.value.substring(start);
             noteArea.focus(); noteArea.selectionStart = noteArea.selectionEnd = start + prefix.length;
-            this.saveActiveNote(); this.renderTodo();
+            this.saveActiveNote();
         },
 
         insertTemplate(type) {
             let tpl = "";
-            if(type==='bug') tpl="\n### 🐛 異常現象\n\n### 🔬 測試假設\n\n### 🛠️ 下一步\n";
-            else if(type==='dissect') tpl="\n### 🎯 現況與目標\n\n### 🚧 卡關點\n\n### 💡 解法構思\n- [ ] \n- [ ] \n";
-            else if(type==='review') tpl="\n### ✅ 已完成\n\n### ❌ 待優化\n\n### 📌 備註\n";
+            if (type === 'bug') tpl = "\n### 🐛 異常現象\n\n### 🔬 測試假設\n\n### 🛠️ 下一步\n";
+            else if (type === 'dissect') tpl = "\n### 🎯 現況與目標\n\n### 🚧 卡關點\n\n### 💡 解法構思\n- [ ] \n- [ ] \n";
+            else if (type === 'review') tpl = "\n### ✅ 已完成\n\n### ❌ 待優化\n\n### 📌 備註\n";
             this.insertPrefix(tpl);
         },
 
@@ -1710,63 +3309,82 @@ const app = {
             inputEl.value = ''; noteArea.scrollTop = noteArea.scrollHeight; this.saveActiveNote();
         },
 
-        mergeSelectedCards() {
-            const checkboxes = document.querySelectorAll('.todo-cb-merge:checked');
-            if(checkboxes.length < 2) return alert("💡 請勾選至少兩個大卡片進行合併！");
-            let mergedTitle = prompt("請輸入合併後的新母任務名稱：", "合併任務集"); if(!mergedTitle) return; 
-
-            let mergedContent = ""; let mergedEntries = []; let mergedWorkLogs = []; let idsToDelete = []; let highestPriority = 'blue';
-
-            checkboxes.forEach((cb, index) => {
-                const id = cb.value; const card = this.getActiveCards().find(c => c.id === id);
-                if(card) {
-                    idsToDelete.push(id);
-                    if(card.color === 'red') highestPriority = 'red'; else if(card.color === 'yellow' && highestPriority !== 'red') highestPriority = 'yellow';
-                    let c = card.content ? card.content.trim() : "";
-                    if (Array.isArray(card.entries)) mergedEntries.push(...card.entries);
-                    if (Array.isArray(card.workLogs)) mergedWorkLogs.push(...card.workLogs);
-                    mergedContent += `### 🧩 [合併來源] ${card.title}\n${c}\n`;
-                    if(index < checkboxes.length - 1) mergedContent += `\n---\n\n`;
-                }
+        async mergeSelectedCards() {
+            const checkboxes = [...document.querySelectorAll('.todo-cb-merge:checked')];
+            if (checkboxes.length < 2) { app.ui.toast('請勾選至少兩張卡片再合併', 'warn'); return; }
+            const mergedTitle = prompt("合併後的卡片名稱：", "合併任務集");
+            if (!mergedTitle) return;
+            const sbm = app.state.sandbox;
+            // 先把正在跑的計時記進原卡，再收集工時，避免這段時間跟著原卡一起被移走。
+            if (sbm.timerStatus !== 'IDLE' && checkboxes.some(cb => cb.value === sbm.timerTaskId)) this.commitTimerSession('心流計時（合併前結算）');
+            const sources = checkboxes.map(cb => app.worktime.getCard(cb.value)).filter(Boolean);
+            const W = app.worktime;
+            let highestPriority = 'blue';
+            sources.forEach(card => {
+                if (card.color === 'red') highestPriority = 'red';
+                else if (card.color === 'yellow' && highestPriority !== 'red') highestPriority = 'yellow';
             });
-
+            const projects = [...new Set(sources.map(c => String(c.project || '').trim()).filter(Boolean))];
+            const starts = sources.map(c => W.plannedStart(c)).filter(Boolean).sort();
+            const ends = sources.map(c => W.plannedEnd(c)).filter(Boolean).sort();
+            const plannedTotal = sources.reduce((sum, c) => sum + W.plannedMinutes(c), 0);
+            const nextSteps = sources.map(c => String(c.nextStep || '').trim()).filter(Boolean);
+            const anyScheduled = sources.some(c => !c.isMemo);
             const newCard = {
-                id: 'card_' + Date.now(), title: mergedTitle, content: mergedContent.trim(), entries: mergedEntries, workLogs: mergedWorkLogs,
-                project: '整理', dateMode: 'single', dateSingle: new Date().toISOString().split('T')[0],
-                color: highestPriority, status: 0, isMemo: false
+                id: app.makeId('card'),
+                title: mergedTitle,
+                content: sources.map(c => `### 🧩 [合併來源] ${c.title || '未命名'}\n${String(c.content || '').trim()}`).join('\n\n---\n\n'),
+                entries: sources.flatMap(c => c.entries || []),
+                workLogs: sources.flatMap(c => c.workLogs || []),
+                project: projects.length === 1 ? projects[0] : (projects.length ? '整理' : ''),
+                color: highestPriority, status: 0, isMemo: !anyScheduled,
+                dateMode: starts.length ? 'range' : 'single',
+                dateStart: starts[0] || '', dateEnd: ends[ends.length - 1] || starts[0] || '',
+                dateSingle: starts.length ? '' : W.localDateString()
             };
-            app.state.workspaces[app.state.activeTabId] = this.getActiveCards().filter(c => !idsToDelete.includes(c.id));
-            app.state.workspaces[app.state.activeTabId].unshift(newCard); 
+            if (plannedTotal > 0) newCard.plannedMinutes = plannedTotal;
+            if (nextSteps.length) { newCard.nextStep = nextSteps.join('；'); newCard.nextAction = newCard.nextStep; }
+            if (sources.some(c => c.chroniclePinned)) {
+                newCard.chroniclePinned = true;
+                newCard.chronicleDate = sources.map(c => c.chronicleDate).filter(Boolean).sort().pop() || W.localDateString();
+                newCard.chronicleSummary = sources.map(c => c.chronicleSummary).filter(Boolean).join('；');
+            }
+            if (newCard.workLogs.length) W.ensureStarted(newCard, newCard.workLogs.map(l => l.workDate).filter(Boolean).sort()[0]);
+            const sb = app.state.sandbox;
+            const ids = new Set(sources.map(c => c.id));
+            if (!await app.backup.trashOrConfirm(sources.map(card => ({ card, tabId: app.worktime.allCards().find(r => r.card.id === card.id)?.tabId || app.state.activeTabId })), '合併')) return;
+            Object.keys(app.state.workspaces).forEach(t => { app.state.workspaces[t] = app.state.workspaces[t].filter(c => !ids.has(c.id)); });
+            app.state.workspaces[app.state.activeTabId].unshift(newCard);
+            if (ids.has(sb.timerTaskId)) sb.timerTaskId = newCard.id;
             app.saveToLocal(); this.renderTodo(); this.setActiveTask(newCard.id);
-            alert("✅ 任務已成功合併！筆記與子任務已自動串接。");
+            app.ui.toast('已合併：筆記、子任務、工時與工作紀錄都已串接');
         },
 
         renderTodo() {
             const container = document.getElementById('sb-todoListContainer');
-            if(!container) return;
+            if (!container) return;
+            const esc = s => app.entries.escapeHtml(s);
             const cards = this.getActiveCards();
-            
-            const sorted = [...cards].sort((a,b) => {
-                if((a.status===2) !== (b.status===2)) return (a.status===2) ? 1 : -1;
+            const sorted = [...cards].sort((a, b) => {
+                if ((a.status === 2) !== (b.status === 2)) return (a.status === 2) ? 1 : -1;
                 const wA = a.color === 'red' ? 1 : (a.color === 'yellow' ? 2 : 3);
                 const wB = b.color === 'red' ? 1 : (b.color === 'yellow' ? 2 : 3);
                 return wA - wB;
             });
-
             if (sorted.length === 0) {
                 container.innerHTML = "<div style='text-align:center; color:#aaa; padding:20px; font-size: 0.9rem;'>分頁內無卡片。<br>直接輸入任務，系統會幫你建檔！</div>";
                 return;
             }
-
-            let html = '';
-            sorted.forEach(c => {
-                const isActive = app.state.sandbox.activeTaskId === c.id;
+            const sb = app.state.sandbox;
+            container.innerHTML = sorted.map(c => {
+                const isActive = sb.activeTaskId === c.id;
+                const timing = sb.timerStatus !== 'IDLE' && sb.timerTaskId === c.id;
                 const completed = c.status === 2;
                 const prioLabel = c.color === 'red' ? 'P1' : (c.color === 'yellow' ? 'P2' : 'P3');
                 const prioColor = c.color === 'red' ? '#dc3545' : (c.color === 'yellow' ? '#ffc107' : '#007bff');
                 const subtasks = this.parseSubtasks(c.content);
-
-                html += `
+                const secs = app.worktime.totalSeconds(c);
+                return `
                 <div class="sb-todo-card ${isActive ? 'active-card' : ''}" onclick="if(event.target.tagName !== 'INPUT' && event.target.tagName !== 'BUTTON') app.sandbox.setActiveTask('${c.id}')" style="cursor: pointer;">
                     <div style="display: flex; align-items: flex-start;">
                         <div style="display: flex; flex-direction: column; align-items: center; margin-right: 8px; border-right: 1px solid #eee; padding-right: 6px;">
@@ -1779,189 +3397,453 @@ const app = {
                         <div style="flex-grow: 1; margin-left: 5px; overflow: hidden;">
                             <div style="margin-bottom: 2px;">
                                 <span class="sb-badge" style="background:${prioColor}">${prioLabel}</span>
-                                <span class="sb-badge" style="background:#6c757d; font-size:0.7em;">${c.project||'未分類'}</span>
-                                ${c.category ? `<span class="sb-badge" style="background:#64748b; font-size:0.7em;">${app.entries.escapeHtml(c.category)}</span>` : ''}
-                                ${app.worktime.totalSeconds(c) > 0 ? `<span class="sb-badge" style="background:#4f46e5; font-size:0.7em;">⏱ ${app.worktime.formatDuration(app.worktime.totalSeconds(c))}</span>` : ''}
+                                <span class="sb-badge" style="background:#6c757d; font-size:0.7em;">${esc(c.project || '未分類')}</span>
+                                ${c.category ? `<span class="sb-badge" style="background:#64748b; font-size:0.7em;">${esc(c.category)}</span>` : ''}
+                                ${secs > 0 ? `<span class="sb-badge" style="background:#4f46e5; font-size:0.7em;">⏱ ${app.worktime.formatDuration(secs)}</span>` : ''}
+                                ${timing ? `<span class="sb-badge" style="background:#16a34a; font-size:0.7em;">計時中</span>` : ''}
                             </div>
-                            <div style="font-size: 0.95rem; margin-top: 4px; font-weight: bold; color: ${isActive ? '#0056b3' : '#333'}; text-decoration: ${completed ? 'line-through' : 'none'}; opacity: ${completed ? 0.6 : 1};">${c.title || '未命名'}</div>
+                            <div style="font-size: 0.95rem; margin-top: 4px; font-weight: bold; color: ${isActive ? '#0056b3' : '#333'}; text-decoration: ${completed ? 'line-through' : 'none'}; opacity: ${completed ? 0.6 : 1};">${esc(c.title || '未命名')}</div>
                         </div>
                         <div style="display: flex; flex-direction: column; gap: 5px; margin-left: 5px;">
                             <button class="${isActive ? 'sb-btn-info' : 'sb-btn-outline'} sb-btn" style="padding:4px 8px; font-size:0.8rem;" onclick="app.sandbox.setActiveTask('${c.id}')">${isActive ? '🎯' : '📝'}</button>
                         </div>
-                    </div>`;
-                    
-                if (subtasks.length > 0) {
-                    html += `<div class="sb-subtasks-container">`;
-                    subtasks.forEach(st => {
-                        html += `
+                    </div>
+                    ${subtasks.length ? `<div class="sb-subtasks-container">${subtasks.map(st => `
                         <div class="sb-subtask-item ${st.completed ? 'completed' : ''}">
                             <input type="checkbox" ${st.completed ? 'checked' : ''} onchange="app.sandbox.toggleSubtask('${c.id}', ${st.lineIndex});">
-                            <span>${st.text}</span>
-                        </div>`;
-                    });
-                    html += `</div>`;
-                }
-                
-                html += `</div>`;
-            });
-            container.innerHTML = html;
+                            <span>${esc(st.text)}</span>
+                        </div>`).join('')}</div>` : ''}
+                </div>`;
+            }).join('');
         },
 
-        promoteNodesToCards() {
+        async promoteNodesToCards() {
             const nodes = app.state.nodes[app.state.activeTabId] || [];
-            if(nodes.length === 0) return alert("此分頁目前沒有發想節點！");
-            if(!confirm(`確定要將此分頁的 ${nodes.length} 個發想節點全部轉換成任務卡片嗎？\n(棋盤上的棋子會被清空)`)) return;
-
+            if (nodes.length === 0) { app.ui.toast('此分頁目前沒有發想節點'); return; }
+            if (!await app.ui.confirm('轉換發想節點', `<p>把此分頁的 ${nodes.length} 個發想節點全部轉成任務卡片？棋盤上的棋子會被清空。</p>`, '轉換')) return;
+            const today = app.worktime.localDateString();
             nodes.forEach(node => {
                 let cardColor = 'blue';
                 if (node.tag === 'q1') cardColor = 'red'; else if (node.tag === 'q3') cardColor = 'yellow'; else if (node.tag === 'q2') cardColor = 'green';
                 app.state.workspaces[app.state.activeTabId].push({
-                    id: 'card_' + Date.now() + Math.random(), title: node.text, content: '', project: node.project || '發想',
-                    category: '', plannedHours: '', progress: '', deliverable: '', acceptance: '', workLogs: [],
-                    dateMode: 'single', dateSingle: new Date().toISOString().split('T')[0], color: cardColor, status: 0, isMemo: false
+                    id: app.makeId('card'), title: node.text, content: '', project: node.project || '發想',
+                    category: '', progress: '', deliverable: '', acceptance: '', workLogs: [],
+                    dateMode: 'single', dateSingle: today, color: cardColor, status: 0, isMemo: false
                 });
             });
             app.state.nodes[app.state.activeTabId] = [];
-            app.saveToLocal(); this.renderTodo(); alert("✅ 轉換成功！");
+            app.saveToLocal(); this.renderTodo(); app.ui.toast(`已轉換 ${nodes.length} 個節點`);
         },
 
-        setTimerMode(mode) {
-            if (app.state.sandbox.timerStatus !== 'IDLE') this.commitTimerSession('心流計時（切換模式自動結算）');
-            clearInterval(app.state.sandbox.timerInterval);
-            app.state.sandbox.timerStatus = 'IDLE'; app.state.sandbox.mode = mode;
-            app.state.sandbox.timerTaskId = app.state.sandbox.activeTaskId || null;
-            app.state.sandbox.timerSessionSeconds = 0; app.state.sandbox.timerSessionStartedAt = null;
-            document.getElementById('sb-btn-mode-flex').className = mode === 'FLEXIBLE' ? 'sb-tab-btn active' : 'sb-tab-btn';
-            document.getElementById('sb-btn-mode-pomo').className = mode === 'POMODORO' ? 'sb-tab-btn active' : 'sb-tab-btn';
-            app.state.sandbox.seconds = mode === 'POMODORO' ? 25 * 60 : 0;
-            this.updateDisplay(); app.saveToLocal();
+        // ------------------------------------------
+        // ⏱️ 計時器：用「開始時間」計算，背景分頁／休眠／重新整理都不會少算
+        // ------------------------------------------
+        elapsedMs() {
+            const sb = app.state.sandbox;
+            let ms = (sb.segments || []).reduce((sum, [a, b]) => sum + Math.max(0, b - a), 0);
+            if (sb.timerStatus === 'RUNNING' && sb.segStart) ms += Math.max(0, Date.now() - sb.segStart);
+            return ms;
         },
 
-        startTimer() {
-            if (app.state.sandbox.timerStatus === 'RUNNING') return;
-            if (app.state.sandbox.timerStatus === 'IDLE') {
-                app.state.sandbox.timerTaskId = app.state.sandbox.activeTaskId || null;
-                app.state.sandbox.timerSessionSeconds = 0;
+        closeSegment(at = Date.now()) {
+            const sb = app.state.sandbox;
+            if (sb.segStart) {
+                if (at > sb.segStart) sb.segments.push([sb.segStart, at]);
+                sb.segStart = null;
             }
-            const targetCard = app.state.sandbox.timerTaskId ? app.worktime.getCard(app.state.sandbox.timerTaskId) : null;
-            if (targetCard && app.worktime.ensureStarted(targetCard)) {
-                app.saveToLocal();
-                this.renderTodo();
-                if (app.state.sandbox.activeTaskId === targetCard.id) app.entries.renderSandbox(targetCard);
-            }
-            app.state.sandbox.timerStatus = 'RUNNING';
-            app.state.sandbox.timerSessionStartedAt = new Date().toISOString();
-            app.state.sandbox.timerInterval = setInterval(() => {
-                app.state.sandbox.timerSessionSeconds++;
-                if (app.state.sandbox.mode === 'FLEXIBLE') app.state.sandbox.seconds++;
-                else {
-                    app.state.sandbox.seconds--;
-                    if (app.state.sandbox.seconds <= 0) { this.stopTimer(); return; }
+        },
+
+        splitByDay(segments) {
+            const map = {};
+            (segments || []).forEach(([a, b]) => {
+                let s = a;
+                while (s < b) {
+                    const d = new Date(s);
+                    const nextMidnight = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1).getTime();
+                    const e = Math.min(b, nextMidnight);
+                    const key = app.worktime.localDateString(d);
+                    map[key] = (map[key] || 0) + (e - s);
+                    s = e;
                 }
-                this.updateDisplay();
-            }, 1000);
-            this.updateDisplay();
+            });
+            return map;
         },
 
-        pauseTimer() {
-            if (app.state.sandbox.timerStatus !== 'RUNNING') return;
-            clearInterval(app.state.sandbox.timerInterval);
-            app.state.sandbox.timerStatus = 'PAUSED';
-            app.state.sandbox.timerSessionStartedAt = null;
-            this.updateDisplay(); app.saveToLocal();
+        // 同一個瀏覽器開了兩個分頁時，只有「目前這段計時」的擁有者能寫入工時，避免重複記兩次。
+        ownsTimer() {
+            const sb = app.state.sandbox;
+            let saved = null;
+            try { saved = JSON.parse(localStorage.getItem(this.timerKey()) || 'null'); } catch {}
+            if (!saved) return true;
+            if ((saved.sessionId || null) !== (sb.sessionId || null)) return false;
+            if (saved.timerStatus === 'IDLE' && sb.timerStatus !== 'IDLE') return false;
+            return true;
+        },
+
+        adoptStoredTimer() {
+            let saved = null;
+            try { saved = JSON.parse(localStorage.getItem(this.timerKey()) || 'null'); } catch {}
+            if (!saved) return;
+            const sb = app.state.sandbox;
+            this.stopTick();
+            sb.mode = saved.mode === 'POMODORO' ? 'POMODORO' : 'FLEXIBLE';
+            sb.timerStatus = ['RUNNING', 'PAUSED'].includes(saved.timerStatus) ? saved.timerStatus : 'IDLE';
+            sb.timerTaskId = saved.timerTaskId || null;
+            sb.segStart = sb.timerStatus === 'RUNNING' ? (saved.segStart || Date.now()) : null;
+            sb.segments = Array.isArray(saved.segments) ? saved.segments : [];
+            sb.sessionId = saved.sessionId || null;
+            if (sb.timerStatus === 'RUNNING') this.startTick();
+            this.updateDisplay(true);
+            app.refreshTimerButtons();
+            this.renderTodo();
+            // 另一個分頁記錄的工時，這裡的卡片也要跟著更新（資料本身會由 store.onStorage 同步）。
         },
 
         commitTimerSession(note = '心流計時') {
-            const taskId = app.state.sandbox.timerTaskId;
-            const sec = app.state.sandbox.timerSessionSeconds;
-            if (taskId && sec > 0) app.worktime.addTimerLog(taskId, sec, note);
-            app.state.sandbox.timerSessionSeconds = 0;
-            app.state.sandbox.timerSessionStartedAt = null;
-            if (taskId) {
+            const sb = app.state.sandbox;
+            if (!this.ownsTimer()) { this.adoptStoredTimer(); return 0; }
+            const wasRunning = sb.timerStatus === 'RUNNING';
+            this.closeSegment();
+            const taskId = sb.timerTaskId;
+            const byDay = this.splitByDay(sb.segments);
+            const totalMs = Object.values(byDay).reduce((a, b) => a + b, 0);
+            sb.segments = [];
+            const card = taskId ? app.worktime.getCard(taskId) : null;
+            let written = 0;
+            if (card) {
+                Object.entries(byDay).sort().forEach(([day, ms]) => {
+                    const sec = Math.round(ms / 1000);
+                    if (sec > 0 && app.worktime.addTimerLog(taskId, sec, note, day)) written += sec;
+                });
+            } else if (totalMs >= 60 * 1000) {
+                app.ui.toast(`這段 ${Math.round(totalMs / 60000)} 分鐘的計時沒有綁定卡片，沒有寫入工時。`, 'warn', 5000);
+            }
+            if (wasRunning) sb.segStart = Date.now();
+            this.persistTimer();
+            if (card) {
+                app.refreshCard(taskId);
+                if (sb.activeTaskId === taskId) app.entries.renderSandbox(card);
+            }
+            return written;
+        },
+
+        setTimerMode(mode) {
+            const sb = app.state.sandbox;
+            if (sb.timerStatus !== 'IDLE') this.stopTimer('心流計時（切換模式自動結算）');
+            sb.mode = mode === 'POMODORO' ? 'POMODORO' : 'FLEXIBLE';
+            document.getElementById('sb-btn-mode-flex').className = sb.mode === 'FLEXIBLE' ? 'sb-tab-btn active' : 'sb-tab-btn';
+            document.getElementById('sb-btn-mode-pomo').className = sb.mode === 'POMODORO' ? 'sb-tab-btn active' : 'sb-tab-btn';
+            this.persistTimer();
+            this.updateDisplay(true);
+        },
+
+        startTimer() {
+            const sb = app.state.sandbox;
+            if (sb.timerStatus === 'RUNNING') return;
+            if (sb.timerStatus === 'IDLE') {
+                sb.timerTaskId = sb.activeTaskId || null;
+                sb.segments = [];
+            }
+            const targetCard = sb.timerTaskId ? app.worktime.getCard(sb.timerTaskId) : null;
+            if (targetCard && app.worktime.ensureStarted(targetCard)) {
+                app.saveToLocal();
+                app.refreshCard(targetCard.id);
+                if (sb.activeTaskId === targetCard.id) app.entries.renderSandbox(targetCard);
+            }
+            const fresh = sb.timerStatus === 'IDLE';
+            if (fresh) sb.sessionId = app.makeId('timer');
+            else if (!this.ownsTimer()) { this.adoptStoredTimer(); return; }
+            sb.timerStatus = 'RUNNING';
+            sb.segStart = Date.now();
+            this.persistTimer(fresh);
+            this.startTick();
+            this.renderTodo();
+            this.updateDisplay(true);
+            app.refreshTimerButtons();
+        },
+
+        pauseTimer() {
+            const sb = app.state.sandbox;
+            if (sb.timerStatus !== 'RUNNING') return;
+            this.closeSegment();
+            sb.timerStatus = 'PAUSED';
+            this.stopTick();
+            this.persistTimer();
+            this.updateDisplay(true);
+            app.refreshTimerButtons();
+        },
+
+        stopTimer(note = '心流計時') {
+            const sb = app.state.sandbox;
+            if (sb.timerStatus === 'IDLE') return;
+            if (!this.ownsTimer()) { this.adoptStoredTimer(); app.ui.toast('這段計時已在另一個分頁結束並記錄'); return; }
+            const taskId = sb.timerTaskId;
+            sb.timerStatus = 'PAUSED'; // 讓 commit 不再接續新的一段
+            this.closeSegment();
+            const sec = this.commitTimerSession(note);
+            sb.timerStatus = 'IDLE';
+            sb.segStart = null;
+            sb.segments = [];
+            sb.timerTaskId = sb.activeTaskId || null;
+            sb.sessionId = null;
+            this.stopTick();
+            this.persistTimer(true);
+            this.updateDisplay(true);
+            this.renderTodo();
+            app.refreshTimerButtons();
+            if (sec > 0 && taskId) {
                 const card = app.worktime.getCard(taskId);
-                if (card && app.state.sandbox.activeTaskId === taskId) app.entries.renderSandbox(card);
+                app.ui.toast(`⏱️ 已記錄 ${app.worktime.formatDuration(sec)} 到「${card?.title || '未命名'}」`);
             }
         },
 
-        stopTimer() {
-            clearInterval(app.state.sandbox.timerInterval);
-            this.commitTimerSession('心流計時');
-            app.state.sandbox.timerStatus = 'IDLE';
-            app.state.sandbox.timerTaskId = app.state.sandbox.activeTaskId || null;
-            app.state.sandbox.seconds = app.state.sandbox.mode === 'POMODORO' ? 25 * 60 : 0;
-            this.updateDisplay(); app.saveToLocal(); this.renderTodo();
+        // 卡片上的 ⏱️：直接在原地開始／停止，不用切到沙盒。
+        quickTimer(cardId) {
+            const sb = app.state.sandbox;
+            const card = app.worktime.getCard(cardId);
+            if (!card) return;
+            if (sb.timerStatus !== 'IDLE' && sb.timerTaskId === cardId) { this.stopTimer(); return; }
+            if (sb.timerStatus !== 'IDLE') {
+                const prev = app.worktime.getCard(sb.timerTaskId);
+                this.commitTimerSession('心流計時（切換任務自動結算）');
+                sb.timerTaskId = cardId;
+                sb.activeTaskId = cardId;
+                if (sb.timerStatus === 'PAUSED') { sb.timerStatus = 'IDLE'; this.startTimer(); }
+                else { app.worktime.ensureStarted(card) && app.saveToLocal(); this.persistTimer(); this.updateDisplay(true); app.refreshTimerButtons(); this.renderTodo(); }
+                app.ui.toast(`改為計時「${card.title || '未命名'}」${prev ? `（「${prev.title || '未命名'}」已記錄）` : ''}`);
+                return;
+            }
+            sb.activeTaskId = cardId;
+            this.startTimer();
+            app.ui.toast(`⏱️ 開始計時「${card.title || '未命名'}」，再按一次 ⏹ 停止並記錄`);
         },
 
-        updateDisplay() {
-            let sec = app.state.sandbox.seconds;
-            let h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
-            let timeStr = (h>0 ? `${h.toString().padStart(2,'0')}:` : '') + `${m.toString().padStart(2,'0')}:${s.toString().padStart(2,'0')}`;
+        startTick() {
+            this.stopTick();
+            this.tickHandle = setInterval(() => this.tick(), 1000);
+        },
+        stopTick() { if (this.tickHandle) clearInterval(this.tickHandle); this.tickHandle = null; },
 
+        tick() {
+            const sb = app.state.sandbox;
+            if (sb.timerStatus !== 'RUNNING') { this.stopTick(); return; }
+            if (sb.mode === 'POMODORO') {
+                const closed = (sb.segments || []).reduce((sum, [a, b]) => sum + Math.max(0, b - a), 0);
+                if (closed + (Date.now() - sb.segStart) >= POMODORO_MS) {
+                    this.closeSegment(sb.segStart + (POMODORO_MS - closed));
+                    sb.timerStatus = 'PAUSED';
+                    this.stopTimer('番茄鐘');
+                    app.ui.toast('🍅 25 分鐘到了，休息一下！這段已記錄。', 'info', 8000);
+                    try { if (navigator.vibrate) navigator.vibrate(300); } catch {}
+                    return;
+                }
+            }
+            if (Date.now() - this.lastPersistAt > 20000) this.persistTimer();
+            this.updateDisplay();
+        },
+
+        timerKey() { return app.currentUser ? `whiteboard_timer_${app.currentUser.uid}` : null; },
+
+        persistTimer(force = false) {
+            const key = this.timerKey();
+            if (!key) return;
+            // 另一個分頁已經接手（開始新的計時或已經停止）：不要用這頁的舊狀態蓋回去。
+            if (!force && !this.ownsTimer()) { this.adoptStoredTimer(); return; }
+            const sb = app.state.sandbox;
+            this.lastPersistAt = Date.now();
+            try {
+                localStorage.setItem(key, JSON.stringify({
+                    mode: sb.mode, timerStatus: sb.timerStatus, timerTaskId: sb.timerTaskId,
+                    segStart: sb.segStart, segments: sb.segments, activeTaskId: sb.activeTaskId,
+                    sessionId: sb.sessionId || null, lastSeenAt: Date.now()
+                }));
+            } catch (err) { console.warn('計時狀態未保存', err); }
+        },
+
+        resetTimerState() {
+            const sb = app.state.sandbox;
+            this.stopTick();
+            Object.assign(sb, { timerStatus: 'IDLE', timerTaskId: null, segStart: null, segments: [], sessionId: null });
+            this.persistTimer(true);
+            this.updateDisplay(true);
+        },
+
+        async restoreTimer() {
+            const key = this.timerKey();
+            const sb = app.state.sandbox;
+            Object.assign(sb, { timerStatus: 'IDLE', timerTaskId: null, segStart: null, segments: [], mode: 'FLEXIBLE', sessionId: null });
+            let saved = null;
+            try { saved = JSON.parse(localStorage.getItem(key) || 'null'); } catch {}
+            if (saved) {
+                sb.mode = saved.mode === 'POMODORO' ? 'POMODORO' : 'FLEXIBLE';
+                if (saved.activeTaskId && app.worktime.getCard(saved.activeTaskId)) sb.activeTaskId = saved.activeTaskId;
+            }
+            document.getElementById('sb-btn-mode-flex').className = sb.mode === 'FLEXIBLE' ? 'sb-tab-btn active' : 'sb-tab-btn';
+            document.getElementById('sb-btn-mode-pomo').className = sb.mode === 'POMODORO' ? 'sb-tab-btn active' : 'sb-tab-btn';
+            if (!saved || saved.timerStatus === 'IDLE' || !saved.timerStatus) { this.updateDisplay(true); return; }
+
+            sb.timerStatus = saved.timerStatus === 'RUNNING' ? 'RUNNING' : 'PAUSED';
+            sb.timerTaskId = saved.timerTaskId || null;
+            sb.segStart = sb.timerStatus === 'RUNNING' ? (saved.segStart || Date.now()) : null;
+            sb.segments = Array.isArray(saved.segments) ? saved.segments.filter(x => Array.isArray(x) && x.length === 2) : [];
+            sb.sessionId = saved.sessionId || null;
+            if (sb.timerStatus === 'RUNNING') this.startTick();
+            this.updateDisplay(true);
+            app.refreshTimerButtons();
+
+            const card = sb.timerTaskId ? app.worktime.getCard(sb.timerTaskId) : null;
+            const name = card ? `「${card.title || '未命名'}」` : '（未綁定卡片）';
+            const lastSeen = Number(saved.lastSeenAt) || sb.segStart || Date.now();
+            if (sb.timerStatus === 'RUNNING' && Date.now() - lastSeen > 30 * 60 * 1000) {
+                const total = Math.round(this.elapsedMs() / 60000);
+                const upTo = Math.round(((sb.segments || []).reduce((s, [a, b]) => s + (b - a), 0) + Math.max(0, lastSeen - sb.segStart)) / 60000);
+                const choice = await app.ui.dialog({
+                    title: '計時器一直在跑',
+                    html: `<p>${app.entries.escapeHtml(name)} 的計時從上次開著頁面（${app.ui.fmtTime(lastSeen)}）之後就沒人看，但一直沒有停。</p><p>目前累計 <b>${app.worktime.formatMinutes(total)}</b>；如果只算到 ${app.ui.fmtTime(lastSeen)} 是 <b>${app.worktime.formatMinutes(upTo)}</b>。</p>`,
+                    buttons: [
+                        { label: '這段不要記', value: 'discard', danger: true },
+                        { label: '全部算進去，繼續計時', value: 'all' },
+                        { label: `只算到 ${app.ui.fmtTime(lastSeen)} 並停止`, value: 'cut', primary: true }
+                    ]
+                });
+                if (choice === 'cut') {
+                    this.closeSegment(Math.max(sb.segStart || lastSeen, lastSeen));
+                    sb.timerStatus = 'PAUSED';
+                    this.stopTimer();
+                } else if (choice === 'discard') {
+                    this.resetTimerState();
+                    sb.timerTaskId = sb.activeTaskId || null;
+                    app.refreshTimerButtons();
+                    app.ui.toast('已捨棄這段計時');
+                }
+            } else if (sb.timerStatus === 'RUNNING') {
+                app.ui.toast(`⏱️ 接續先前的計時：${name}`);
+            }
+        },
+
+        fmtClock(sec) {
+            const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+            return (h > 0 ? `${String(h).padStart(2, '0')}:` : '') + `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+        },
+
+        displaySeconds() {
+            const sb = app.state.sandbox;
+            const el = Math.floor(this.elapsedMs() / 1000);
+            if (sb.mode === 'POMODORO') return Math.max(0, Math.round(POMODORO_MS / 1000) - el);
+            return el;
+        },
+
+        updateDisplay(force = false) {
+            const sb = app.state.sandbox;
+            const timeStr = this.fmtClock(this.displaySeconds());
             const display = document.getElementById('sb-timeDisplay');
-            if (!display) return;
-            display.innerText = timeStr;
+            if (display) display.innerText = timeStr;
+            const pillTime = document.getElementById('timer-pill-time');
+            if (pillTime) pillTime.textContent = timeStr;
+
+            if (!force && this.lastShownStatus === `${sb.timerStatus}|${sb.timerTaskId}|${sb.activeTaskId}|${sb.mode}`) {
+                const targetBox = document.getElementById('sb-timerTarget');
+                const acc = targetBox?.querySelector('.timer-acc');
+                if (acc) acc.textContent = app.worktime.formatDuration(Math.floor(this.elapsedMs() / 1000));
+                return;
+            }
+            this.lastShownStatus = `${sb.timerStatus}|${sb.timerTaskId}|${sb.activeTaskId}|${sb.mode}`;
+            const esc = s => app.entries.escapeHtml(s);
             const gifBox = document.getElementById('sb-gifContainer');
             const statusText = document.getElementById('sb-statusText');
             const targetBox = document.getElementById('sb-timerTarget');
-
-            const targetCard = app.state.sandbox.timerTaskId ? app.worktime.getCard(app.state.sandbox.timerTaskId) : null;
-            const activeCard = app.state.sandbox.activeTaskId ? app.worktime.getCard(app.state.sandbox.activeTaskId) : null;
+            const targetCard = sb.timerTaskId ? app.worktime.getCard(sb.timerTaskId) : null;
+            const activeCard = sb.activeTaskId ? app.worktime.getCard(sb.activeTaskId) : null;
             if (targetBox) {
-                if (targetCard) {
-                    targetBox.innerHTML = `記錄到：<strong>${app.entries.escapeHtml(targetCard.title || '未命名')}</strong><br>本段已累積 ${app.worktime.formatDuration(app.state.sandbox.timerSessionSeconds)}，停止時自動寫入卡片。`;
+                if (targetCard && sb.timerStatus !== 'IDLE') {
+                    targetBox.innerHTML = `記錄到：<strong>${esc(targetCard.title || '未命名')}</strong><br>本段已累積 <span class="timer-acc">${app.worktime.formatDuration(Math.floor(this.elapsedMs() / 1000))}</span>，停止時自動寫入卡片（跨午夜會自動分日）。`;
                 } else if (activeCard) {
-                    targetBox.innerHTML = `準備記錄到：<strong>${app.entries.escapeHtml(activeCard.title || '未命名')}</strong><br>按「啟動」後開始累積工時。`;
+                    targetBox.innerHTML = `準備記錄到：<strong>${esc(activeCard.title || '未命名')}</strong><br>按「啟動」後開始累積工時。`;
                 } else {
-                    targetBox.innerText = '目前未綁定卡片。計時仍可使用，但不會寫入工時；先從任務矩陣選一張卡即可。';
+                    targetBox.innerText = '目前未綁定卡片。計時仍可使用，但不會寫入工時；先從任務矩陣選一張卡，或直接按卡片上的 ⏱️。';
                 }
             }
-
-            if (app.state.sandbox.timerStatus === 'RUNNING') {
-                display.style.color = '#28a745';
-                gifBox.innerHTML = `<img src="${this.GIF_URL}">`; statusText.innerText = '工作中';
-            } else if (app.state.sandbox.timerStatus === 'PAUSED') {
-                display.style.color = '#ffc107';
-                gifBox.innerHTML = `<span style="color:#aaa">暫停</span>`; statusText.innerText = '暫停中';
-            } else {
-                display.style.color = '#343a40';
-                gifBox.innerHTML = `<span style="color:#ccc">停止</span>`; statusText.innerText = '閒置';
+            if (display && gifBox && statusText) {
+                if (sb.timerStatus === 'RUNNING') {
+                    display.style.color = '#28a745';
+                    gifBox.innerHTML = `<img src="${this.GIF_URL}" alt="">`; statusText.innerText = '工作中';
+                } else if (sb.timerStatus === 'PAUSED') {
+                    display.style.color = '#ffc107';
+                    gifBox.innerHTML = `<span style="color:#aaa">暫停</span>`; statusText.innerText = '暫停中';
+                } else {
+                    display.style.color = '#343a40';
+                    gifBox.innerHTML = `<span style="color:#ccc">停止</span>`; statusText.innerText = '閒置';
+                }
             }
+            this.renderPill(targetCard);
         },
+
+        renderPill(targetCard) {
+            const pill = document.getElementById('timer-pill');
+            if (!pill) return;
+            const sb = app.state.sandbox;
+            const esc = s => app.entries.escapeHtml(s);
+            if (sb.timerStatus === 'IDLE') {
+                pill.className = 'btn timer-pill';
+                pill.innerHTML = `<span onclick="app.switchView('sandbox')">⏱️ <span class="nav-btn-label">心流</span></span>`;
+                return;
+            }
+            const running = sb.timerStatus === 'RUNNING';
+            pill.className = `btn timer-pill ${running ? 'running' : 'paused'}`;
+            pill.innerHTML = `<span class="timer-pill-main" onclick="app.switchView('sandbox')" title="打開心流沙盒">${running ? '●' : '❚❚'} <span id="timer-pill-time">${this.fmtClock(this.displaySeconds())}</span> <span class="timer-pill-title">${esc(targetCard?.title || '未綁定')}</span></span>`
+                + `<button type="button" class="timer-pill-btn" title="${running ? '暫停' : '繼續'}" onclick="event.stopPropagation(); app.sandbox.${running ? 'pauseTimer' : 'startTimer'}()">${running ? '⏸' : '▶'}</button>`
+                + `<button type="button" class="timer-pill-btn" title="停止並記錄" onclick="event.stopPropagation(); app.sandbox.stopTimer()">⏹</button>`;
+        },
+
+        syncDeadlineInputs() {
+            const t = document.getElementById('sb-deadlineTask');
+            const d = document.getElementById('sb-deadlineDate');
+            if (t) t.value = app.state.sandbox.deadlineTask || '';
+            if (d) d.value = app.state.sandbox.deadlineDate || '';
+            this.renderCountdown();
+        },
+
         updateCountdown() {
-            const task = document.getElementById('sb-deadlineTask').value, dateStr = document.getElementById('sb-deadlineDate').value, box = document.getElementById('sb-countdownDisplay');
-            app.state.sandbox.deadlineTask = task; app.state.sandbox.deadlineDate = dateStr; app.saveToLocal(); 
-            if (!dateStr) { box.style.display = 'none'; return; }
-            const target = new Date(dateStr), today = new Date(); today.setHours(0,0,0,0); target.setHours(0,0,0,0);
-            const diffDays = Math.ceil((target - today) / (1000 * 60 * 60 * 24));
-            box.style.display = 'block';
-            if (diffDays > 0) { box.style.background = '#dc3545'; box.innerHTML = `🔥 ${task} 倒數：${diffDays} 天`; }
-            else if (diffDays === 0) { box.style.background = '#ffc107'; box.style.color = '#333'; box.innerHTML = `🔥 ${task} 今天截止！`; }
-            else { box.style.background = '#6c757d'; box.innerHTML = `🚨 ${task} 已過期 ${Math.abs(diffDays)} 天`; }
+            app.state.sandbox.deadlineTask = document.getElementById('sb-deadlineTask').value;
+            app.state.sandbox.deadlineDate = document.getElementById('sb-deadlineDate').value;
+            app.saveToLocal();
+            this.renderCountdown();
         },
+
+        renderCountdown() {
+            const box = document.getElementById('sb-countdownDisplay');
+            if (!box) return;
+            const task = app.state.sandbox.deadlineTask || '';
+            const target = app.worktime.parseLocalDate(app.state.sandbox.deadlineDate);
+            if (!target) { box.style.display = 'none'; return; }
+            const today = new Date(); today.setHours(0, 0, 0, 0);
+            const diffDays = Math.round((target - today) / 86400000);
+            box.style.display = 'block';
+            box.style.color = 'white';
+            if (diffDays > 0) { box.style.background = '#dc3545'; box.textContent = `🔥 ${task} 倒數：${diffDays} 天`; }
+            else if (diffDays === 0) { box.style.background = '#ffc107'; box.style.color = '#333'; box.textContent = `🔥 ${task} 今天截止！`; }
+            else { box.style.background = '#6c757d'; box.textContent = `🚨 ${task} 已過期 ${Math.abs(diffDays)} 天`; }
+        },
+
         downloadMarkdown() {
             const cards = this.getActiveCards();
             const completed = cards.filter(c => c.status === 2).length;
-            
             let md = `# 🌟 心流當日總結\n*結算時間: ${new Date().toLocaleString('zh-TW')}*\n\n`;
             md += `📊 **戰報統計**：母專案完成 **${completed}** 項 / 總共 **${cards.length}** 項\n\n---\n\n`;
-            if (app.state.globalNotebook.free.trim()) md += `## 📝 全域筆記\n\n${app.state.globalNotebook.free.trim()}\n\n---\n\n`;
-
+            if ((app.state.globalNotebook.free || '').trim()) md += `## 📝 全域筆記\n\n${app.state.globalNotebook.free.trim()}\n\n---\n\n`;
             const formatCard = (c) => {
-                let cb = c.status === 2 ? '- [x]' : '- [ ]';
-                let str = `${cb} **${c.title}**\n`;
+                let str = `${c.status === 2 ? '- [x]' : '- [ ]'} **${c.title || '未命名'}**\n`;
                 if (c.content && c.content.trim()) str += c.content.trim().split('\n').map(l => `    ${l}`).join('\n') + `\n\n`;
                 else str += `\n`;
                 return str;
             };
-
             const p1 = cards.filter(c => c.color === 'red'); const p2 = cards.filter(c => c.color === 'yellow'); const p3 = cards.filter(c => c.color !== 'red' && c.color !== 'yellow');
             if (p1.length > 0) { md += `## 🔴 【P1 · 核心攻堅】\n\n`; p1.forEach(c => md += formatCard(c)); }
             if (p2.length > 0) { md += `## 🟡 【P2 · 戰術推進】\n\n`; p2.forEach(c => md += formatCard(c)); }
             if (p3.length > 0) { md += `## 🔵 【P3 · 日常雜務】\n\n`; p3.forEach(c => md += formatCard(c)); }
-            
             const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
             const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
-            a.download = `心流備份_${new Date().toISOString().split('T')[0]}.md`;
+            a.download = `心流備份_${app.worktime.localDateString()}.md`;
             document.body.appendChild(a); a.click(); document.body.removeChild(a);
         }
     },
@@ -1975,204 +3857,252 @@ const app = {
         document.querySelectorAll('.toolbar .btn').forEach(el => el.classList.remove('active'));
         if (document.getElementById('view-' + viewName)) document.getElementById('view-' + viewName).classList.add('active');
         if (document.getElementById('btn-view-' + viewName)) document.getElementById('btn-view-' + viewName).classList.add('active');
-        
-        if(viewName === 'sandbox') { 
-            this.sandbox.refreshActiveNoteUI(); 
-            this.sandbox.renderTodo(); 
-        } else { 
-            this.renderAll(); 
+        if (this.state.showProjectBar) document.getElementById('btn-project-bar')?.classList.add('active');
+        if (this.taskNav?.ui?.open) document.getElementById('btn-task-nav')?.classList.add('active');
+        this.rememberPrefs();
+
+        if (viewName === 'sandbox') {
+            this.renderTabs();
+            this.sandbox.refreshActiveNoteUI();
+            this.sandbox.renderTodo();
+            this.sandbox.updateDisplay(true);
+        } else {
+            this.renderAll();
         }
     },
 
     renderAll() {
         this.renderTabs(); if (this.state.showProjectBar) this.renderProjectBar();
-        
-        if (this.state.view === 'timeline') this.renderTimeline(); 
-        else if (this.state.view === 'kanban') this.renderKanban(); 
-        else if (this.state.view === 'matrix') this.renderMatrix(); 
-        else if (this.state.view === 'chronicle') this.renderChronicle(); 
-        else if (this.state.view === 'gantt') this.renderGantt(); 
+        if (this.state.view === 'timeline') this.renderTimeline();
+        else if (this.state.view === 'matrix') this.renderMatrix();
+        else if (this.state.view === 'chronicle') this.renderChronicle();
+        else if (this.state.view === 'gantt') this.renderGantt();
         else if (this.state.view === 'calendar') this.renderCalendar();
+        else if (this.state.view === 'report') this.report.render();
+        else if (this.state.view === 'sandbox') this.sandbox.renderTodo();
     },
 
-    toggleProjectBar() { this.state.showProjectBar = !this.state.showProjectBar; document.getElementById('project-bar').style.display = this.state.showProjectBar ? 'flex' : 'none'; if(this.state.showProjectBar) document.body.classList.add('has-project-bar'); else document.body.classList.remove('has-project-bar'); this.renderProjectBar(); },
+    toggleProjectBar(forceOn = null) {
+        this.state.showProjectBar = forceOn === null ? !this.state.showProjectBar : !!forceOn;
+        document.getElementById('project-bar').style.display = this.state.showProjectBar ? 'flex' : 'none';
+        document.body.classList.toggle('has-project-bar', this.state.showProjectBar);
+        document.getElementById('btn-project-bar')?.classList.toggle('active', this.state.showProjectBar);
+        this.renderProjectBar();
+        this.rememberPrefs();
+    },
     openNotebook() { document.getElementById('nb-template').value = this.state.globalNotebook.template; this.renderNotebookArea(); document.getElementById('modal-notebook').style.display = 'flex'; },
     closeNotebook() { document.getElementById('modal-notebook').style.display = 'none'; },
-    toggleTsumego() { this.state.tsumego.isOpen = !this.state.tsumego.isOpen; const panel = document.getElementById('tsumego-panel'); if(this.state.tsumego.isOpen) { panel.style.display = 'block'; if(window.innerWidth > 768 && panel.style.transform !== 'none' && !panel.style.left) { panel.style.top = '10vh'; panel.style.left = '10vw'; } } else { panel.style.display = 'none'; } },
+    toggleTsumego() { this.state.tsumego.isOpen = !this.state.tsumego.isOpen; const panel = document.getElementById('tsumego-panel'); if(this.state.tsumego.isOpen) { panel.style.display = 'block'; if(window.innerWidth > 768 && panel.style.transform !== 'none' && !panel.style.left) { panel.style.top = '10vh'; panel.style.left = '10vw'; } this.renderTsumegoStones(); } else { panel.style.display = 'none'; } },
 
     renderTabs() {
+        const esc = s => this.entries.escapeHtml(s);
         const isMobile = window.innerWidth <= 768;
         const html = this.state.tabs.map(t => {
             const isActive = t.id === this.state.activeTabId;
             const gearBtn = (isActive && t.id !== 'main' && !isMobile) ? `<div style="margin-top:10px; font-size:1.1rem; cursor:pointer;" onclick="event.stopPropagation(); app.actions.manageTab(event, '${t.id}')">⚙️</div>` : '';
-            return `<div class="tab-item ${isActive ? 'active' : ''}" onclick="app.actions.switchTab('${t.id}')" oncontextmenu="app.actions.manageTab(event, '${t.id}')"><div class="tab-name">${t.name}</div>${gearBtn}</div>`
-        }).join('') + `<div class="tab-add" onclick="app.actions.addTab()">＋</div>`;
+            return `<div class="tab-item ${isActive ? 'active' : ''}" onclick="app.actions.switchTab('${t.id}')" oncontextmenu="app.actions.manageTab(event, '${t.id}')"><div class="tab-name">${esc(t.name)}</div>${gearBtn}</div>`;
+        }).join('') + `<div class="tab-add" onclick="app.actions.addTab()" title="新增工作區">＋</div>`;
         document.getElementById('tab-bar').innerHTML = html;
     },
 
     renderProjectBar() {
+        const esc = s => this.entries.escapeHtml(s);
         const cards = this.state.workspaces[this.state.activeTabId] || []; const nodes = this.state.nodes[this.state.activeTabId] || [];
-        const projects = new Set([...cards.map(c => c.project), ...nodes.map(n => n.project)].filter(p => p && p.trim() !== ''));
+        this._projectBarList = [...new Set([...cards.map(c => c.project), ...nodes.map(n => n.project)].filter(p => p && p.trim() !== ''))];
         let html = `<div class="proj-badge" onclick="app.setFilter('project', null)">清除過濾</div>`;
-        projects.forEach(p => { const active = this.state.filters.activeProject === p ? 'active' : ''; html += `<div class="proj-badge ${active}" onclick="app.setFilter('project', '${p}')">${p}</div>`; });
+        this._projectBarList.forEach((p, i) => { const active = this.state.filters.activeProject === p ? 'active' : ''; html += `<div class="proj-badge ${active}" onclick="app.setFilterIndex(${i})">${esc(p)}</div>`; });
         document.getElementById('project-bar').innerHTML = html;
     },
 
+    openProjectLab(projectName = '') {
+        this.store.flush();
+        this.sandbox.persistTimer();
+        const q = projectName ? `?projectName=${encodeURIComponent(projectName)}` : '';
+        location.href = `../workflow/${q}`;
+    },
+
+    setFilterIndex(i) { this.setFilter('project', this._projectBarList?.[i] ?? null); },
+
+    timelineSortKey(card) {
+        return card.dateMode === 'range' ? (card.dateStart || '') : (card.dateSingle || '');
+    },
+
     renderTimeline() {
-        let cards = this.state.workspaces[this.state.activeTabId] || [];
+        const esc = s => this.entries.escapeHtml(s);
+        let cards = [...(this.state.workspaces[this.state.activeTabId] || [])];
         if (this.state.filters.activeProject) cards = cards.filter(c => c.project === this.state.filters.activeProject);
-        
-        cards = cards.sort((a, b) => { 
-            const dA = a.dateMode === 'range' ? a.dateStart : a.dateSingle; 
-            const dB = b.dateMode === 'range' ? b.dateStart : b.dateSingle; 
-            if(!dA) return 1; if(!dB) return -1; return new Date(dA) - new Date(dB); 
+        // 排序只排「顯示用的複本」，不改動資料本身的順序。
+        cards.sort((a, b) => {
+            const dA = this.timelineSortKey(a), dB = this.timelineSortKey(b);
+            if (!dA && !dB) return 0;
+            if (!dA) return 1;
+            if (!dB) return -1;
+            return dA.localeCompare(dB);
         });
 
         const groupedCards = {};
         cards.forEach(card => {
-            const projName = card.project || '日常雜項 (未分類)';
+            const projName = String(card.project || '').trim() || '日常雜項 (未分類)';
             if (!groupedCards[projName]) groupedCards[projName] = [];
             groupedCards[projName].push(card);
         });
 
-        const tabOptionsHtml = this.state.tabs.map(t => `<option value="${t.id}">${t.name}</option>`).join('');
+        const tabOptionsHtml = this.state.tabs.map(t => `<option value="${t.id}">${esc(t.name)}</option>`).join('');
+        const collapsed = this.prefs.collapsedGroups || {};
 
         let html = '';
         for (const [project, projCards] of Object.entries(groupedCards)) {
+            const gkey = `${this.state.activeTabId}::${project}`;
+            const isCollapsed = !!collapsed[gkey];
             html += `
             <div class="timeline-group" style="margin-top: 15px; margin-bottom: 10px;">
-                <div onclick="const content = this.nextElementSibling; content.style.display = content.style.display === 'none' ? 'block' : 'none'; this.querySelector('.toggle-icon').innerText = content.style.display === 'none' ? '▶' : '▼';" 
-                     style="margin-left: 45px; position: relative; z-index: 5; cursor: pointer; background: #f1f5f9; padding: 8px 12px; border-radius: 6px; font-weight: bold; color: #334155; display: flex; justify-content: space-between; border-left: 4px solid var(--primary);">
-                    <span>${project} <span style="font-size: 0.8rem; color: #64748b; margin-left: 5px;">(${projCards.length} 筆任務)</span></span>
-                    <span class="toggle-icon" style="font-size: 0.8rem; color: #94a3b8;">▼</span>
+                <div class="timeline-group-head" data-gkey="${esc(gkey)}" onclick="app.toggleTimelineGroup(this)">
+                    <span>${esc(project)} <span style="font-size: 0.8rem; color: #64748b; margin-left: 5px;">(${projCards.length} 筆任務)</span></span>
+                    <button type="button" class="group-lab-btn" title="請 AI 老師示範這個專案怎麼拆" onclick="event.stopPropagation(); app.coach.open({ template: 'wbs', project: ${esc(JSON.stringify(projCards[0]?.project?.trim() || ''))} })">🧑‍🏫 拆解</button>
+                    <button type="button" class="group-lab-btn" style="margin-left:0" title="在 Project Lab 打開這個專案（釐清、復盤、AI 討論）" onclick="event.stopPropagation(); app.openProjectLab(${esc(JSON.stringify(projCards[0]?.project?.trim() || '未分類'))})">🔬 復盤</button>
+                    <span class="toggle-icon" style="font-size: 0.8rem; color: #94a3b8;">${isCollapsed ? '▶' : '▼'}</span>
                 </div>
-                <div class="timeline-group-content" style="padding-left: 10px; margin-top: 10px;">
-            `;
-
-            html += projCards.map(card => {
-                const dateHtml = card.isMemo
-                    ? `<span class="free-card-note">自由卡｜不進甘特與工項 Excel</span>`
-                    : (card.dateMode === 'single'
-                        ? `<span style="font-size:0.8rem;color:#64748b;">預計</span><input type="date" class="input-date" value="${card.dateSingle || ''}" onchange="app.actions.updateCard('${card.id}', 'dateSingle', this.value)">`
-                        : `<span style="font-size:0.8rem;color:#64748b;">預計起</span><input type="date" class="input-date" value="${card.dateStart || ''}" onchange="app.actions.updateCard('${card.id}', 'dateStart', this.value)"><span style="font-size:0.8rem;color:#64748b;">迄</span><input type="date" class="input-date" value="${card.dateEnd || ''}" onchange="app.actions.updateCard('${card.id}', 'dateEnd', this.value)">`);
-                return `
-                <div class="card-wrapper"><div class="card-dot"></div>
-                    <div class="card ${card.isMemo ? 'memo-mode' : ''}" data-color="${card.color}" data-id="${card.id}">
-                        <div class="card-header">
-                            <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-                                <div class="status-dot status-${card.status}" onclick="app.actions.cycleStatus('${card.id}')"></div>
-                                <button class="icon-btn" onclick="app.actions.toggleMemo('${card.id}')">${card.isMemo ? '♾️' : '📅'}</button>
-                                ${dateHtml}
-                            </div>
-                            <div style="display:flex; gap:5px;">
-                                <button class="icon-btn chronicle-pin-btn ${card.chroniclePinned ? 'active' : ''}" onclick="app.actions.toggleChronicle('${card.id}')" title="${card.chroniclePinned ? '移出大事記' : '加入大事記'}">${card.chroniclePinned ? '⭐' : '☆'}</button>
-                                <button class="icon-btn" onclick="app.sandbox.focusTaskForTimer('${card.id}')" title="進入心流並將計時綁定此卡">⏱️</button>
-                                <button class="icon-btn" onclick="app.actions.toggleDateMode('${card.id}')">↔️</button>
-                                <button class="icon-btn" onclick="app.actions.cycleColor('${card.id}')">🎨</button>
-                            </div>
-                        </div>
-                        <div class="card-body">
-                            <input type="text" class="input-title" value="${card.title}" placeholder="🏷️ 標題..." onchange="app.actions.updateCard('${card.id}', 'title', this.value)">
-                            <textarea class="input-content" placeholder="📝 寫下卡片細節..." oninput="this.style.height='auto'; this.style.height=this.scrollHeight+'px';" onchange="app.actions.updateCard('${card.id}', 'content', this.value)">${card.content}</textarea>
-                            ${this.worktime.renderPlanningPanel(card, 'timeline')}
-                            ${this.worktime.renderPanel(card, 'timeline')}
-                            ${this.entries.renderCardPanel(card, 'timeline')}
-                        </div>
-                        <div class="card-footer" style="display: flex; gap: 8px; align-items: center; justify-content: flex-end;">
-                            <input type="text" class="input-project" value="${card.project}" placeholder="#專案名稱" onchange="app.actions.updateCard('${card.id}', 'project', this.value)">
-                            <select class="icon-btn" style="width: auto; padding: 0 5px; font-size: 0.85rem;" onchange="if(this.value) { app.actions.moveCard('${card.id}', this.value); this.value=''; }">
-                                <option value="" disabled selected>🚀 轉移至...</option>${tabOptionsHtml}
-                            </select>
-                            <button class="icon-btn" onclick="app.actions.deleteCard('${card.id}')" style="color:#ef4444; border-color:#fca5a5; width:34px; height:34px;" title="刪除此卡片">🗑️</button>
-                        </div>
-                    </div>
-                </div>`;
-            }).join('');
-            
-            html += `</div></div>`; 
+                <div class="timeline-group-content" style="padding-left: 10px; margin-top: 10px; ${isCollapsed ? 'display:none;' : ''}">
+                    ${isCollapsed ? '' : projCards.map(card => this.renderTimelineCard(card, tabOptionsHtml)).join('')}
+                </div>
+            </div>`;
         }
 
         if (cards.length === 0) {
-            html = `<div style="text-align:center; padding: 40px; color: #94a3b8;">此區域目前沒有卡片，點擊右下角 ＋ 新增。</div>`;
+            html = `<div style="text-align:center; padding: 40px; color: #94a3b8;">此區域目前沒有卡片，按下方「＋ 新增」開始。</div>`;
         }
 
         document.getElementById('timeline-render-target').innerHTML = html;
-        setTimeout(() => { document.querySelectorAll('.input-content').forEach(el => { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; }); }, 10);
+        this.autosizeTextareas(document.getElementById('timeline-render-target'));
     },
 
-    renderKanban() {
-        let cards = this.state.workspaces[this.state.activeTabId] || [];
-        if (this.state.filters.activeProject) {
-            cards = cards.filter(c => c.project === this.state.filters.activeProject);
-        }
-
-        const columns = [
-            { id: 0, title: '📌 待辦 (To Do)', color: '#94a3b8' },
-            { id: 1, title: '🚀 進行中 (Doing)', color: '#3b82f6' },
-            { id: 2, title: '✅ 已完成 (Done)', color: '#10b981' },
-            { id: 3, title: '⏸️ 擱置 (On Hold)', color: '#f59e0b' }
-        ];
-
-        let html = '<div style="display: flex; gap: 20px; overflow-x: auto; min-height: 65vh; padding-bottom: 20px; align-items: flex-start;">';
-
-        columns.forEach(col => {
-            const colCards = cards.filter(c => c.status === col.id);
-            
-            html += `
-            <div style="flex: 0 0 320px; background: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0; display: flex; flex-direction: column; max-height: 80vh;">
-                <div style="padding: 12px; border-bottom: 3px solid ${col.color}; font-weight: bold; color: #334155; display: flex; justify-content: space-between; position: sticky; top: 0; background: #f8fafc; z-index: 10;">
-                    <span>${col.title}</span>
-                    <span style="background: #e2e8f0; padding: 2px 8px; border-radius: 12px; font-size: 0.8rem;">${colCards.length}</span>
-                </div>
-                <div style="padding: 10px; overflow-y: auto; flex-grow: 1; display: flex; flex-direction: column; gap: 10px;">
-            `;
-
-            if (colCards.length === 0) {
-                html += `<div style="text-align: center; color: #cbd5e1; font-size: 0.9rem; padding: 20px 0;">無卡片</div>`;
-            } else {
-                const tabOptionsHtml = this.state.tabs.map(t => `<option value="${t.id}">${t.name}</option>`).join('');
-                colCards.forEach(card => {
-                    html += `
-                    <div class="card ${card.isMemo ? 'memo-mode' : ''}" data-color="${card.color}" data-id="${card.id}" style="margin: 0; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
-                        <div class="card-header" style="padding-bottom: 5px;">
-                            <div style="display:flex; align-items:center; gap:8px;">
-                                <div class="status-dot status-${card.status}" onclick="app.actions.cycleStatus('${card.id}')" title="點擊推進狀態"></div>
-                                <button class="icon-btn" onclick="app.actions.toggleMemo('${card.id}')">${card.isMemo ? '♾️' : '📅'}</button>
-                            </div>
-                            <div style="display:flex;gap:5px;">
-                                <button class="icon-btn chronicle-pin-btn ${card.chroniclePinned ? 'active' : ''}" onclick="app.actions.toggleChronicle('${card.id}')" title="${card.chroniclePinned ? '移出大事記' : '加入大事記'}">${card.chroniclePinned ? '⭐' : '☆'}</button>
-                                <button class="icon-btn" onclick="app.sandbox.focusTaskForTimer('${card.id}')" title="進入心流並將計時綁定此卡">⏱️</button>
-                                <button class="icon-btn" onclick="app.actions.cycleColor('${card.id}')">🎨</button>
-                            </div>
-                        </div>
-                        <div class="card-body" style="padding: 5px 10px;">
-                            <input type="text" class="input-title" value="${card.title}" placeholder="🏷️ 標題..." onchange="app.actions.updateCard('${card.id}', 'title', this.value)">
-                            <textarea class="input-content" placeholder="📝 細節..." oninput="this.style.height='auto'; this.style.height=this.scrollHeight+'px';" onchange="app.actions.updateCard('${card.id}', 'content', this.value)" style="min-height: 40px;">${card.content}</textarea>
-                            ${this.worktime.renderPlanningPanel(card, 'kanban')}
-                            ${this.worktime.renderPanel(card, 'kanban')}
-                            ${this.entries.renderCardPanel(card, 'kanban')}
-                        </div>
-                        <div class="card-footer" style="padding: 5px 10px; display: flex; gap: 5px; justify-content: space-between; align-items: center;">
-                            <input type="text" class="input-project" value="${card.project}" placeholder="#專案" onchange="app.actions.updateCard('${card.id}', 'project', this.value)" style="max-width: 80px;">
-                            <div style="display:flex; gap:5px;">
-                                <select class="icon-btn" style="width: auto; padding: 0 2px; font-size: 0.8rem;" onchange="if(this.value) { app.actions.moveCard('${card.id}', this.value); this.value=''; }">
-                                    <option value="" disabled selected>🚀</option>${tabOptionsHtml}
-                                </select>
-                                <button class="icon-btn" onclick="app.actions.deleteCard('${card.id}')" style="color:#ef4444; border-color:transparent; width:28px; height:28px;" title="刪除">🗑️</button>
-                            </div>
-                        </div>
-                    </div>`;
-                });
-            }
-            html += `</div></div>`;
+    autosizeTextareas(root) {
+        if (!root) return;
+        requestAnimationFrame(() => {
+            const els = [...root.querySelectorAll('.input-content')];
+            els.forEach(el => { el.style.height = 'auto'; });
+            const heights = els.map(el => el.scrollHeight);
+            els.forEach((el, i) => { el.style.height = heights[i] + 'px'; });
         });
+    },
 
-        html += '</div>';
-        const renderTarget = document.getElementById('kanban-render-target');
-        if (renderTarget) {
-            renderTarget.innerHTML = html;
-            setTimeout(() => { document.querySelectorAll('#kanban-render-target .input-content').forEach(el => { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; }); }, 10);
-        }
+    toggleTimelineGroup(head) {
+        const key = head.dataset.gkey;
+        if (!this.prefs.collapsedGroups) this.prefs.collapsedGroups = {};
+        this.prefs.collapsedGroups[key] = !this.prefs.collapsedGroups[key];
+        this.store.savePrefs();
+        this.ui.withFocus(() => this.renderTimeline());
+    },
+
+    timerButtonHtml(card) {
+        const sb = this.state.sandbox;
+        const on = sb.timerStatus !== 'IDLE' && sb.timerTaskId === card.id;
+        return `<button class="icon-btn card-timer-btn ${on ? 'running' : ''}" data-card="${card.id}" onclick="app.sandbox.quickTimer('${card.id}')" title="${on ? '停止並記錄工時' : '開始計時（記到這張卡）'}">${on ? '⏹' : '⏱️'}</button>`;
+    },
+
+    renderTimelineCard(card, tabOptionsHtml = null) {
+        const esc = s => this.entries.escapeHtml(s);
+        const id = card.id;
+        const fk = field => `data-fk="${esc(`timeline:${id}:${field}`)}"`;
+        if (tabOptionsHtml === null) tabOptionsHtml = this.state.tabs.map(t => `<option value="${t.id}">${esc(t.name)}</option>`).join('');
+        const dateHtml = card.isMemo
+            ? `<span class="free-card-note">自由卡｜不進甘特與工項 Excel</span>`
+            : (card.dateMode === 'single'
+                ? `<span style="font-size:0.8rem;color:#64748b;">預計</span><input type="date" class="input-date" ${fk('dateSingle')} value="${esc(card.dateSingle || '')}" onchange="app.actions.updateCardDate('${id}', 'dateSingle', this.value)">`
+                : `<span style="font-size:0.8rem;color:#64748b;">預計起</span><input type="date" class="input-date" ${fk('dateStart')} value="${esc(card.dateStart || '')}" onchange="app.actions.updateCardDate('${id}', 'dateStart', this.value)"><span style="font-size:0.8rem;color:#64748b;">迄</span><input type="date" class="input-date" ${fk('dateEnd')} value="${esc(card.dateEnd || '')}" onchange="app.actions.updateCardDate('${id}', 'dateEnd', this.value)">`);
+        const nextStep = String(card.nextStep || '').trim();
+        return `
+            <div class="card-wrapper" data-wrap-id="${id}"><div class="card-dot"></div>
+                <div class="card ${card.isMemo ? 'memo-mode' : ''}" data-color="${esc(card.color || 'blue')}" data-id="${id}">
+                    <div class="card-header">
+                        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                            <div class="status-dot status-${Number(card.status) || 0}" onclick="app.actions.cycleStatus('${id}')" title="${esc(this.worktime.statusLabel(card.status))}（點擊切換）"></div>
+                            <button class="icon-btn" onclick="app.actions.toggleMemo('${id}')" title="${card.isMemo ? '自由卡：點擊改為排程工項' : '排程工項：點擊改為自由卡'}">${card.isMemo ? '♾️' : '📅'}</button>
+                            ${dateHtml}
+                            <span class="card-badges" id="badges-${id}">${this.cardBadgesHtml(card)}</span>
+                        </div>
+                        <div style="display:flex; gap:5px;">
+                            <button class="icon-btn chronicle-pin-btn ${card.chroniclePinned ? 'active' : ''}" onclick="app.actions.toggleChronicle('${id}')" title="${card.chroniclePinned ? '移出大事記' : '加入大事記'}">${card.chroniclePinned ? '⭐' : '☆'}</button>
+                            ${this.timerButtonHtml(card)}
+                            ${card.isMemo ? '' : `<button class="icon-btn" onclick="app.actions.toggleDateMode('${id}')" title="單日／區間">↔️</button>`}
+                            <button class="icon-btn" onclick="app.actions.cycleColor('${id}')" title="切換標記顏色">🎨</button>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <input type="text" class="input-title" ${fk('title')} value="${esc(card.title)}" placeholder="🏷️ 標題..." oninput="app.actions.editCardText('${id}', 'title', this.value)">
+                        <textarea class="input-content" ${fk('content')} placeholder="📝 寫下卡片細節..." oninput="this.style.height='auto'; this.style.height=this.scrollHeight+'px'; app.actions.editCardText('${id}', 'content', this.value)">${esc(card.content)}</textarea>
+                        <div class="next-step-preview" id="next-preview-${id}" ${nextStep ? '' : 'style="display:none"'} onclick="app.actions.openPlanning('${id}')" title="點擊編輯下一步">➡ 下一步：<span>${esc(nextStep)}</span></div>
+                        ${this.worktime.renderPlanningPanel(card, 'timeline')}
+                        ${this.worktime.renderPanel(card, 'timeline')}
+                        ${this.entries.renderCardPanel(card, 'timeline')}
+                    </div>
+                    <div class="card-footer" style="display: flex; gap: 8px; align-items: center; justify-content: flex-end;">
+                        <input type="text" class="input-project" ${fk('project')} value="${esc(card.project)}" placeholder="#專案名稱" oninput="app.actions.editCardText('${id}', 'project', this.value)" onchange="app.ui.renderWhenIdle()">
+                        <select class="icon-btn" style="width: auto; padding: 0 5px; font-size: 0.85rem;" onchange="if(this.value) { app.actions.moveCard('${id}', this.value); this.value=''; }">
+                            <option value="" disabled selected>🚀 轉移至...</option>${tabOptionsHtml}
+                        </select>
+                        <button class="icon-btn" onclick="app.coach.open({ template: 'stuck', cardId: '${id}' })" title="卡住了？請 AI 老師帶你想下一步" style="width:34px; height:34px;">🧑‍🏫</button>
+                        <button class="icon-btn" onclick="app.actions.deleteCard('${id}')" style="color:#ef4444; border-color:#fca5a5; width:34px; height:34px;" title="刪除此卡片">🗑️</button>
+                    </div>
+                </div>
+            </div>`;
+    },
+
+    cardBadgesHtml(card) {
+        const esc = s => this.entries.escapeHtml(s);
+        const who = String(card.waitingWho || '').trim();
+        const what = String(card.waitingWhat || '').trim();
+        if (!who && !what) return '';
+        const today = this.worktime.localDateString();
+        const due = card.followUpDate && card.followUpDate <= today && Number(card.status) !== 2;
+        const label = `⏳ 等${who ? ' ' + who : ''}${card.followUpDate ? ` · ${due ? '該追了' : card.followUpDate.slice(5) + ' 追'}` : ''}`;
+        return `<span class="waiting-badge ${due ? 'due' : ''}" title="${esc(`等 ${who || '（未填）'}：${what || '（未填）'}`)}">${esc(label)}</span>`;
+    },
+
+    updateCardBadges(cardId) {
+        const card = this.worktime.getCard(cardId);
+        const el = document.getElementById(`badges-${cardId}`);
+        if (card && el) el.innerHTML = this.cardBadgesHtml(card);
+    },
+
+    // 只重畫一張卡片（狀態、顏色、日期、工時變動時），不重畫整個時間軸。
+    refreshCard(cardId, source = 'timeline') {
+        this.ui.defer(() => {
+            const card = this.worktime.getCard(cardId);
+            if (source === 'sandbox' || this.state.view === 'sandbox') {
+                if (card && this.state.sandbox.activeTaskId === cardId) this.entries.renderSandbox(card);
+                this.sandbox.renderTodo();
+                if (source === 'sandbox') return;
+            }
+            const wrap = document.querySelector(`#timeline-render-target .card-wrapper[data-wrap-id="${CSS.escape(cardId)}"]`);
+            if (!wrap) return;
+            if (!card) { wrap.remove(); return; }
+            const tmp = document.createElement('div');
+            tmp.innerHTML = this.renderTimelineCard(card).trim();
+            const fresh = tmp.firstElementChild;
+            wrap.replaceWith(fresh);
+            this.autosizeTextareas(fresh);
+        });
+    },
+
+    refreshTimerButtons() {
+        const sb = this.state.sandbox;
+        document.querySelectorAll('.card-timer-btn').forEach(btn => {
+            const on = sb.timerStatus !== 'IDLE' && btn.dataset.card === sb.timerTaskId;
+            btn.classList.toggle('running', on);
+            btn.textContent = on ? '⏹' : '⏱️';
+            btn.title = on ? '停止並記錄工時' : '開始計時（記到這張卡）';
+        });
+    },
+
+    updateNextStepPreview(cardId) {
+        const card = this.worktime.getCard(cardId);
+        const el = document.getElementById(`next-preview-${cardId}`);
+        if (!card || !el) return;
+        const text = String(card.nextStep || '').trim();
+        el.style.display = text ? '' : 'none';
+        const span = el.querySelector('span');
+        if (span) span.textContent = text;
     },
 
     renderMatrix() {
@@ -2197,7 +4127,7 @@ const app = {
                 <div class="node-stone"></div>
                 <div class="node-paper">
                     ${getTagHtml(n.tag)}
-                    <div class="matrix-node-text">${n.text}</div>
+                    <div class="matrix-node-text">${this.entries.escapeHtml(n.text)}</div>
                     <div class="node-action-group">
                         <button class="node-action-btn" onclick="app.actions.toggleStoneColor('${n.id}')" title="標記警戒">☯️</button>
                         <button class="node-action-btn" onclick="app.actions.promoteToCard('${n.id}')" title="轉為排程卡片">📄</button>
@@ -2304,7 +4234,7 @@ const app = {
                         </div>
                         <label class="chronicle-summary-label">
                             <span>成果／事件摘要</span>
-                            <textarea class="chronicle-summary-input" placeholder="例如：完成批次插入測試，主要流程已可運作。" onchange="app.actions.updateChronicleMeta('${c.id}','chronicleSummary',this.value,'${c.tabId}')">${esc(summary)}</textarea>
+                            <textarea class="chronicle-summary-input" placeholder="例如：完成批次插入測試，主要流程已可運作。" oninput="app.actions.updateChronicleMeta('${c.id}','chronicleSummary',this.value,'${c.tabId}')">${esc(summary)}</textarea>
                         </label>
                     </div>
                 </article>`;
@@ -2506,6 +4436,16 @@ const app = {
             <span>尺度 <strong>${scaleLabel}</strong></span>
         </div>`;
 
+        // 每張卡的工時只掃一次，依日期分到對應的欄位（原本是每欄都掃全部工時）。
+        const periodStarts = periods.map(p => p.start.getTime());
+        const periodIndexOf = (d) => {
+            const t = d.getTime();
+            let lo = 0, hi = periods.length - 1, ans = -1;
+            while (lo <= hi) { const mid = (lo + hi) >> 1; if (periodStarts[mid] <= t) { ans = mid; lo = mid + 1; } else hi = mid - 1; }
+            if (ans < 0 || t > periods[ans].end.getTime()) return -1;
+            return ans;
+        };
+
         let body = '';
         let lastGroup = null;
         entries.forEach(({card, tabId, tabName}) => {
@@ -2547,41 +4487,38 @@ const app = {
             const planPeriodRow = periods.map(period => {
                 const containsToday = today >= period.start && today <= period.end;
                 const intersects = !!(start && end && !(end < period.start || start > period.end));
+                if (!intersects) return `<td class="gantt-day-cell ${containsToday ? 'today-col' : ''}"></td>`;
                 const periodText = period.start.getTime() === period.end.getTime()
                     ? this.worktime.dateKey(period.start)
                     : `${this.worktime.dateKey(period.start)} ～ ${this.worktime.dateKey(period.end)}`;
-                const title = esc(`${card.title || '未命名'}｜${periodText}｜${intersects ? '預計排程有涵蓋' : '無預計排程'}`);
-                if (!intersects) return `<td class="gantt-day-cell ${containsToday ? 'today-col' : ''}" title="${title}"></td>`;
+                const title = esc(`${card.title || '未命名'}｜${periodText}｜預計排程有涵蓋`);
                 const isStart = !!(start && start >= period.start && start <= period.end) || (start && start < minDate && period.start.getTime() === minDate.getTime());
                 const isEnd = !!(end && end >= period.start && end <= period.end) || (end && end > displayedMaxDate && period.end.getTime() === displayedMaxDate.getTime());
                 return `<td class="gantt-day-cell gantt-bar-cell ${isStart ? 'gantt-bar-start' : ''} ${isEnd ? 'gantt-bar-end' : ''} ${containsToday ? 'today-col' : ''}" style="background:${cfg.light};" title="${title}"></td>`;
             }).join('');
 
-            const actualPeriodRow = periods.map(period => {
+            const buckets = new Map();
+            logs.forEach(log => {
+                const d = this.worktime.parseLocalDate(log.workDate);
+                const mins = this.worktime.logMinutes(log);
+                if (!d || mins <= 0) return;
+                const idx = periodIndexOf(d);
+                if (idx < 0) return;
+                const b = buckets.get(idx) || { mins: 0, count: 0, outside: 0 };
+                b.mins += mins; b.count++;
+                if (start && end && (d < start || d > end)) b.outside++;
+                buckets.set(idx, b);
+            });
+            const actualPeriodRow = periods.map((period, idx) => {
                 const containsToday = today >= period.start && today <= period.end;
-                let periodMins = 0;
-                let logCount = 0;
-                let outsideCount = 0;
-                logs.forEach(log => {
-                    const d = this.worktime.parseLocalDate(log.workDate);
-                    const mins = this.worktime.logMinutes(log);
-                    if (!d || mins <= 0 || d < period.start || d > period.end) return;
-                    periodMins += mins;
-                    logCount++;
-                    if (start && end && (d < start || d > end)) outsideCount++;
-                });
+                const b = buckets.get(idx);
+                if (!b) return `<td class="gantt-day-cell ${containsToday ? 'today-col' : ''}"></td>`;
                 const periodText = period.start.getTime() === period.end.getTime()
                     ? this.worktime.dateKey(period.start)
                     : `${this.worktime.dateKey(period.start)} ～ ${this.worktime.dateKey(period.end)}`;
-                const titleParts = [`${card.title || '未命名'}｜${periodText}`];
-                if (periodMins > 0) titleParts.push(`實際 ${this.worktime.formatMinutes(periodMins)}（${logCount} 筆）`);
-                else titleParts.push('此期間無工時紀錄');
-                if (outsideCount > 0) titleParts.push(`⚠ ${outsideCount} 筆排程外工時`);
-                const title = esc(titleParts.join('｜'));
-                if (periodMins > 0) {
-                    return `<td class="gantt-day-cell gantt-work-cell ${outsideCount > 0 ? 'gantt-work-outside' : ''} ${containsToday ? 'today-col' : ''}" style="background:${cfg.hex};" title="${title}"><span>${esc(this.worktime.compactMinutes(periodMins))}</span></td>`;
-                }
-                return `<td class="gantt-day-cell ${containsToday ? 'today-col' : ''}" title="${title}"></td>`;
+                const titleParts = [`${card.title || '未命名'}｜${periodText}`, `實際 ${this.worktime.formatMinutes(b.mins)}（${b.count} 筆）`];
+                if (b.outside > 0) titleParts.push(`⚠ ${b.outside} 筆排程外工時`);
+                return `<td class="gantt-day-cell gantt-work-cell ${b.outside > 0 ? 'gantt-work-outside' : ''} ${containsToday ? 'today-col' : ''}" style="background:${cfg.hex};" title="${esc(titleParts.join('｜'))}"><span>${esc(this.worktime.compactMinutes(b.mins))}</span></td>`;
             }).join('');
 
             body += `
@@ -2637,8 +4574,8 @@ const app = {
                 <div style="font-size:0.9rem; background:white; padding:6px 10px; border-radius:6px; margin-bottom:6px; box-shadow:0 1px 3px rgba(0,0,0,0.05); border-left:4px solid ${cardBorderColor}; cursor:pointer; position:relative; display:flex; justify-content:space-between; align-items:center;" 
                      onclick="app.actions.jumpToCard('${c.id}', '${c.tabId}')" title="點擊跳轉至時間軸">
                     <div>
-                        <div style="color:#64748b; font-size:0.75rem; margin-bottom:2px; font-weight:bold;">${c.tabName}</div>
-                        <div style="color:#1e293b;">${c.title || '未命名'}</div>
+                        <div style="color:#64748b; font-size:0.75rem; margin-bottom:2px; font-weight:bold;">${this.entries.escapeHtml(c.tabName)}</div>
+                        <div style="color:#1e293b;">${this.entries.escapeHtml(c.title || '未命名')}</div>
                     </div>
                     <button class="icon-btn" onclick="event.stopPropagation(); app.actions.deleteCard('${c.id}', '${c.tabId}')" style="color:#ef4444; border:none; background:transparent; padding:0; width:24px; height:24px;" title="刪除此卡片">🗑️</button>
                 </div>`; 
@@ -2650,8 +4587,8 @@ const app = {
 
     renderNotebookArea() {
         const d = this.state.globalNotebook; let html = '';
-        if (d.template === 'free') { html = `<textarea class="nb-textarea" onchange="app.actions.updateNotebook('free', this.value)" placeholder="在這裡傾倒您的思緒...">${d.free || ''}</textarea>`; } 
-        else if (d.template === 'matrix') { const m = d.matrix || {}; html = `<div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap:15px;"><div style="background:#fef2f2; padding:15px; border-radius:8px; border:1px solid #fca5a5;"><span style="color:#ef4444; font-weight:bold; font-size:1.1rem; display:block; margin-bottom:10px;">🔥 重要・緊急</span><textarea class="nb-textarea" style="height:150px; background:white;" onchange="app.actions.updateNotebook('matrix.q1', this.value)">${m.q1 || ''}</textarea></div><div style="background:#eff6ff; padding:15px; border-radius:8px; border:1px solid #bfdbfe;"><span style="color:#3b82f6; font-weight:bold; font-size:1.1rem; display:block; margin-bottom:10px;">📅 重要・不急</span><textarea class="nb-textarea" style="height:150px; background:white;" onchange="app.actions.updateNotebook('matrix.q2', this.value)">${m.q2 || ''}</textarea></div><div style="background:#fffbeb; padding:15px; border-radius:8px; border:1px solid #fde68a;"><span style="color:#f59e0b; font-weight:bold; font-size:1.1rem; display:block; margin-bottom:10px;">⚡ 緊急・不重</span><textarea class="nb-textarea" style="height:150px; background:white;" onchange="app.actions.updateNotebook('matrix.q3', this.value)">${m.q3 || ''}</textarea></div><div style="background:#f0fdf4; padding:15px; border-radius:8px; border:1px solid #bbf7d0;"><span style="color:#10b981; font-weight:bold; font-size:1.1rem; display:block; margin-bottom:10px;">☕ 不重・不急</span><textarea class="nb-textarea" style="height:150px; background:white;" onchange="app.actions.updateNotebook('matrix.q4', this.value)">${m.q4 || ''}</textarea></div></div>`; }
+        if (d.template === 'free') { html = `<textarea class="nb-textarea" oninput="app.actions.updateNotebook('free', this.value)" placeholder="在這裡傾倒您的思緒...">${this.entries.escapeHtml(d.free || '')}</textarea>`; } 
+        else if (d.template === 'matrix') { const m = d.matrix || {}; html = `<div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap:15px;"><div style="background:#fef2f2; padding:15px; border-radius:8px; border:1px solid #fca5a5;"><span style="color:#ef4444; font-weight:bold; font-size:1.1rem; display:block; margin-bottom:10px;">🔥 重要・緊急</span><textarea class="nb-textarea" style="height:150px; background:white;" oninput="app.actions.updateNotebook('matrix.q1', this.value)">${this.entries.escapeHtml(m.q1 || '')}</textarea></div><div style="background:#eff6ff; padding:15px; border-radius:8px; border:1px solid #bfdbfe;"><span style="color:#3b82f6; font-weight:bold; font-size:1.1rem; display:block; margin-bottom:10px;">📅 重要・不急</span><textarea class="nb-textarea" style="height:150px; background:white;" oninput="app.actions.updateNotebook('matrix.q2', this.value)">${this.entries.escapeHtml(m.q2 || '')}</textarea></div><div style="background:#fffbeb; padding:15px; border-radius:8px; border:1px solid #fde68a;"><span style="color:#f59e0b; font-weight:bold; font-size:1.1rem; display:block; margin-bottom:10px;">⚡ 緊急・不重</span><textarea class="nb-textarea" style="height:150px; background:white;" oninput="app.actions.updateNotebook('matrix.q3', this.value)">${this.entries.escapeHtml(m.q3 || '')}</textarea></div><div style="background:#f0fdf4; padding:15px; border-radius:8px; border:1px solid #bbf7d0;"><span style="color:#10b981; font-weight:bold; font-size:1.1rem; display:block; margin-bottom:10px;">☕ 不重・不急</span><textarea class="nb-textarea" style="height:150px; background:white;" oninput="app.actions.updateNotebook('matrix.q4', this.value)">${this.entries.escapeHtml(m.q4 || '')}</textarea></div></div>`; }
         document.getElementById('notebook-render-target').innerHTML = html;
     },
 
@@ -2735,36 +4672,588 @@ const app = {
         if (!this.state.chronicleFilters) this.state.chronicleFilters = { scope: 'all', project: '' };
         if (type === 'scope') this.state.chronicleFilters.scope = value === 'current' ? 'current' : 'all';
         if (type === 'project') this.state.chronicleFilters.project = value || '';
+        this.rememberPrefs();
         if (this.state.view === 'chronicle') this.renderChronicle();
     },
 
     // ==========================================
     // 基礎 Actions (增刪改查)
     // ==========================================
+    // ==========================================
+    // 📋 週報：本週完成／進行中／下週預計／卡住與需要誰幫忙
+    // ==========================================
+    report: {
+        filters: { week: 0, scope: 'all', project: '' },
+
+        range(offset = 0) {
+            const W = app.worktime;
+            const start = W.addDays(W.startOfWeek(new Date()), offset * 7);
+            const end = W.addDays(start, 6);
+            return { start, end, s: W.localDateString(start), e: W.localDateString(end) };
+        },
+
+        projectOf(card) { return String(card.project || '').trim() || '未分類'; },
+
+        rows() {
+            const all = app.worktime.allCards();
+            const f = this.filters;
+            return all.filter(({ card, tabId }) => {
+                if (app.sync.isBlankCard(card)) return false;
+                if (f.scope === 'current' && tabId !== app.state.activeTabId) return false;
+                if (f.project && this.projectOf(card) !== f.project) return false;
+                return true;
+            });
+        },
+
+        collect() {
+            const W = app.worktime;
+            const wk = this.range(this.filters.week);
+            const nx = this.range(this.filters.week + 1);
+            const today = W.localDateString();
+            const inRange = (d, r) => d && d >= r.s && d <= r.e;
+            const overlaps = (card, r) => {
+                const s = W.plannedStart(card), e = W.plannedEnd(card) || s;
+                return !!s && !(e < r.s || s > r.e);
+            };
+            const out = { wk, nx, done: [], doing: [], next: [], waiting: [], overdue: [], minutes: 0 };
+            this.rows().forEach(row => {
+                const { card } = row;
+                const mins = W.getLogs(card).reduce((sum, l) => inRange(l.workDate, wk) ? sum + W.logMinutes(l) : sum, 0);
+                out.minutes += mins;
+                const status = Number(card.status) || 0;
+                const item = { ...row, mins };
+                const isDone = status === 2 && inRange(W.derivedActualEnd(card), wk);
+                if (isDone) out.done.push(item);
+                else if (status !== 2 && (mins > 0 || (status === 1 && overlaps(card, wk)))) out.doing.push(item);
+                if (status !== 2 && !card.isMemo && overlaps(card, nx)) out.next.push(item);
+                if (status !== 2 && (String(card.waitingWho || '').trim() || String(card.waitingWhat || '').trim() || status === 3)) out.waiting.push(item);
+                const pe = W.plannedEnd(card);
+                if (status !== 2 && !card.isMemo && pe && pe < today && this.filters.week === 0) out.overdue.push(item);
+            });
+            const byProject = (a, b) => this.projectOf(a.card).localeCompare(this.projectOf(b.card), 'zh-Hant') || String(W.plannedEnd(a.card)).localeCompare(String(W.plannedEnd(b.card)));
+            ['done', 'doing', 'next', 'waiting', 'overdue'].forEach(k => out[k].sort(byProject));
+            return out;
+        },
+
+        line(kind, { card, mins }) {
+            const W = app.worktime;
+            const p = `[${this.projectOf(card)}] ${card.title || '未命名'}`;
+            const d = String(card.deliverable || '').trim();
+            const next = String(card.nextStep || '').trim();
+            const s = W.plannedStart(card), e = W.plannedEnd(card);
+            const dates = s ? (e && e !== s ? `${s.slice(5)}～${e.slice(5)}` : s.slice(5)) : '';
+            if (kind === 'done') return `${p}${d ? ` — ${d}` : ''}`;
+            if (kind === 'doing') return `${p}${card.progress !== undefined && card.progress !== '' ? `（${W.progressValue(card)}%）` : ''}${mins ? `，本週 ${W.formatMinutes(mins)}` : ''}${next ? ` → 下一步：${next}` : ''}`;
+            if (kind === 'next') return `${p}${dates ? `（${dates}）` : ''}${next ? ` → ${next}` : ''}`;
+            if (kind === 'waiting') {
+                const who = String(card.waitingWho || '').trim(), what = String(card.waitingWhat || '').trim();
+                return `${p}：等 ${who || '（未填）'}${what ? `（${what}）` : ''}${card.followUpDate ? ` · ${card.followUpDate.slice(5)} 追` : ''}`;
+            }
+            if (kind === 'overdue') return `${p}（原訂 ${W.plannedEnd(card).slice(5)} 完成）${next ? ` → ${next}` : ''}`;
+            return p;
+        },
+
+        text(data = this.collect()) {
+            const W = app.worktime;
+            const fmt = r => `${r.start.getMonth() + 1}/${r.start.getDate()}–${r.end.getMonth() + 1}/${r.end.getDate()}`;
+            const sec = (title, kind, list, empty) => `■ ${title}\n${list.length ? list.map(x => `・${this.line(kind, x)}`).join('\n') : `・${empty}`}`;
+            return [
+                `【週報】${fmt(data.wk)}${this.filters.project ? `｜${this.filters.project}` : ''}`,
+                sec('本週完成', 'done', data.done, '（無）'),
+                sec('進行中', 'doing', data.doing, '（無）'),
+                data.overdue.length ? sec('已過預計完成日', 'overdue', data.overdue, '') : '',
+                sec('卡住／需要協助', 'waiting', data.waiting, '目前沒有'),
+                sec(`下週預計（${fmt(data.nx)}）`, 'next', data.next, '（尚未排定）'),
+                `本週投入工時：${W.formatMinutes(data.minutes)}`
+            ].filter(Boolean).join('\n\n');
+        },
+
+        set(field, value) {
+            if (field === 'week') this.filters.week = Number(value) || 0;
+            if (field === 'scope') this.filters.scope = value === 'current' ? 'current' : 'all';
+            if (field === 'project') this.filters.project = value || '';
+            this.render();
+        },
+
+        render() {
+            const target = document.getElementById('report-render-target');
+            if (!target) return;
+            const esc = s => app.entries.escapeHtml(s);
+            const data = this.collect();
+            const projects = [...new Set(app.worktime.allCards().filter(r => !app.sync.isBlankCard(r.card)).map(r => this.projectOf(r.card)))].sort((a, b) => a.localeCompare(b, 'zh-Hant'));
+            const f = this.filters;
+            const block = (icon, title, kind, list, hint) => `
+                <section class="report-section report-${kind}">
+                    <h4>${icon} ${title} <span class="data-count">${list.length}</span></h4>
+                    ${list.length ? list.map(x => `<button type="button" class="report-row" onclick="app.actions.jumpToCard('${x.card.id}','${x.tabId}')">${esc(this.line(kind, x))}</button>`).join('') : `<div class="data-empty">${hint}</div>`}
+                </section>`;
+            target.innerHTML = `
+                <div class="report-toolbar">
+                    <div class="gantt-mode-switch">
+                        <button class="gantt-mode-btn ${f.week === 0 ? 'active' : ''}" onclick="app.report.set('week',0)">本週</button>
+                        <button class="gantt-mode-btn ${f.week === -1 ? 'active' : ''}" onclick="app.report.set('week',-1)">上週</button>
+                    </div>
+                    <select class="gantt-filter-select" onchange="app.report.set('scope',this.value)">
+                        <option value="all" ${f.scope === 'all' ? 'selected' : ''}>全部工作區</option>
+                        <option value="current" ${f.scope === 'current' ? 'selected' : ''}>只看目前工作區</option>
+                    </select>
+                    <select class="gantt-filter-select" onchange="app.report.set('project',this.value)">
+                        <option value="">全部專案</option>
+                        ${projects.map(p => `<option value="${esc(p)}" ${f.project === p ? 'selected' : ''}>${esc(p)}</option>`).join('')}
+                    </select>
+                    <span class="report-hours">本週投入 <b>${app.worktime.formatMinutes(data.minutes)}</b></span>
+                </div>
+                <div class="report-grid">
+                    ${block('✅', '本週完成', 'done', data.done, '本週還沒有標記完成的卡片。')}
+                    ${block('🚧', '進行中', 'doing', data.doing, '本週沒有記到工時的卡片。')}
+                    ${data.overdue.length ? block('⚠️', '已過預計完成日', 'overdue', data.overdue, '') : ''}
+                    ${block('⏳', '卡住／需要協助', 'waiting', data.waiting, '沒有在等別人的事。卡片「交付與進度」裡可以填「在等誰」。')}
+                    ${block('📅', '下週預計', 'next', data.next, '下週還沒有排定的工作包。')}
+                </div>
+                <div class="report-text-wrap">
+                    <div class="report-text-head">
+                        <b>可以直接貼給主管或合作者的文字</b>
+                        <span style="display:flex;gap:6px;flex-wrap:wrap;">
+                            <button class="excel-copy-btn" onclick="app.report.copy()">📋 複製週報</button>
+                            <button class="excel-copy-btn" onclick="app.coach.open({ template: 'status' })">🧑‍🏫 請 AI 改寫成進度報告</button>
+                            <button class="excel-copy-btn" onclick="app.coach.open({ template: 'retro' })">🧑‍🏫 每週復盤</button>
+                        </span>
+                    </div>
+                    <pre class="report-text">${esc(this.text(data))}</pre>
+                </div>`;
+        },
+
+        copy() { app.worktime.copyText(this.text(), '已複製週報文字'); }
+    },
+
+    // ==========================================
+    // 🧑‍🏫 AI 老師：產生「請 AI 先示範、再解釋、最後考我」的提問，並把 AI 的拆解貼回來變成卡片
+    // ==========================================
+    coach: {
+        state: { template: 'wbs', project: '', cardId: '' },
+
+        TEMPLATES: {
+            wbs: { icon: '🧱', name: '示範拆解（WBS）', when: '剛接到工作、或專案方向剛確定時。先讓老師拆一版給你看。', needsBrief: true, importable: true },
+            review: { icon: '🔍', name: '幫我檢查拆解', when: '已經有一版卡片，想知道哪裡拆得不好、漏了什麼。', needsBrief: true, importable: true },
+            stuck: { icon: '🧭', name: '我卡住了', when: '某張卡做不下去，不知道是缺資訊、缺決策還是拆太大。', needsCard: true },
+            ask: { icon: '💬', name: '幫我問同事', when: '要找人問問題或請人幫忙，想把問題縮到對方好回答。', needsCard: true },
+            status: { icon: '📣', name: '進度報告', when: '要跟主管或合作者回報進度。會帶入週報內容。' },
+            retro: { icon: '🔁', name: '每週復盤', when: '每週一次，看計畫和實際差在哪，決定下週調整一件事。' }
+        },
+
+        TEACHER: [
+            '你是一位資深專案經理，也是我的老師。我正在學專案管理，特別是「以交付物為主的拆解」和「跟別人協作、回報進度」。',
+            '請用「先示範、再解釋、最後考我」的方式帶我：',
+            '1. 先直接示範你會怎麼做。資訊不足時，先寫下你的假設再往下做，不要一開始就丟一串問題給我。',
+            '2. 再用簡短條列說明你為什麼這樣做：判斷依據、常見陷阱、新手最容易漏掉的地方。',
+            '3. 最後問我 1～2 個問題：確認我懂了，或請我補上最關鍵的缺漏資訊。',
+            '請具體、直接，用我的實際情況舉例，不要只講原則。'
+        ].join('\n'),
+
+        IMPORT_FORMAT: [
+            '最後請用下面的格式輸出「可匯入清單」，放在一個程式碼區塊裡（每個工作包一行；底下用「  - [ ] 」列出我個人的執行步驟，可省略）：',
+            '```',
+            '- 工作包名稱 | 開始 YYYY-MM-DD | 完成 YYYY-MM-DD | 完成標準 | 預估小時',
+            '  - [ ] 步驟',
+            '```'
+        ].join('\n'),
+
+        projects() {
+            return [...new Set(app.worktime.allCards().filter(r => !app.sync.isBlankCard(r.card)).map(r => String(r.card.project || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'zh-Hant'));
+        },
+
+        // 專案簡述：先看這台裝置存過的；沒有的話試著從 Project Lab 讀（同一個網域）。
+        brief(project) {
+            const saved = app.prefs.briefs?.[project];
+            if (saved) return { ...saved };
+            const b = { goal: '', deliverable: '', deadline: '', stakeholders: '', constraints: '' };
+            try {
+                const lab = JSON.parse(localStorage.getItem(`project_lab_state_${app.currentUser.uid}`) || 'null');
+                const p = lab && Object.values(lab.projects || {}).find(x => (x.sourceName || x.name) === project);
+                if (p) {
+                    b.goal = p.purpose || '';
+                    b.deliverable = p.goal || p.definitionOfDone || '';
+                    b.deadline = p.deadline || '';
+                }
+            } catch {}
+            return b;
+        },
+
+        saveBrief() {
+            const project = this.state.project;
+            if (!project) return;
+            const val = id => document.getElementById(id)?.value || '';
+            if (!app.prefs.briefs) app.prefs.briefs = {};
+            app.prefs.briefs[project] = { goal: val('coach-goal'), deliverable: val('coach-deliverable'), deadline: val('coach-deadline'), stakeholders: val('coach-stakeholders'), constraints: val('coach-constraints') };
+            app.store.savePrefs();
+            this.updatePrompt();
+        },
+
+        cardLine(card) {
+            const W = app.worktime;
+            const s = W.plannedStart(card), e = W.plannedEnd(card);
+            const bits = [
+                `- ${card.title || '未命名'}`,
+                `狀態：${W.statusLabel(card.status)}${card.progress !== undefined && card.progress !== '' ? ` ${W.progressValue(card)}%` : ''}`,
+                card.isMemo ? '自由卡' : `日期：${s || '未排'}${e && e !== s ? `～${e}` : ''}`,
+                card.deliverable ? `交付：${card.deliverable}` : '',
+                card.acceptance ? `完成標準：${card.acceptance}` : '',
+                W.totalMinutes(card) ? `已投入 ${W.formatMinutes(W.totalMinutes(card))}${W.plannedMinutes(card) ? ` / 預估 ${W.formatMinutes(W.plannedMinutes(card))}` : ''}` : '',
+                card.nextStep ? `下一步：${card.nextStep}` : '',
+                card.waitingWho || card.waitingWhat ? `在等：${card.waitingWho || ''} ${card.waitingWhat || ''}`.trim() : ''
+            ].filter(Boolean);
+            return bits.join('｜');
+        },
+
+        projectCards(project) {
+            return app.worktime.allCards().filter(r => !app.sync.isBlankCard(r.card) && String(r.card.project || '').trim() === project).map(r => r.card);
+        },
+
+        briefText(project, b) {
+            return [
+                `專案／工作：${project || '（未指定）'}`,
+                `目的（為什麼要做、誰需要）：${b.goal || '（未填）'}`,
+                `最後要交出什麼：${b.deliverable || '（未填）'}`,
+                `期限：${b.deadline || '（未填）'}`,
+                `合作對象／誰會看結果：${b.stakeholders || '（未填）'}`,
+                `已知限制、資源：${b.constraints || '（未填）'}`
+            ].join('\n');
+        },
+
+        buildPrompt() {
+            const { template, project, cardId } = this.state;
+            const today = app.worktime.localDateString();
+            const b = this.readBriefFields();
+            const cards = project ? this.projectCards(project) : [];
+            const cardsText = cards.length ? cards.map(c => this.cardLine(c)).join('\n') : '（目前還沒有卡片）';
+            const card = cardId ? app.worktime.getCard(cardId) : null;
+            const head = `${this.TEACHER}\n\n今天是 ${today}。`;
+
+            if (template === 'wbs') return `${head}
+
+【我的情況】
+${this.briefText(project, b)}
+目前已經有的卡片（可能不完整，也可能拆得不好）：
+${cardsText}
+
+【請你示範】
+1. 以「交付物」為主拆出 WBS，不要拆成操作步驟。每個工作包大約 1～10 個工作天能完成、能估、能回報進度。近兩週的拆細一點，後面的先保持粗略（滾動式規劃）。
+2. 標出里程碑、工作包之間的依賴，以及我需要等別人或請別人幫忙的地方。
+3. 指出最大的 2～3 個風險，或需要最先跟誰確認的事。
+4. 如果「目的」和「要交出什麼」看起來對不上，請直接指出來，並建議我該先跟誰確認。
+
+${this.IMPORT_FORMAT}`;
+
+            if (template === 'review') return `${head}
+
+【我的情況】
+${this.briefText(project, b)}
+
+【我目前的拆解與排程】
+${cardsText}
+
+【請你像主管或資深 PM 審查計畫一樣挑毛病】
+1. 哪些項目其實是「步驟」而不是「交付物」？哪些太大、哪些太細？
+2. 有沒有漏掉的工作包（例如需求確認、審查與修改、交付後的事、等別人的時間）？
+3. 時程與依賴合不合理？哪裡最可能延誤？
+4. 給我修改後的版本，並說明你改了什麼、為什麼。
+
+${this.IMPORT_FORMAT}`;
+
+            if (template === 'stuck' || template === 'ask') {
+                if (!card) return '請先在上方選一張卡片。';
+                const W = app.worktime;
+                const notes = String(card.content || '').slice(0, 1500);
+                const entries = (card.entries || []).slice(-5).map(e => `- ${e.title}${e.content ? `：${String(e.content).slice(0, 200)}` : ''}`).join('\n');
+                const ctx = `【這張卡】
+專案：${String(card.project || '').trim() || '未分類'}
+${this.cardLine(card)}
+卡片筆記：
+${notes || '（無）'}
+${entries ? `最近的工作紀錄：\n${entries}` : ''}
+${project ? `\n【專案背景】\n${this.briefText(project, b)}` : ''}`;
+                if (template === 'stuck') return `${head}
+
+${ctx}
+
+【我卡住了，請帶我判斷】
+1. 先判斷我卡住的類型：缺資訊、缺決策、缺人或資源、工作拆得太大、技術上未知，或其實是目的不清楚。說明你的依據。
+2. 示範接下來 1～3 個具體動作，最好是今天就能做的。
+3. 如果需要問人或請人決定，告訴我該問誰，並幫我寫一則可以直接傳給對方的簡短訊息。
+4. 如果這張卡應該再拆，示範怎麼拆（用可匯入格式）。
+
+${this.IMPORT_FORMAT}`;
+                return `${head}
+
+${ctx}
+我想詢問／請求的對象：${card.waitingWho || '（請幫我判斷該問誰）'}
+我想知道或需要對方做的事：${card.waitingWhat || '（請依卡片內容判斷）'}
+
+【請幫我把問題縮到對方好回答】
+1. 對方不是這個專案的負責人，請只放他回答這一題需要的最少背景。
+2. 示範一則訊息：一句背景、一個明確的問題（最好能用選項回答）、希望何時回覆、為什麼需要。
+3. 再給一個更短、適合即時通訊的版本。
+4. 說明這樣寫的原因，以及新手問問題最常犯的錯。`;
+            }
+
+            if (template === 'status') {
+                const r = app.report.text();
+                return `${head}
+
+以下是我這週從工作白板自動整理出來的週報（可能有點雜）：
+${r}
+
+${project ? `【專案背景】\n${this.briefText(project, b)}\n` : ''}
+【請示範一份好的進度報告】
+1. 改寫成給主管／合作者看的版本：先講結論（整體是否照計畫），再講完成了什麼、下週做什麼、風險與需要誰協助（具體到人和日期）。
+2. 控制在 10 行內，避免流水帳。
+3. 說明好的進度報告和流水帳差在哪，以及我這份原稿最需要改進的一點。`;
+            }
+
+            if (template === 'retro') {
+                const data = app.report.collect();
+                const W = app.worktime;
+                const planned = app.report.rows().filter(({ card }) => !card.isMemo && Number(card.status) !== 2 && W.plannedEnd(card) && W.plannedEnd(card) <= data.wk.e && W.plannedEnd(card) >= data.wk.s);
+                return `${head}
+
+【這週的實際狀況】
+${app.report.text(data)}
+
+【原本預計這週完成、但還沒完成的】
+${planned.length ? planned.map(({ card }) => this.cardLine(card)).join('\n') : '（無）'}
+
+【請當我的教練帶我做每週復盤】
+1. 用 3～5 句話點出這週「計畫 vs 實際」最重要的落差，並猜測可能原因（估太少、被插件、等別人、拆太大、目的不清楚⋯）。
+2. 指出一件我做得不錯、值得保留的事。
+3. 建議下週只調整「一件事」，要具體到我能照做。
+4. 最後問我 1 個問題，幫我確認你的猜測對不對。`;
+            }
+            return '';
+        },
+
+        readBriefFields() {
+            const val = id => document.getElementById(id)?.value || '';
+            if (!document.getElementById('coach-goal')) return this.brief(this.state.project);
+            return { goal: val('coach-goal'), deliverable: val('coach-deliverable'), deadline: val('coach-deadline'), stakeholders: val('coach-stakeholders'), constraints: val('coach-constraints') };
+        },
+
+        open(opts = {}) {
+            app.store.flush();
+            const st = this.state;
+            if (opts.template && this.TEMPLATES[opts.template]) st.template = opts.template;
+            if (opts.cardId) {
+                st.cardId = opts.cardId;
+                const c = app.worktime.getCard(opts.cardId);
+                if (c) st.project = String(c.project || '').trim();
+            }
+            if (opts.project !== undefined) st.project = opts.project;
+            if (!st.project) st.project = this.projects()[0] || '';
+            document.getElementById('modal-coach').style.display = 'flex';
+            this.render();
+        },
+        close() { document.getElementById('modal-coach').style.display = 'none'; },
+
+        setTemplate(t) { this.state.template = t; this.render(); },
+        setProject(p) { this.state.project = p; this.state.cardId = ''; this.render(); },
+        setCard(id) { this.state.cardId = id; this.updatePrompt(); },
+
+        render() {
+            const esc = s => app.entries.escapeHtml(s);
+            const st = this.state;
+            const T = this.TEMPLATES[st.template];
+            const projects = this.projects();
+            const b = this.brief(st.project);
+            const cards = st.project ? this.projectCards(st.project) : app.worktime.allCards().filter(r => !app.sync.isBlankCard(r.card)).map(r => r.card);
+            if (T.needsCard && !st.cardId && cards.length) st.cardId = cards[0].id;
+            const tabs = Object.entries(this.TEMPLATES).map(([k, t]) => `<button type="button" class="coach-tab ${k === st.template ? 'active' : ''}" onclick="app.coach.setTemplate('${k}')">${t.icon} ${esc(t.name)}</button>`).join('');
+            const field = (id, label, value, ph, rows = 1) => `<label class="task-meta-field"><span class="task-meta-label">${label}</span>${rows > 1
+                ? `<textarea id="${id}" class="task-meta-textarea" rows="${rows}" placeholder="${esc(ph)}" oninput="app.coach.saveBrief()">${esc(value)}</textarea>`
+                : `<input id="${id}" class="task-meta-input" value="${esc(value)}" placeholder="${esc(ph)}" oninput="app.coach.saveBrief()">`}</label>`;
+            document.getElementById('coach-render-target').innerHTML = `
+                <div class="coach-tabs">${tabs}</div>
+                <div class="coach-when">💡 ${esc(T.when)}</div>
+                <div class="task-meta-grid" style="grid-template-columns:1fr 1fr;">
+                    <label class="task-meta-field"><span class="task-meta-label">專案</span>
+                        <select class="task-meta-input" onchange="app.coach.setProject(this.value)">
+                            <option value="">（不指定）</option>
+                            ${projects.map(p => `<option value="${esc(p)}" ${p === st.project ? 'selected' : ''}>${esc(p)}</option>`).join('')}
+                        </select>
+                    </label>
+                    ${T.needsCard ? `<label class="task-meta-field"><span class="task-meta-label">卡片</span>
+                        <select class="task-meta-input" onchange="app.coach.setCard(this.value)">
+                            ${cards.map(c => `<option value="${c.id}" ${c.id === st.cardId ? 'selected' : ''}>${esc(c.title || '未命名')}</option>`).join('')}
+                        </select></label>` : '<span></span>'}
+                </div>
+                <details class="coach-brief" ${T.needsBrief ? 'open' : ''}>
+                    <summary>專案簡述（會帶進提問；${st.project ? '自動記在這台裝置' : '先選專案才會記住'}）</summary>
+                    <div class="task-meta-grid" style="grid-template-columns:1fr 1fr;margin-top:6px;">
+                        ${field('coach-goal', '目的：為什麼要做、誰需要', b.goal, '例如：讓月報從 2 天縮到半天，主管每月 5 號要看', 2)}
+                        ${field('coach-deliverable', '最後要交出什麼', b.deliverable, '例如：可重複使用的月報產生流程＋使用說明', 2)}
+                        ${field('coach-deadline', '期限', b.deadline, '例如：2026-11-30（11/15 先給主管看初版）')}
+                        ${field('coach-stakeholders', '合作對象／誰會看結果', b.stakeholders, '例如：主管（驗收）、資訊組小陳（資料來源）')}
+                    </div>
+                    ${field('coach-constraints', '已知限制、資源', b.constraints, '例如：每週大約只有 10 小時能做；不能改資料庫', 1)}
+                </details>
+                <label class="task-meta-field" style="margin-top:10px;"><span class="task-meta-label">要貼給 AI 的提問（可以再自己修改）</span>
+                    <textarea id="coach-prompt" class="coach-prompt" rows="12"></textarea>
+                </label>
+                <div class="data-actions">
+                    <button class="excel-copy-btn" onclick="app.coach.copy()">📋 複製提問</button>
+                    <a class="excel-copy-btn" href="https://claude.ai/new" target="_blank" rel="noopener" onclick="app.coach.copy(true)">↗ 複製並打開 Claude</a>
+                </div>
+                ${T.importable || st.template === 'stuck' ? `
+                <div class="coach-import">
+                    <div class="task-meta-label">📥 把 AI 回覆裡的「可匯入清單」貼回來，變成卡片</div>
+                    <textarea id="coach-import-text" class="task-meta-textarea" rows="5" placeholder="- 需求確認 | 開始 2026-11-02 | 完成 2026-11-04 | 主管確認範圍 | 4&#10;  - [ ] 整理目前月報流程"></textarea>
+                    <div class="data-actions"><button class="excel-copy-btn" onclick="app.coach.previewImport()">解析預覽</button></div>
+                    <div id="coach-import-preview"></div>
+                </div>` : ''}`;
+            this.updatePrompt();
+        },
+
+        updatePrompt() {
+            const el = document.getElementById('coach-prompt');
+            if (el) el.value = this.buildPrompt();
+        },
+
+        copy(silent = false) {
+            const text = document.getElementById('coach-prompt')?.value || this.buildPrompt();
+            app.worktime.copyText(text, silent ? '已複製提問，到 Claude 貼上即可' : '已複製提問，貼到 Claude 或其他 AI 即可');
+        },
+
+        // 解析「- 名稱 | 開始 日期 | 完成 日期 | 完成標準 | 預估小時」與底下的「  - [ ] 步驟」
+        parseImport(text) {
+            const items = [];
+            String(text || '').replace(/```[a-z]*\n?/gi, '').split(/\r?\n/).forEach(raw => {
+                if (!raw.trim()) return;
+                const step = raw.match(/^\s+[-*]\s+\[( |x|X)\]\s+(.*)$/) || raw.match(/^\s*[-*]\s+\[( |x|X)\]\s+(.*)$/);
+                if (step && items.length) { items[items.length - 1].steps.push(`- [${step[1].toLowerCase() === 'x' ? 'x' : ' '}] ${step[2].trim()}`); return; }
+                const m = raw.match(/^\s*(?:[-*]|\d+[.)、])\s+(.*)$/);
+                if (!m) return;
+                const parts = m[1].split('|').map(x => x.trim());
+                const dates = parts.slice(1).map(x => (x.match(/\d{4}-\d{2}-\d{2}/) || [])[0]).filter(Boolean);
+                const rest = parts.slice(1).filter(x => !/\d{4}-\d{2}-\d{2}/.test(x));
+                const hours = rest.map(x => x.match(/^(\d+(?:\.\d+)?)\s*(?:小時|h|hr|hrs)?$/i)).find(Boolean);
+                const acceptance = rest.find(x => !/^(\d+(?:\.\d+)?)\s*(?:小時|h|hr|hrs)?$/i.test(x)) || '';
+                const title = parts[0].replace(/\*\*/g, '').trim();
+                if (!title) return;
+                items.push({ title, start: dates[0] || '', end: dates[1] || dates[0] || '', acceptance, hours: hours ? Number(hours[1]) : 0, steps: [] });
+            });
+            return items;
+        },
+
+        previewImport() {
+            const items = this.parseImport(document.getElementById('coach-import-text')?.value);
+            this._importItems = items;
+            const esc = s => app.entries.escapeHtml(s);
+            const project = this.state.project;
+            const existing = new Set((project ? this.projectCards(project) : []).map(c => String(c.title || '').trim()));
+            const target = document.getElementById('coach-import-preview');
+            if (!items.length) { target.innerHTML = '<div class="data-empty">沒有找到符合格式的項目。每個工作包要用「- 」開頭，欄位之間用「|」分隔。</div>'; return; }
+            target.innerHTML = `
+                <div class="data-note">會建立在目前工作區「${esc(app.state.tabs.find(t => t.id === app.state.activeTabId)?.name || '')}」，專案：<b>${esc(project || '（未指定）')}</b>。已存在同名卡片的預設不勾。</div>
+                ${items.map((it, i) => `<label class="coach-import-row"><input type="checkbox" data-idx="${i}" ${existing.has(it.title) ? '' : 'checked'}>
+                    <span><b>${esc(it.title)}</b>${existing.has(it.title) ? ' <span class="pm-hint">（已有同名卡片）</span>' : ''}<br><small>${esc([it.start && `${it.start}${it.end && it.end !== it.start ? '～' + it.end : ''}`, it.acceptance && `完成標準：${it.acceptance}`, it.hours && `預估 ${it.hours} 小時`, it.steps.length && `${it.steps.length} 個步驟`].filter(Boolean).join('　'))}</small></span></label>`).join('')}
+                <div class="data-actions"><button class="excel-copy-btn" onclick="app.coach.doImport()">✅ 建立勾選的卡片</button></div>`;
+        },
+
+        doImport() {
+            const items = this._importItems || [];
+            const picked = [...document.querySelectorAll('#coach-import-preview input[type=checkbox]:checked')].map(el => items[Number(el.dataset.idx)]).filter(Boolean);
+            if (!picked.length) { app.ui.toast('沒有勾選任何項目', 'warn'); return; }
+            const project = this.state.project;
+            const list = app.state.workspaces[app.state.activeTabId];
+            picked.forEach(it => {
+                const scheduled = !!it.start;
+                const card = {
+                    id: app.makeId('card'), title: it.title, content: it.steps.join('\n'), project,
+                    deliverable: it.title, acceptance: it.acceptance, workLogs: [],
+                    dateMode: scheduled ? 'range' : 'single', dateSingle: '', dateStart: it.start, dateEnd: it.end || it.start,
+                    color: 'blue', status: 0, isMemo: !scheduled
+                };
+                if (it.hours > 0) card.plannedMinutes = Math.round(it.hours * 60);
+                list.push(card);
+            });
+            app.saveToLocal();
+            this.close();
+            app.state.filters.activeProject = null;
+            if (app.state.view !== 'timeline') app.switchView('timeline'); else app.renderAll();
+            app.ui.toast(`已建立 ${picked.length} 張卡片（專案：${project || '未分類'}）`);
+        }
+    },
+
     actions: {
         addCard(mode = 'free') {
             const today = app.worktime.localDateString();
             const scheduled = mode === 'scheduled';
             const newCard = {
-                id: 'card_' + Date.now(), title: '', content: '', project: app.state.filters.activeProject || '',
+                id: app.makeId('card'), title: '', content: '', project: app.state.filters.activeProject || '',
                 category: '', progress: '', deliverable: '', acceptance: '', workLogs: [],
-                dateMode: scheduled ? 'range' : 'single', dateSingle: scheduled ? '' : '',
+                dateMode: scheduled ? 'range' : 'single', dateSingle: '',
                 dateStart: scheduled ? today : '', dateEnd: scheduled ? today : '',
                 color: 'blue', status: 0, isMemo: !scheduled
             };
             app.state.workspaces[app.state.activeTabId].push(newCard);
-            app.saveToLocal(); app.renderAll();
+            app.saveToLocal();
+            if (app.state.view !== 'timeline') app.switchView('timeline'); else app.renderAll();
+            // 新卡片直接捲到眼前、游標放進標題，不用自己找。
+            setTimeout(() => {
+                const el = document.querySelector(`.card[data-id="${CSS.escape(newCard.id)}"]`);
+                if (!el) return;
+                el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                el.querySelector('.input-title')?.focus({ preventScroll: true });
+                el.classList.add('task-nav-flash');
+            }, 60);
         },
-        updateCard(id, field, value) { const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id); if (card) { card[field] = value; app.saveToLocal(); app.renderAll(); } },
+
+        // 標題／內容／專案：每打一個字就存（0.4 秒後統一寫入），不重畫畫面。
+        editCardText(id, field, value) {
+            if (!['title', 'content', 'project'].includes(field)) return;
+            const card = app.worktime.getCard(id);
+            if (!card) return;
+            card[field] = value;
+            app.saveToLocal();
+            app.taskNav.scheduleRender();
+        },
+
+        // 舊介面相容：一般欄位更新。
+        updateCard(id, field, value) {
+            const card = app.worktime.getCard(id);
+            if (!card) return;
+            card[field] = value;
+            app.saveToLocal();
+            app.refreshCard(id);
+        },
+
+        updateCardDate(id, field, value) {
+            if (!['dateSingle', 'dateStart', 'dateEnd'].includes(field)) return;
+            const card = app.worktime.getCard(id);
+            if (!card) return;
+            card[field] = value;
+            if (card.dateStart && card.dateEnd && card.dateEnd < card.dateStart) {
+                if (field === 'dateStart') card.dateEnd = card.dateStart; else card.dateStart = card.dateEnd;
+            }
+            app.saveToLocal();
+            app.refreshCard(id);
+        },
+
+        openPlanning(id) {
+            const ui = app.worktime.getPlanningUi(id, 'timeline');
+            if (!ui.expanded) app.worktime.togglePlanning(id, 'timeline');
+            setTimeout(() => document.querySelector(`[data-fk="${CSS.escape(`timeline:${id}:nextStep`)}"]`)?.focus(), 80);
+        },
 
         getCardInTab(id, targetTabId = null) {
             if (targetTabId && app.state.workspaces[targetTabId]) {
                 const direct = app.state.workspaces[targetTabId].find(c => c.id === id);
                 if (direct) return direct;
             }
+            return app.worktime.getCard(id);
+        },
+
+        tabOfCard(id) {
             for (const tabId in app.state.workspaces) {
-                const card = (app.state.workspaces[tabId] || []).find(c => c.id === id);
-                if (card) return card;
+                if ((app.state.workspaces[tabId] || []).some(c => c.id === id)) return tabId;
             }
             return null;
         },
@@ -2775,7 +5264,9 @@ const app = {
             card.chroniclePinned = !card.chroniclePinned;
             if (card.chroniclePinned && !card.chronicleDate) card.chronicleDate = app.worktime.localDateString();
             app.saveToLocal();
-            app.renderAll();
+            if (app.state.view === 'chronicle') app.ui.defer(() => app.renderChronicle());
+            else app.refreshCard(id);
+            if (card.chroniclePinned) app.ui.toast('已加入大事記，記得到「⚡ 大事記」寫一句摘要');
         },
 
         updateChronicleMeta(id, field, value, targetTabId = null) {
@@ -2784,135 +5275,209 @@ const app = {
             if (!card) return;
             card[field] = value;
             app.saveToLocal();
-            if (app.state.view === 'chronicle') app.renderChronicle();
+            // 摘要邊打邊存不重畫；改日期才需要重新排序。
+            if (field === 'chronicleDate' && app.state.view === 'chronicle') app.ui.defer(() => app.renderChronicle());
         },
-        
-        // 👻 升級版：支援跨分頁、清洗沙盒的刪除機制
-        deleteCard(id, targetTabId = null) {
-            if (!confirm('⚠️ 確定移除此卡片嗎？刪除後無法復原。')) return;
-            
-            let foundTabId = targetTabId;
-            if (!foundTabId) {
-                for (let tab in app.state.workspaces) {
-                    if (app.state.workspaces[tab].find(c => c.id === id)) {
-                        foundTabId = tab;
-                        break;
-                    }
-                }
-            }
-            if (!foundTabId) return;
 
-            app.state.workspaces[foundTabId] = app.state.workspaces[foundTabId].filter(c => c.id !== id);
-            
-            // 🧹 核心防呆：如果刪除的剛好是沙盒正在編輯的任務，立刻清空焦點
-            if (app.state.sandbox.activeTaskId === id) {
-                app.sandbox.setActiveTask(null);
+        async deleteCard(id, targetTabId = null) {
+            const tabId = (targetTabId && app.state.workspaces[targetTabId]?.some(c => c.id === id)) ? targetTabId : this.tabOfCard(id);
+            if (!tabId) return;
+            const card = app.state.workspaces[tabId].find(c => c.id === id);
+            const mins = app.worktime.totalMinutes(card);
+            const blank = app.sync.isBlankCard(card);
+            if (!blank) {
+                const ok = await app.ui.confirm('刪除卡片',
+                    `<p>刪除「${app.entries.escapeHtml(card.title || '未命名卡片')}」${mins ? `（含 ${app.worktime.formatMinutes(mins)} 工時紀錄）` : ''}？</p><p>會先放進「🗂 資料 → 最近刪除」，需要時可以救回。</p>`, '刪除', true);
+                if (!ok) return;
             }
-            
+            const sb = app.state.sandbox;
+            if (sb.timerStatus !== 'IDLE' && sb.timerTaskId === id) app.sandbox.stopTimer('心流計時（刪除卡片前結算）');
+            // 對話框期間資料可能被更新（另一分頁、雲端載入），重新找一次這張卡。
+            const nowTab = this.tabOfCard(id);
+            const nowCard = nowTab ? app.state.workspaces[nowTab].find(c => c.id === id) : null;
+            if (!nowCard) return;
+            if (!await app.backup.trashOrConfirm([{ card: nowCard, tabId: nowTab }], '刪除')) return;
+            Object.keys(app.state.workspaces).forEach(t => { app.state.workspaces[t] = app.state.workspaces[t].filter(c => c.id !== id); });
+            if (sb.activeTaskId === id) { sb.activeTaskId = null; if (sb.timerStatus === 'IDLE') sb.timerTaskId = null; app.sandbox.persistTimer(); }
             app.saveToLocal();
-            app.renderAll(); // 重新渲染確保畫面同步
+            app.ui.defer(() => app.renderAll());
+            app.ui.toast(blank ? '已移除空白卡片' : '已刪除（可在「🗂 資料 → 最近刪除」救回）');
         },
 
-        // 🚀 新增：全域日曆/甘特圖專用的跳轉機制
         jumpToCard(id, tabId) {
-            app.actions.switchTab(tabId); 
-            app.switchView('timeline');   
-            
+            const realTab = (tabId && app.state.workspaces[tabId]?.some(c => c.id === id)) ? tabId : this.tabOfCard(id);
+            if (!realTab) return;
+            const card = app.worktime.getCard(id);
+            app.state.activeTabId = realTab;
+            app.state.filters.activeProject = null;
+            const project = String(card?.project || '').trim() || '日常雜項 (未分類)';
+            const gkey = `${realTab}::${project}`;
+            if (app.prefs.collapsedGroups?.[gkey]) { app.prefs.collapsedGroups[gkey] = false; app.store.savePrefs(); }
+            app.switchView('timeline');
             setTimeout(() => {
-                const targetEl = document.querySelector(`.card[data-id="${id}"]`);
+                const targetEl = document.querySelector(`.card[data-id="${CSS.escape(id)}"]`);
                 if (targetEl) {
                     targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                    const origBoxShadow = targetEl.style.boxShadow;
-                    targetEl.style.boxShadow = '0 0 15px 3px rgba(59, 130, 246, 0.6)';
-                    setTimeout(() => targetEl.style.boxShadow = origBoxShadow, 1500);
+                    targetEl.classList.remove('task-nav-flash');
+                    void targetEl.offsetWidth;
+                    targetEl.classList.add('task-nav-flash');
                 }
             }, 100);
         },
 
         moveCard(id, targetTabId) {
-            const currentTabId = app.state.activeTabId; if (currentTabId === targetTabId) return;
+            const currentTabId = this.tabOfCard(id);
+            if (!currentTabId || currentTabId === targetTabId) return;
             const cardIndex = app.state.workspaces[currentTabId].findIndex(c => c.id === id);
-            if (cardIndex !== -1) {
-                const [card] = app.state.workspaces[currentTabId].splice(cardIndex, 1);
-                if (!app.state.workspaces[targetTabId]) app.state.workspaces[targetTabId] = [];
-                app.state.workspaces[targetTabId].push(card); app.saveToLocal(); app.renderAll();
-            }
+            if (cardIndex === -1) return;
+            const [card] = app.state.workspaces[currentTabId].splice(cardIndex, 1);
+            if (!app.state.workspaces[targetTabId]) app.state.workspaces[targetTabId] = [];
+            app.state.workspaces[targetTabId].push(card);
+            app.saveToLocal();
+            app.ui.defer(() => app.renderAll());
+            app.ui.toast(`已移到「${app.state.tabs.find(t => t.id === targetTabId)?.name || ''}」`);
         },
+
         cycleStatus(id) {
-            const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id);
+            const card = app.worktime.getCard(id);
             if (!card) return;
             const current = Number(card.status || 0);
             const next = (current + 1) % 4;
-            if (next === 2) {
-                app.worktime.markCompleted(card);
-            } else {
+            if (next === 2) app.worktime.markCompleted(card);
+            else {
                 if (current === 2) app.worktime.reopenCompleted(card, next);
                 else card.status = next;
                 if (next === 1) app.worktime.ensureStarted(card);
             }
-            app.saveToLocal(); app.renderAll();
+            app.saveToLocal(); app.refreshCard(id);
         },
-        cycleColor(id) { const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id); const colors = ['blue', 'green', 'red', 'yellow']; if (card) { card.color = colors[(colors.indexOf(card.color) + 1) % colors.length]; app.saveToLocal(); app.renderAll(); } },
+
+        cycleColor(id) {
+            const card = app.worktime.getCard(id);
+            if (!card) return;
+            const colors = ['blue', 'green', 'red', 'yellow'];
+            card.color = colors[(colors.indexOf(card.color) + 1) % colors.length];
+            app.saveToLocal(); app.refreshCard(id);
+        },
+
         toggleMemo(id) {
-            const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id);
+            const card = app.worktime.getCard(id);
             if (!card) return;
             card.isMemo = !card.isMemo;
             if (!card.isMemo && !app.worktime.plannedStart(card)) {
                 const today = app.worktime.localDateString();
                 card.dateMode = 'range'; card.dateStart = today; card.dateEnd = today;
             }
-            app.saveToLocal(); app.renderAll();
+            app.saveToLocal(); app.refreshCard(id);
         },
-        toggleDateMode(id) { const card = app.state.workspaces[app.state.activeTabId].find(c => c.id === id); if (card) { card.dateMode = card.dateMode === 'single' ? 'range' : 'single'; app.saveToLocal(); app.renderAll(); } },
-        
+
+        toggleDateMode(id) {
+            const card = app.worktime.getCard(id);
+            if (!card) return;
+            const W = app.worktime;
+            if (card.dateMode === 'single') {
+                const d = card.dateSingle || W.localDateString();
+                card.dateMode = 'range';
+                if (!card.dateStart) card.dateStart = d;
+                if (!card.dateEnd) card.dateEnd = card.dateStart;
+            } else {
+                card.dateMode = 'single';
+                if (!card.dateSingle) card.dateSingle = card.dateStart || W.localDateString();
+            }
+            app.saveToLocal(); app.refreshCard(id);
+        },
+
         addMatrixNode() {
             const inputEl = document.getElementById('matrix-quick-input'); const tagEl = document.getElementById('matrix-tag-select');
-            const text = inputEl.value.trim(); if(!text) return;
-            if(!app.state.nodes[app.state.activeTabId]) app.state.nodes[app.state.activeTabId] = [];
+            const text = inputEl.value.trim(); if (!text) return;
+            if (!app.state.nodes[app.state.activeTabId]) app.state.nodes[app.state.activeTabId] = [];
             const gridX = Math.floor(Math.random() * 7) + 6; const gridY = Math.floor(Math.random() * 7) + 6;
-            app.state.nodes[app.state.activeTabId].push({ id: 'node_' + Date.now(), text: text, tag: tagEl.value, gridX: gridX, gridY: gridY, stoneColor: 'white', project: app.state.filters.activeProject || '' });
+            app.state.nodes[app.state.activeTabId].push({ id: app.makeId('node'), text, tag: tagEl.value, gridX, gridY, stoneColor: 'white', project: app.state.filters.activeProject || '' });
             inputEl.value = ''; app.saveToLocal(); app.renderMatrix();
         },
-        updateMatrixNodePos(id, gridX, gridY) { const node = app.state.nodes[app.state.activeTabId].find(n => n.id === id); if(node) { node.gridX = gridX; node.gridY = gridY; app.saveToLocal(); app.renderMatrix(); } },
-        toggleStoneColor(id) { const node = app.state.nodes[app.state.activeTabId].find(n => n.id === id); if(node) { node.stoneColor = node.stoneColor === 'black' ? 'white' : 'black'; app.saveToLocal(); app.renderMatrix(); } },
-        deleteMatrixNode(id) { app.state.nodes[app.state.activeTabId] = app.state.nodes[app.state.activeTabId].filter(n => n.id !== id); app.saveToLocal(); app.renderMatrix(); },
+        updateMatrixNodePos(id, gridX, gridY) { const node = (app.state.nodes[app.state.activeTabId] || []).find(n => n.id === id); if (node) { node.gridX = gridX; node.gridY = gridY; app.saveToLocal(); app.renderMatrix(); } },
+        toggleStoneColor(id) { const node = (app.state.nodes[app.state.activeTabId] || []).find(n => n.id === id); if (node) { node.stoneColor = node.stoneColor === 'black' ? 'white' : 'black'; app.saveToLocal(); app.renderMatrix(); } },
+        deleteMatrixNode(id) { app.state.nodes[app.state.activeTabId] = (app.state.nodes[app.state.activeTabId] || []).filter(n => n.id !== id); app.saveToLocal(); app.renderMatrix(); },
         promoteToCard(id) {
-            const nodes = app.state.nodes[app.state.activeTabId]; const idx = nodes.findIndex(n => n.id === id); if(idx === -1) return;
+            const nodes = app.state.nodes[app.state.activeTabId] || []; const idx = nodes.findIndex(n => n.id === id); if (idx === -1) return;
             const node = nodes[idx]; let cardColor = 'blue';
             if (node.tag === 'q1') cardColor = 'red'; else if (node.tag === 'q3') cardColor = 'yellow'; else if (node.tag === 'q2') cardColor = 'green';
-            app.state.workspaces[app.state.activeTabId].push({ id: 'card_' + Date.now(), title: node.text, content: '', project: node.project, dateMode: 'single', dateSingle: new Date().toISOString().split('T')[0], color: cardColor, status: 0, isMemo: false });
-            nodes.splice(idx, 1); app.saveToLocal(); app.renderAll(); alert(`🚀 已轉為正式排程卡片！`);
+            app.state.workspaces[app.state.activeTabId].push({ id: app.makeId('card'), title: node.text, content: '', project: node.project || '', dateMode: 'single', dateSingle: app.worktime.localDateString(), color: cardColor, status: 0, isMemo: false });
+            nodes.splice(idx, 1); app.saveToLocal(); app.renderAll(); app.ui.toast('🚀 已轉為排程卡片，到「📜 時間軸」可以看到');
         },
 
-        switchTab(id) { app.state.activeTabId = id; app.state.filters.activeProject = null; app.renderAll(); },
-        addTab() { const name = prompt("請輸入新工作區名稱："); if (name) { const id = 'tab_' + Date.now(); app.state.tabs.push({ id, name }); app.state.workspaces[id] = []; app.state.nodes[id] = []; app.state.activeTabId = id; app.saveToLocal(); app.renderAll(); } },
-        manageTab(e, id) {
-            e.preventDefault(); if (id === 'main') { alert('「主工作區」無法修改或刪除！'); return; }
-            const tab = app.state.tabs.find(t => t.id === id); const action = prompt(`管理分頁：「${tab.name}」\n[1] 重新命名\n[2] 刪除分頁`);
-            if (action === '1') { const newName = prompt('請輸入新名稱：', tab.name); if (newName && newName.trim() !== '') { tab.name = newName.trim(); app.saveToLocal(); app.renderAll(); } } 
-            else if (action === '2') { if (confirm(`⚠️ 確定刪除「${tab.name}」嗎？資料將消失！`)) { app.state.tabs = app.state.tabs.filter(t => t.id !== id); delete app.state.workspaces[id]; delete app.state.nodes[id]; app.state.activeTabId = 'main'; app.saveToLocal(); app.renderAll(); } }
+        switchTab(id) {
+            app.state.activeTabId = id;
+            app.state.filters.activeProject = null;
+            app.rememberPrefs();
+            if (app.state.view === 'sandbox') { app.renderTabs(); app.sandbox.renderTodo(); app.sandbox.refreshActiveNoteUI(); }
+            else app.renderAll();
+        },
+        addTab() {
+            const name = prompt("請輸入新工作區名稱：");
+            if (!name || !name.trim()) return;
+            const id = app.makeId('tab');
+            app.state.tabs.push({ id, name: name.trim() }); app.state.workspaces[id] = []; app.state.nodes[id] = [];
+            app.state.activeTabId = id; app.saveToLocal(); app.rememberPrefs(); app.renderAll();
+        },
+        async manageTab(e, id) {
+            e.preventDefault();
+            if (id === 'main') { app.ui.toast('「主工作區」無法修改或刪除'); return; }
+            const tab = app.state.tabs.find(t => t.id === id);
+            if (!tab) return;
+            const cards = app.state.workspaces[id] || [];
+            const action = await app.ui.dialog({
+                title: `工作區「${tab.name}」`,
+                html: `<p>這個工作區有 ${cards.length} 張卡片。</p>`,
+                buttons: [{ label: '取消', value: null }, { label: '刪除工作區…', value: 'delete', danger: true }, { label: '重新命名', value: 'rename', primary: true }]
+            });
+            if (action === 'rename') {
+                const newName = prompt('請輸入新名稱：', tab.name);
+                if (newName && newName.trim()) { tab.name = newName.trim(); app.saveToLocal(); app.renderAll(); }
+            } else if (action === 'delete') {
+                const mins = cards.reduce((sum, c) => sum + app.worktime.totalMinutes(c), 0);
+                const ok = await app.ui.confirm('刪除工作區', `<p>刪除「${app.entries.escapeHtml(tab.name)}」與裡面的 <b>${cards.length}</b> 張卡片${mins ? `（${app.worktime.formatMinutes(mins)} 工時）` : ''}？</p><p>卡片會先放進「最近刪除」。</p>`, '刪除', true);
+                if (!ok) return;
+                const sb = app.state.sandbox;
+                if (sb.timerStatus !== 'IDLE' && cards.some(c => c.id === sb.timerTaskId)) app.sandbox.stopTimer();
+                if (!await app.backup.trashOrConfirm(cards.map(card => ({ card, tabId: id })), `刪除工作區「${tab.name}」`)) return;
+                app.state.tabs = app.state.tabs.filter(t => t.id !== id);
+                delete app.state.workspaces[id]; delete app.state.nodes[id];
+                app.state.activeTabId = 'main';
+                app.saveToLocal(); app.rememberPrefs(); app.renderAll();
+            }
         },
         updateNotebookTemplate(val) { app.state.globalNotebook.template = val; app.saveToLocal(); app.renderNotebookArea(); },
-        updateNotebook(field, val) { if (field === 'free') app.state.globalNotebook.free = val; else { const key = field.split('.')[1]; app.state.globalNotebook.matrix[key] = val; } app.saveToLocal(); },
+        updateNotebook(field, val) {
+            if (field === 'free') app.state.globalNotebook.free = val;
+            else { const key = field.split('.')[1]; if (!app.state.globalNotebook.matrix) app.state.globalNotebook.matrix = {}; app.state.globalNotebook.matrix[key] = val; }
+            app.saveToLocal();
+            if (field === 'free' && app.state.view === 'sandbox' && !app.state.sandbox.activeTaskId) {
+                const area = document.getElementById('sb-activeNoteArea');
+                if (area && document.activeElement !== area) area.value = val;
+            }
+        },
 
         setTsumegoColor(color) {
-            if (color === 'clear') { app.state.tsumego.currentColor = 'clear'; } else { app.state.tsumego.currentColor = color; }
+            app.state.tsumego.currentColor = color;
             document.querySelectorAll('.tsumego-tool-btn').forEach(btn => btn.classList.remove('active'));
-            document.getElementById('ts-btn-' + color).classList.add('active');
+            document.getElementById('ts-btn-' + color)?.classList.add('active');
         },
         placeTsumegoStone(e) {
             const gridBox = document.getElementById('tsumego-grid-lines'); const rect = gridBox.getBoundingClientRect();
-            let rawX = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left; let rawY = (e.touches ? e.touches[0].clientY : e.clientY) - rect.top;
-            let gridX = Math.round((rawX / rect.width) * 18); let gridY = Math.round((rawY / rect.height) * 18);
+            const rawX = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left; const rawY = (e.touches ? e.touches[0].clientY : e.clientY) - rect.top;
+            const gridX = Math.round((rawX / rect.width) * 18); const gridY = Math.round((rawY / rect.height) * 18);
             if (gridX < 0 || gridX > 18 || gridY < 0 || gridY > 18) return;
-            const existingIdx = app.state.tsumego.stones.findIndex(s => s.x === gridX && s.y === gridY);
-            if (app.state.tsumego.currentColor === 'clear') { if (existingIdx > -1) { app.state.tsumego.stones.splice(existingIdx, 1); app.saveToLocal(); app.renderTsumegoStones(); } } 
-            else { if (existingIdx > -1) { app.state.tsumego.stones[existingIdx].color = app.state.tsumego.currentColor; } else { app.state.tsumego.stones.push({ x: gridX, y: gridY, color: app.state.tsumego.currentColor }); } app.saveToLocal(); app.renderTsumegoStones(); }
+            const stones = app.state.tsumego.stones;
+            const existingIdx = stones.findIndex(s => s.x === gridX && s.y === gridY);
+            if (app.state.tsumego.currentColor === 'clear') { if (existingIdx > -1) stones.splice(existingIdx, 1); }
+            else if (existingIdx > -1) stones[existingIdx].color = app.state.tsumego.currentColor;
+            else stones.push({ x: gridX, y: gridY, color: app.state.tsumego.currentColor });
+            app.saveToLocal(); app.renderTsumegoStones();
         },
-        resetTsumego() { if(confirm("確定要清空盤面？")) { app.state.tsumego.stones = []; app.saveToLocal(); app.renderTsumegoStones(); } }
+        async resetTsumego() { if (await app.ui.confirm('清空盤面', '<p>確定要清空詰棋盤面？</p>', '清空', true)) { app.state.tsumego.stones = []; app.saveToLocal(); app.renderTsumegoStones(); } }
     }
 };
-
 
 // ==========================================
 // 🧭 v2.2.1 任務導覽
@@ -2977,6 +5542,12 @@ app.taskNav = {
     },
 
     close() { this.ui.open = false; this.applyOpenState(); },
+
+    // 打字改標題時，導覽列稍後再更新（不跟著每個字重畫）。
+    scheduleRender() {
+        clearTimeout(this.ui.renderTimer);
+        this.ui.renderTimer = setTimeout(() => this.safe(() => this.renderList()), 400);
+    },
 
     setSearch(value) {
         this.ui.search = String(value || '');
@@ -3143,7 +5714,3 @@ app.taskNav = {
 // === 啟動應用 ===
 app.init();
 app.taskNav.init();
-window.addEventListener('resize', () => {
-    if (app.state.view === 'matrix') app.renderMatrix();
-    if (app.state.tsumego.isOpen) app.renderTsumegoStones();
-});

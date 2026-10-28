@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>白板 & 心流沙盒</title>
+    <title>白板 & 心流沙盒 v3.1</title>
     
     <!-- Firebase Compat -->
     <script src="https://www.gstatic.com/firebasejs/10.8.1/firebase-app-compat.js"></script>
@@ -361,6 +361,10 @@
         @media (min-width: 769px) and (max-width: 1200px) {
             #task-nav-panel { top: 68px; left: 58px; width: 250px; }
         }
+        /* v3.0：寬螢幕開著導覽時，把主畫面往右推，不再蓋住卡片左半邊 */
+        @media (min-width: 1201px) {
+            body.task-nav-open .main-area { margin-left: calc(66px + var(--task-nav-width)); width: calc(100% - 66px - var(--task-nav-width)); }
+        }
 
         /* === v2：規劃 / 實際、共用日期軸甘特、Excel 匯出 === */
         .pm-collapse-toggle { width:100%; border:0; background:#f8fafc; color:#334155; padding:8px 10px; border-radius:7px; cursor:pointer; display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:10px; text-align:left; }
@@ -528,6 +532,137 @@
             .gantt-summary-strip { gap:8px; font-size:.74rem; }
         }
 
+
+        /* ===== v3.0：同步狀態、提示、對話框、計時、資料管理 ===== */
+        .toolbar { overflow-x:auto; scrollbar-width:none; gap:12px; }
+        .tool-left, .tool-right { flex-shrink:0; }
+        @media (max-width: 1560px) { .tool-title { display:none; } .toolbar .btn { padding:7px 9px; } }
+        @media (max-width: 1700px) { .toolbar .nav-btn-label:not(.keep) { display:none; } }
+        @media (max-width: 1100px) { .toolbar .nav-btn-label { display:none; } }
+        .sync-status { display:inline-flex; flex-direction:column; align-items:flex-end; gap:0; font-size:.72rem; line-height:1.25; color:#cbd5e1; white-space:nowrap; margin-right:2px; }
+        .sync-status .sync-line { display:flex; gap:5px; }
+        .sync-status .sync-sep { color:#64748b; }
+        .sync-status .sync-warn { color:#fdba74; font-weight:bold; }
+        .sync-status .sync-bad { color:#fca5a5; font-weight:bold; }
+        .btn-cloud-save.has-unsynced { box-shadow:0 0 0 2px #fdba74; }
+        .btn[disabled] { opacity:.6; cursor:wait; }
+
+        .timer-pill { display:inline-flex; align-items:center; gap:6px; }
+        .timer-pill.running { background:#166534; border-color:#22c55e; color:#fff; }
+        .timer-pill.paused { background:#854d0e; border-color:#facc15; color:#fff; }
+        .timer-pill-main { display:inline-flex; align-items:center; gap:5px; cursor:pointer; }
+        .timer-pill-title { max-width:140px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:.8rem; opacity:.9; }
+        .timer-pill-btn { background:rgba(255,255,255,.15); border:none; color:#fff; border-radius:4px; padding:2px 6px; cursor:pointer; font-size:.8rem; }
+        .timer-pill-btn:hover { background:rgba(255,255,255,.3); }
+        .card-timer-btn.running { background:#dcfce7; border-color:#22c55e; color:#166534; animation:timerPulse 1.6s ease-in-out infinite; }
+        @keyframes timerPulse { 50% { box-shadow:0 0 0 4px rgba(34,197,94,.18); } }
+
+        #toast-root { position:fixed; left:50%; bottom:84px; transform:translateX(-50%); z-index:21000; display:flex; flex-direction:column; gap:8px; align-items:center; pointer-events:none; }
+        .toast { background:#1e293b; color:#fff; padding:10px 16px; border-radius:10px; font-size:.88rem; box-shadow:0 6px 20px rgba(0,0,0,.25); max-width:min(92vw,560px); transition:opacity .3s, transform .3s; }
+        .toast-warn { background:#9a3412; }
+        .toast.hide { opacity:0; transform:translateY(6px); }
+
+        #banner-root { position:fixed; top:64px; left:50%; transform:translateX(-50%); z-index:2100; display:flex; flex-direction:column; gap:6px; width:min(94vw,820px); }
+        .app-banner { display:flex; align-items:center; gap:10px; padding:10px 12px; border-radius:10px; font-size:.86rem; box-shadow:0 4px 14px rgba(0,0,0,.12); border:1px solid; }
+        .banner-info { background:#eff6ff; border-color:#bfdbfe; color:#1e3a8a; }
+        .banner-warn { background:#fff7ed; border-color:#fed7aa; color:#9a3412; }
+        .banner-error { background:#fef2f2; border-color:#fecaca; color:#991b1b; font-weight:bold; }
+        .banner-text { flex:1; }
+        .banner-btn { border:1px solid currentColor; background:#fff; color:inherit; border-radius:6px; padding:5px 10px; cursor:pointer; font-weight:bold; white-space:nowrap; }
+        .banner-close { border:none; background:transparent; color:inherit; cursor:pointer; font-size:1rem; opacity:.6; }
+
+        .app-dialog-overlay { position:fixed; inset:0; background:rgba(15,23,42,.55); z-index:20000; display:flex; align-items:center; justify-content:center; padding:16px; }
+        .app-dialog { background:#fff; border-radius:14px; width:min(560px,100%); max-height:86vh; display:flex; flex-direction:column; box-shadow:0 20px 50px rgba(0,0,0,.3); }
+        .app-dialog.wide { width:min(760px,100%); }
+        .app-dialog-title { font-weight:bold; font-size:1.1rem; padding:16px 18px 6px; color:#0f172a; }
+        .app-dialog-body { padding:4px 18px 10px; overflow-y:auto; font-size:.9rem; color:#334155; line-height:1.55; }
+        .app-dialog-body p { margin:6px 0; }
+        .app-dialog-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; padding:12px 18px 16px; border-top:1px solid #f1f5f9; }
+        .app-dialog-btn { border:1px solid #cbd5e1; background:#fff; color:#334155; border-radius:8px; padding:8px 14px; cursor:pointer; font-size:.9rem; }
+        .app-dialog-btn.primary { background:var(--primary); border-color:var(--primary); color:#fff; font-weight:bold; }
+        .app-dialog-btn.danger { border-color:#fca5a5; color:#b91c1c; }
+        .diff-block { border:1px solid #e2e8f0; border-radius:8px; padding:8px 10px; margin:8px 0; background:#f8fafc; }
+        .diff-head { font-weight:bold; font-size:.85rem; color:#0f172a; }
+        .diff-list { display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; }
+        .diff-list span { background:#fff; border:1px solid #e2e8f0; border-radius:999px; padding:2px 8px; font-size:.78rem; max-width:240px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .diff-list .diff-more { border-style:dashed; color:#64748b; }
+
+        .timeline-group-head .group-lab-btn { margin-left:auto; margin-right:10px; font-size:.75rem; font-weight:normal; border:1px solid #c7d2fe; color:#4338ca; background:#fff; border-radius:6px; padding:2px 8px; cursor:pointer; }
+        .timeline-group-head { gap:8px; align-items:center; margin-left:45px; position:relative; z-index:5; cursor:pointer; background:#f1f5f9; padding:8px 12px; border-radius:6px; font-weight:bold; color:#334155; display:flex; justify-content:space-between; border-left:4px solid var(--primary); }
+        .next-step-preview { margin:2px 0 8px; padding:6px 10px; border-radius:6px; background:#eef2ff; color:#3730a3; font-size:.84rem; cursor:pointer; }
+        .next-step-preview span { font-weight:bold; }
+        .worktime-collapsed-btn { width:100%; display:flex; align-items:center; gap:10px; padding:8px 10px; border:none; background:transparent; cursor:pointer; text-align:left; font-size:.82rem; }
+        .worktime-collapsed-btn .worktime-last { color:#94a3b8; font-size:.76rem; }
+        .worktime-collapsed-btn .worktime-open { margin-left:auto; color:#64748b; font-size:.8rem; white-space:nowrap; }
+        .worktime-row.worktime-row-edit { grid-template-columns:130px 150px minmax(0,1fr) auto auto; }
+        .card-body > .task-meta-panel, .card-body > .worktime-panel, .card-body > .worklog-panel { margin-top:6px; }
+
+        .data-modal { max-width:760px; }
+        .data-section { border:1px solid #e2e8f0; border-radius:10px; padding:12px 14px; margin-bottom:12px; }
+        .data-section h4 { margin:0 0 6px; color:#0f172a; display:flex; align-items:center; gap:8px; }
+        .data-count { background:#e2e8f0; color:#334155; border-radius:999px; padding:1px 8px; font-size:.75rem; }
+        .data-note { font-size:.82rem; color:#64748b; margin:4px 0; }
+        .data-stats { display:flex; gap:16px; flex-wrap:wrap; font-size:.88rem; color:#334155; margin-bottom:8px; }
+        .data-meter { height:8px; background:#f1f5f9; border-radius:999px; overflow:hidden; }
+        .data-meter span { display:block; height:100%; background:#10b981; }
+        .data-meter span.warn { background:#f59e0b; }
+        .data-actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
+        .data-row { display:flex; justify-content:space-between; align-items:center; gap:10px; padding:7px 0; border-top:1px solid #f1f5f9; }
+        .data-row-main { display:flex; flex-direction:column; min-width:0; }
+        .data-row-main b { font-size:.86rem; color:#1e293b; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .data-row-main small { color:#94a3b8; font-size:.75rem; }
+        .data-row-actions { display:flex; gap:6px; flex-shrink:0; }
+        .data-scroll { max-height:240px; overflow-y:auto; }
+        .data-empty { color:#94a3b8; font-size:.82rem; padding:6px 0; }
+        .danger-zone { border-color:#fecaca; }
+        .excel-copy-btn.danger { color:#b91c1c; border-color:#fca5a5; }
+        .worktime-collapsed-btn > span:first-child { white-space:nowrap; }
+        @media (max-width: 768px) {
+            .sync-status { display:none; }
+            .worktime-collapsed-btn .worktime-last { display:none; }
+            .worktime-collapsed-btn { flex-wrap:wrap; gap:6px; }
+            #banner-root { top:62px; }
+            #toast-root { bottom:96px; }
+            .worktime-row.worktime-row-edit { grid-template-columns:1fr 1fr; }
+            .timer-pill-title { max-width:70px; }
+        }
+
+        /* ===== v3.1：交付與進度、等待、週報、AI 老師 ===== */
+        .pm-hint { font-weight:normal; color:#94a3b8; font-size:.72rem; }
+        .waiting-box { margin-top:8px; padding:8px 10px; border:1px dashed #cbd5e1; border-radius:8px; background:#fff; }
+        .waiting-box.active { border-color:#fdba74; background:#fff7ed; }
+        .pm-more { margin-top:6px; border:1px solid #e2e8f0; border-radius:8px; background:#fff; }
+        .pm-more > summary { cursor:pointer; padding:7px 10px; font-size:.78rem; color:#64748b; }
+        .pm-more > .pm-section-body { padding:0 10px 10px; }
+        .card-badges { display:inline-flex; gap:6px; }
+        .waiting-badge { background:#fff7ed; color:#c2410c; border:1px solid #fed7aa; border-radius:999px; padding:2px 8px; font-size:.74rem; white-space:nowrap; }
+        .waiting-badge.due { background:#fee2e2; color:#b91c1c; border-color:#fca5a5; font-weight:bold; }
+        .report-toolbar { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-bottom:12px; }
+        .report-hours { margin-left:auto; color:#475569; font-size:.88rem; }
+        .report-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); gap:12px; }
+        .report-section { border:1px solid #e2e8f0; border-radius:10px; padding:10px 12px; background:#f8fafc; }
+        .report-section h4 { margin:0 0 6px; display:flex; align-items:center; gap:8px; color:#0f172a; }
+        .report-waiting { background:#fff7ed; border-color:#fed7aa; }
+        .report-overdue { background:#fef2f2; border-color:#fecaca; }
+        .report-row { display:block; width:100%; text-align:left; border:none; background:#fff; border-radius:6px; padding:6px 8px; margin:4px 0; cursor:pointer; font-size:.84rem; color:#334155; box-shadow:0 1px 2px rgba(0,0,0,.04); }
+        .report-row:hover { background:#eef2ff; }
+        .report-text-wrap { margin-top:14px; border:1px solid #e2e8f0; border-radius:10px; overflow:hidden; }
+        .report-text-head { display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; padding:8px 12px; background:#f1f5f9; }
+        .report-text { margin:0; padding:12px; white-space:pre-wrap; font-size:.84rem; line-height:1.6; max-height:360px; overflow:auto; background:#fff; }
+        .coach-tabs { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px; }
+        .coach-tab { border:1px solid #cbd5e1; background:#fff; border-radius:999px; padding:6px 12px; cursor:pointer; font-size:.84rem; }
+        .coach-tab.active { background:var(--primary); border-color:var(--primary); color:#fff; font-weight:bold; }
+        .coach-when { font-size:.84rem; color:#475569; background:#eef2ff; border-radius:8px; padding:8px 10px; margin-bottom:10px; }
+        .coach-brief { margin-top:8px; border:1px solid #e2e8f0; border-radius:8px; padding:6px 10px; }
+        .coach-brief > summary { cursor:pointer; font-size:.84rem; color:#334155; font-weight:bold; }
+        .coach-prompt { width:100%; font-family:ui-monospace, Menlo, Consolas, monospace; font-size:.8rem; line-height:1.5; border:1px solid #cbd5e1; border-radius:8px; padding:10px; resize:vertical; }
+        .coach-import { margin-top:12px; padding:10px; border:1px dashed #a5b4fc; border-radius:10px; background:#f8fafc; }
+        .coach-import-row { display:flex; gap:8px; align-items:flex-start; padding:6px 0; border-top:1px solid #f1f5f9; font-size:.86rem; }
+        .coach-import-row small { color:#64748b; }
+        a.excel-copy-btn { text-decoration:none; display:inline-flex; align-items:center; }
+        @media (max-width: 768px) {
+            .waiting-box .task-meta-grid { grid-template-columns:1fr 1fr !important; }
+        }
     </style>
 </head>
 <body>
@@ -535,7 +670,7 @@
     <!-- 登入畫面 -->
     <div id="login-screen">
         <h1 style="font-size: 2.5rem; margin-bottom: 10px;">白板系統</h1>
-        <p style="color: #94a3b8; margin-bottom: 30px;">(SPA 雙向綁定子任務版)</p>
+        <p style="color: #94a3b8; margin-bottom: 30px;">v3.1</p>
         <button onclick="app.login()" style="padding: 14px 28px; font-size: 1.1rem; border-radius: 30px; border: none; background: #3b82f6; color: white; font-weight: bold; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.3);">
             使用 Google 登入
         </button>
@@ -546,26 +681,29 @@
         <div class="toolbar">
             <div class="tool-left">
                 <div class="tool-title">白板</div>
-                <button class="btn" onclick="app.toggleProjectBar()">📁 專案</button>
+                <button class="btn" id="btn-project-bar" onclick="app.toggleProjectBar()">📁 <span class="nav-btn-label">專案</span></button>
                 <button class="btn" onclick="app.taskNav.toggle()" id="btn-task-nav" title="快速跳到專案或卡片">🧭 <span class="nav-btn-label">導覽</span></button>
-                <button class="btn" onclick="app.switchView('timeline')" id="btn-view-timeline">📜 時間軸</button>
-                <button class="btn" onclick="app.switchView('matrix')" id="btn-view-matrix">💡 發想棋盤</button>
-                <button class="btn mobile-hidden" onclick="app.switchView('chronicle')" id="btn-view-chronicle">⚡ 大事記</button>
-                <button class="btn mobile-hidden" onclick="app.switchView('gantt')" id="btn-view-gantt">📊 甘特圖</button>
-                <button class="btn mobile-hidden" onclick="app.switchView('calendar')" id="btn-view-calendar">📅 日曆</button>
+                <button class="btn" onclick="app.switchView('timeline')" id="btn-view-timeline">📜 <span class="nav-btn-label keep">時間軸</span></button>
+                <button class="btn" onclick="app.switchView('matrix')" id="btn-view-matrix">💡 <span class="nav-btn-label">發想棋盤</span></button>
+                <button class="btn" onclick="app.switchView('chronicle')" id="btn-view-chronicle">⚡ <span class="nav-btn-label">大事記</span></button>
+                <button class="btn" onclick="app.switchView('gantt')" id="btn-view-gantt">📊 <span class="nav-btn-label">甘特圖</span></button>
+                <button class="btn" onclick="app.switchView('calendar')" id="btn-view-calendar">📅 <span class="nav-btn-label">日曆</span></button>
+                <button class="btn" onclick="app.switchView('report')" id="btn-view-report" title="本週完成、進行中、卡住、下週預計">📋 <span class="nav-btn-label keep">週報</span></button>
                 
                 <!-- SPA 沙盒入口 -->
-                <button class="btn" onclick="app.switchView('sandbox')" id="btn-view-sandbox" style="border-color:#10b981; color:#10b981; font-weight:bold;">🚀 進入心流沙盒</button>
+                <button class="btn" onclick="app.switchView('sandbox')" id="btn-view-sandbox" style="border-color:#10b981; color:#10b981; font-weight:bold;">🚀 <span class="nav-btn-label">心流沙盒</span></button>
+                <button class="btn" onclick="app.coach.open()" title="請 AI 當老師：示範拆解、檢查計畫、卡住時帶你想">🧑‍🏫 <span class="nav-btn-label keep">AI 老師</span></button>
+                <button class="btn" onclick="app.openProjectLab()" title="到 Project Lab 釐清、復盤、跟 AI 討論">🔬 <span class="nav-btn-label">Project Lab</span></button>
             </div>
             <div class="tool-right">
-                <span id="cloud-time-display" style="font-size: 0.8rem; color: #94a3b8; margin-right: 10px; display: none;" class="mobile-hidden"></span>
-                <button class="btn btn-cloud-save" onclick="app.saveToCloudManual()">☁️ 存雲端</button>
-                <button class="btn btn-cloud-load" onclick="app.loadFromCloudManual()">📥 載雲端</button>
+                <span id="sync-status" class="sync-status" title="本機與雲端的同步狀態"></span>
+                <button class="btn btn-cloud-save" onclick="app.cloud.save()" title="上傳到雲端（會先比對，不會蓋掉別台裝置的修改）">☁️ 存雲端</button>
+                <button class="btn btn-cloud-load" onclick="app.cloud.load()" title="從雲端載入（有未上傳修改時會先列出差異）">📥 載雲端</button>
+                <button class="btn" onclick="app.dataCenter.open()" title="備份、還原、最近刪除、空白卡片">🗂 <span class="nav-btn-label">資料</span></button>
                 <div style="width:1px; height:20px; background:#475569; margin:0 2px;"></div>
-                <button class="btn btn-danger btn-clear-local" onclick="app.clearLocalData()">🧹 清本機</button>
-                <button class="btn" id="pomodoro-btn" onclick="app.togglePomodoro()">🍅 <span id="pomo-time">25:00</span></button>
-                <button class="btn" onclick="app.openNotebook()">📖 筆記</button>
-                <button class="btn btn-danger mobile-hidden" onclick="app.logout()">登出</button>
+                <button class="btn timer-pill" id="timer-pill" type="button">⏱️ <span class="nav-btn-label">心流</span></button>
+                <button class="btn" onclick="app.openNotebook()">📖 <span class="nav-btn-label">筆記</span></button>
+                <button class="btn btn-danger" onclick="app.logout()">登出</button>
             </div>
         </div>
 
@@ -615,9 +753,6 @@
 
             <!-- 1. 時間軸 -->
             <div id="view-timeline" class="view-container active">
-                <div style="text-align:right; font-size:0.85rem; color:#94a3b8; margin-bottom:15px; font-weight: bold;">
-                    <span id="local-save-status">✅ 已存於本機</span>
-                </div>
                 <div class="timeline" id="timeline-render-target"></div>
                 <div class="add-card-actions">
                     <button class="add-main-btn" onclick="app.actions.addCard('free')">＋ 新增自由卡片</button>
@@ -678,6 +813,13 @@
                     <span class="gantt-legend-item">⚠ 數字＝與其他正式排程重疊的工項數</span>
                 </div>
                 <div id="gantt-render-target"></div>
+            </div>
+
+            <!-- 週報 -->
+            <div id="view-report" class="view-container">
+                <h3 style="text-align: center; color: #475569; margin-top: 0; margin-bottom:6px;">📋 週報</h3>
+                <p style="text-align:center; color:#64748b; font-size:.88rem; margin:0 0 16px;">從卡片自動整理，不用另外維護。別人問進度時，先看這頁。</p>
+                <div id="report-render-target"></div>
             </div>
 
             <!-- 4. 日曆 -->
@@ -811,6 +953,29 @@
                     <option value="matrix">⚖️ 艾森豪四象限</option>
                 </select>
                 <div id="notebook-render-target"></div>
+            </div>
+        </div>
+
+        <!-- 🧑‍🏫 AI 老師 -->
+        <div id="modal-coach" class="modal-overlay" onclick="if(event.target===this) app.coach.close()">
+            <div class="modal-content data-modal">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                    <h3 style="margin: 0; color: #1e293b; font-size: 1.3rem;">🧑‍🏫 AI 老師</h3>
+                    <button class="icon-btn" style="width:36px; height:36px;" onclick="app.coach.close()">×</button>
+                </div>
+                <div class="data-note" style="margin-bottom:8px;">選一種情境，系統會把你的專案和卡片內容放進提問。複製貼給 Claude，請它「先示範、再解釋、最後考你」，而不是陪你一起從零摸索。</div>
+                <div id="coach-render-target"></div>
+            </div>
+        </div>
+
+        <!-- 🗂 資料管理 -->
+        <div id="modal-data" class="modal-overlay" onclick="if(event.target===this) app.dataCenter.close()">
+            <div class="modal-content data-modal">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                    <h3 style="margin: 0; color: #1e293b; font-size: 1.3rem;">🗂 資料管理</h3>
+                    <button class="icon-btn" style="width:36px; height:36px;" onclick="app.dataCenter.close()">×</button>
+                </div>
+                <div id="data-render-target"></div>
             </div>
         </div>
 
