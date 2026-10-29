@@ -661,7 +661,27 @@
         .coach-import-row small { color:#64748b; }
         a.excel-copy-btn { text-decoration:none; display:inline-flex; align-items:center; }
         @media (max-width: 768px) {
+            /* 手機：交付與進度改成單欄，日期欄位不再被擠扁 */
+            .task-meta-panel .task-meta-grid { grid-template-columns:1fr !important; }
             .waiting-box .task-meta-grid { grid-template-columns:1fr 1fr !important; }
+            .waiting-box .task-meta-grid > input:nth-child(2) { grid-column:1 / -1; order:-1; }
+            .task-meta-panel input[type=date] { min-width:0; width:100%; }
+            .pm-collapse-toggle { grid-template-columns:auto auto; }
+            .pm-collapse-summary { grid-column:1 / -1; order:3; white-space:normal; }
+            /* 工具列：雲端與計時放最前面，導覽圖示往後滑 */
+            .tool-right { order:-1; }
+            .toolbar { gap:8px; }
+            .timer-pill.running, .timer-pill.paused { position:sticky; left:0; z-index:2; }
+            /* 詰棋按鈕縮小並移到分頁列上方，不再蓋住卡片 */
+            #tsumego-widget-btn { width:42px; height:42px; right:12px; bottom:calc(72px + env(safe-area-inset-bottom)); font-size:1.1rem; opacity:.85; }
+            #toast-root { bottom:calc(124px + env(safe-area-inset-bottom)); width:calc(100vw - 32px); }
+            .coach-tabs { flex-wrap:nowrap; overflow-x:auto; padding-bottom:4px; }
+            .coach-tab { white-space:nowrap; }
+            .coach-brief .task-meta-grid, .modal-content .task-meta-grid { grid-template-columns:1fr !important; }
+            .modal-content { padding:16px; max-height:calc(100vh - 90px); }
+            .report-grid { grid-template-columns:1fr; }
+            .report-hours { margin-left:0; }
+            .card-footer .input-project { min-width:0; flex:1; }
         }
     </style>
 </head>
