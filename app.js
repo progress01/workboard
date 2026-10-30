@@ -27,7 +27,7 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 const provider = new firebase.auth.GoogleAuthProvider();
 
-const APP_VERSION = '3.3';
+const APP_VERSION = '3.3.1';
 const SCHEMA_VERSION = 3;
 const CLOUD_DOC_SOFT_LIMIT = 750 * 1024;   // 超過時提醒
 const CLOUD_DOC_HARD_LIMIT = 1000 * 1000;  // Firestore 單一文件上限約 1 MiB，保守一點
@@ -5037,6 +5037,7 @@ const app = {
                     <div class="report-text-head">
                         <b>🗒 工作日誌（給公司填工時用）</b>
                         <span style="display:flex;gap:6px;flex-wrap:wrap;">
+                            <button class="excel-copy-btn" onclick="app.journal.copyForAI()" title="把這段期間的紀錄、公司類別與格式一起複製，貼給 AI 就會整理成公司工時表">🧑‍🏫 複製給 AI 產生公司工時表</button>
                             <button class="excel-copy-btn" onclick="app.journal.copy()">📋 複製日誌文字</button>
                             <button class="excel-copy-btn" onclick="app.journal.exportXlsx()">⬇️ 匯出 Excel</button>
                         </span>
@@ -5052,11 +5053,56 @@ const app = {
                         <span class="report-hours">合計 <b>${W.formatMinutes(totalMin)}</b></span>
                     </div>
                     ${data.rows.length ? `<div class="journal-days">${days}</div>` : '<div class="data-empty" style="padding:12px;">這段期間沒有工時或工作紀錄。用卡片上的 ⏱️ 計時，或在「工時」補登，就會出現在這裡。</div>'}
+                    <details class="journal-ai-settings" ${f.showAiSettings ? 'open' : ''} ontoggle="app.journal.filters.showAiSettings=this.open">
+                        <summary>給 AI 的專案名稱對照（選填，只要設定一次）</summary>
+                        <div class="data-note">一行一個：白板上的專案名稱 = 公司工時表上的專案名稱。沒寫的，AI 會用白板上的名稱或請你確認。</div>
+                        <textarea class="task-meta-textarea" rows="4" placeholder="化學署官網會議 = 化學物質管理署「114-116年度中英文全球資訊網與業務網站整合、維運暨功能擴增案」&#10;環境部 = 環境部「115-116年度內外網系統維運暨功能擴增案」&#10;日常 = 公司/部門事務" oninput="app.journal.saveProjectMap(this.value)">${esc(app.prefs.companyProjectMap || '')}</textarea>
+                    </details>
                     <div class="data-note" style="padding:0 12px 10px;">時間欄：計時的紀錄會自動有起訖時間；補登時可以選填「開始」時間。只有日期的補登，時間欄會留白。</div>
                 </section>`;
         },
 
         copy() { app.worktime.copyText(this.text(), '已複製工作日誌'); },
+
+        saveProjectMap(v) { app.prefs.companyProjectMap = v; app.store.savePrefs(); },
+
+        aiPrompt(data = this.collect()) {
+            const W = app.worktime;
+            const lines = [];
+            data.days.forEach((list, date) => {
+                lines.push(`## ${this.dayLabel(date).replace(/^\d+\/\d+/, date)}`);
+                list.forEach(x => {
+                    if (x.kind === 'work') lines.push(`- ${x.time || '（未記時間）'}｜${Math.round(x.minutes)} 分｜專案：${x.project}｜卡片：${x.title}｜內容：${x.content}${x.category ? `｜我選的類別：${x.category}` : ''}`);
+                    else lines.push(`- ${x.time || ''}｜（筆記，不算工時）｜專案：${x.project}｜卡片：${x.title}｜${x.content}`);
+                });
+            });
+            const map = String(app.prefs.companyProjectMap || '').trim();
+            return [
+                '請幫我把下面的工作紀錄整理成公司工時表。',
+                '',
+                '【輸出格式】',
+                '用「定位字元（Tab）分隔」的純文字表格，放在一個程式碼區塊裡，方便我直接貼進 Google 試算表。',
+                '欄位依序：日期（YYYY-MM-DD）｜工作類別｜工作項目｜專案｜工時（分鐘）。不要有標題列以外的說明文字混在表格裡。',
+                '',
+                '【規則】',
+                '1. 工作類別只能從下面清單選一個，依工作內容判斷：',
+                WORK_CATEGORIES.map(c => `   - ${c}`).join('\n'),
+                '2. 同一天、同一個專案、同一類別的工作合併成一列，工時加總。',
+                '3. 工作項目用 4～12 個字的簡短名稱（像「網站檢核規劃」「雙周會報告製作」），從卡片名稱與內容歸納，不要照抄流水帳。',
+                '4. 專案名稱依下方對照表換成公司名稱；對照表沒有的，保留原名稱並在表格後面列出來問我。',
+                '5. 標成「筆記，不算工時」的只用來幫你理解當天在做什麼，不要算進工時。',
+                '6. 如果我有自己選類別，以我選的為主；你覺得明顯不對時，在表格後面另外提醒我。',
+                '7. 表格後面用 1～3 行列出：每天工時合計，以及你不確定、需要我確認的地方。',
+                '',
+                '【專案名稱對照】',
+                map || '（尚未設定，請保留原名稱）',
+                '',
+                `【工作紀錄】${data.r.s} ～ ${data.r.e}`,
+                lines.join('\n') || '（這段期間沒有紀錄）'
+            ].join('\n');
+        },
+
+        copyForAI() { app.worktime.copyText(this.aiPrompt(), '已複製，貼給 Claude 就會整理成公司工時表'); },
 
         async exportXlsx() {
             if (!window.ExcelJS) return app.ui.toast('Excel 匯出元件尚未載入，請確認網路後重新整理', 'warn');
