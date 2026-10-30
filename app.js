@@ -27,7 +27,7 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 const provider = new firebase.auth.GoogleAuthProvider();
 
-const APP_VERSION = '3.3.1';
+const APP_VERSION = '3.3.2';
 const SCHEMA_VERSION = 3;
 const CLOUD_DOC_SOFT_LIMIT = 750 * 1024;   // 超過時提醒
 const CLOUD_DOC_HARD_LIMIT = 1000 * 1000;  // Firestore 單一文件上限約 1 MiB，保守一點
@@ -38,6 +38,13 @@ const WORK_CATEGORIES = [
     'P01 文件/簡報製作', 'P02 問題追蹤/派工/時程控管', 'P03 網站企劃/系統規劃', 'P04 系統測試/網站檢核', 'P05 資料蒐集/盤點/分析',
     'U01 內部會議/討論/聯繫', 'U02 外部會議/討論/聯繫', 'U03 請款/報表/公文作業', 'U04 工作日誌填寫', 'U05 課程/訓練/進修',
     'U06 公司/部門/行政事務', 'U07 其他', '000 休假', '執行工作'
+];
+// 公司工時表的專案清單（工時表只能選這些）
+const COMPANY_PROJECTS = [
+    '環境部「115-116年度內外網系統維運暨功能擴增案」',
+    '化學物質管理署「114-116年度中英文全球資訊網與業務網站整合、維運暨功能擴增案」',
+    '氣候變遷署「114-115年度全球資訊網系統維運案」',
+    '公司/部門事務'
 ];
 function workCategoryOptions(selected, emptyLabel = '（不指定）') {
     const esc = v => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -5054,8 +5061,8 @@ const app = {
                     </div>
                     ${data.rows.length ? `<div class="journal-days">${days}</div>` : '<div class="data-empty" style="padding:12px;">這段期間沒有工時或工作紀錄。用卡片上的 ⏱️ 計時，或在「工時」補登，就會出現在這裡。</div>'}
                     <details class="journal-ai-settings" ${f.showAiSettings ? 'open' : ''} ontoggle="app.journal.filters.showAiSettings=this.open">
-                        <summary>給 AI 的專案名稱對照（選填，只要設定一次）</summary>
-                        <div class="data-note">一行一個：白板上的專案名稱 = 公司工時表上的專案名稱。沒寫的，AI 會用白板上的名稱或請你確認。</div>
+                        <summary>給 AI 的專案名稱對照（選填）</summary>
+                        <div class="data-note">公司的四個專案（環境部、化學署、氣候變遷署、公司/部門事務）已經內建，AI 會依工作區和專案名稱自動判斷。只有判斷容易錯的，才需要在這裡寫：白板上的專案名稱 = 公司案名。</div>
                         <textarea class="task-meta-textarea" rows="4" placeholder="化學署官網會議 = 化學物質管理署「114-116年度中英文全球資訊網與業務網站整合、維運暨功能擴增案」&#10;環境部 = 環境部「115-116年度內外網系統維運暨功能擴增案」&#10;日常 = 公司/部門事務" oninput="app.journal.saveProjectMap(this.value)">${esc(app.prefs.companyProjectMap || '')}</textarea>
                     </details>
                     <div class="data-note" style="padding:0 12px 10px;">時間欄：計時的紀錄會自動有起訖時間；補登時可以選填「開始」時間。只有日期的補登，時間欄會留白。</div>
@@ -5072,8 +5079,8 @@ const app = {
             data.days.forEach((list, date) => {
                 lines.push(`## ${this.dayLabel(date).replace(/^\d+\/\d+/, date)}`);
                 list.forEach(x => {
-                    if (x.kind === 'work') lines.push(`- ${x.time || '（未記時間）'}｜${Math.round(x.minutes)} 分｜專案：${x.project}｜卡片：${x.title}｜內容：${x.content}${x.category ? `｜我選的類別：${x.category}` : ''}`);
-                    else lines.push(`- ${x.time || ''}｜（筆記，不算工時）｜專案：${x.project}｜卡片：${x.title}｜${x.content}`);
+                    if (x.kind === 'work') lines.push(`- ${x.time || '（未記時間）'}｜${Math.round(x.minutes)} 分｜工作區：${x.tabName}｜專案：${x.project}｜卡片：${x.title}｜內容：${x.content}${x.category ? `｜我選的類別：${x.category}` : ''}`);
+                    else lines.push(`- ${x.time || ''}｜（筆記，不算工時）｜工作區：${x.tabName}｜專案：${x.project}｜卡片：${x.title}｜${x.content}`);
                 });
             });
             const map = String(app.prefs.companyProjectMap || '').trim();
@@ -5089,13 +5096,15 @@ const app = {
                 WORK_CATEGORIES.map(c => `   - ${c}`).join('\n'),
                 '2. 同一天、同一個專案、同一類別的工作合併成一列，工時加總。',
                 '3. 工作項目用 4～12 個字的簡短名稱（像「網站檢核規劃」「雙周會報告製作」），從卡片名稱與內容歸納，不要照抄流水帳。',
-                '4. 專案名稱依下方對照表換成公司名稱；對照表沒有的，保留原名稱並在表格後面列出來問我。',
+                '4. 專案欄只能從下面的公司專案清單選一個（照抄全名）：',
+                COMPANY_PROJECTS.map(c => `   - ${c}`).join('\n'),
+                '   判斷順序：先看【專案名稱對照】；沒有的話，依「工作區」與專案名稱判斷（例如工作區「環境部」→ 環境部的案子、「化學署」→ 化學物質管理署的案子、「氣候」→ 氣候變遷署的案子）；公司內部會議、部門事務、行政、訓練等歸到「公司/部門事務」。真的判斷不出來的，在表格後面列出來問我。',
                 '5. 標成「筆記，不算工時」的只用來幫你理解當天在做什麼，不要算進工時。',
                 '6. 如果我有自己選類別，以我選的為主；你覺得明顯不對時，在表格後面另外提醒我。',
                 '7. 表格後面用 1～3 行列出：每天工時合計，以及你不確定、需要我確認的地方。',
                 '',
-                '【專案名稱對照】',
-                map || '（尚未設定，請保留原名稱）',
+                '【專案名稱對照】（我自己補充的，優先使用）',
+                map || '（沒有額外對照，依上面規則判斷）',
                 '',
                 `【工作紀錄】${data.r.s} ～ ${data.r.e}`,
                 lines.join('\n') || '（這段期間沒有紀錄）'
