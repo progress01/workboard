@@ -27,7 +27,7 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 const provider = new firebase.auth.GoogleAuthProvider();
 
-const APP_VERSION = '3.4.2';
+const APP_VERSION = '3.4.3';
 const SCHEMA_VERSION = 3;
 const CLOUD_DOC_SOFT_LIMIT = 750 * 1024;   // 超過時提醒
 const CLOUD_DOC_HARD_LIMIT = 1000 * 1000;  // Firestore 單一文件上限約 1 MiB，保守一點
@@ -3302,9 +3302,33 @@ const app = {
         },
 
         focusTaskForTimer(id) {
+            this._forceFocus = id;
             app.switchView('sandbox');
             this.switchLeftPanel('TIMER');
             this.setActiveTask(id);
+            const card = app.worktime.getCard(id);
+            app.ui.toast(`🎯 專注在「${String(card?.title || '').trim() || '未命名'}」，按 ▶ 開始計時`);
+        },
+
+        // 從其他畫面進心流時：計時中就專注計時的卡；否則專注「這個工作區最近新增或編輯的卡」。
+        autoFocus() {
+            const sb = app.state.sandbox;
+            if (this._forceFocus) { this._forceFocus = null; return; }
+            if (sb.timerStatus !== 'IDLE' && sb.timerTaskId && app.worktime.getCard(sb.timerTaskId)) {
+                if (sb.activeTaskId !== sb.timerTaskId) { sb.activeTaskId = sb.timerTaskId; this.persistTimer(); }
+                return;
+            }
+            const cards = this.getActiveCards().filter(c => Number(c.status) !== 2);
+            if (!cards.length) return;
+            const touched = c => Math.max(Number(c.updatedAt) || 0, app.idTime(c.id) || 0);
+            const latest = cards.reduce((a, b) => touched(b) > touched(a) ? b : a);
+            const current = sb.activeTaskId ? app.worktime.getCard(sb.activeTaskId) : null;
+            const inThisTab = current && cards.some(c => c.id === current.id);
+            if (!inThisTab || touched(latest) > touched(current)) {
+                sb.activeTaskId = latest.id;
+                sb.timerTaskId = latest.id;
+                this.persistTimer();
+            }
         },
 
         refreshActiveNoteUI() {
@@ -3843,7 +3867,7 @@ const app = {
                 if (targetCard && sb.timerStatus !== 'IDLE') {
                     targetBox.innerHTML = `記錄到：<strong>${esc(targetCard.title || '未命名')}</strong><br>本段已累積 <span class="timer-acc">${app.worktime.formatDuration(Math.floor(this.elapsedMs() / 1000))}</span>，停止時自動寫入卡片（跨午夜會自動分日）。`;
                 } else if (activeCard) {
-                    targetBox.innerHTML = `準備記錄到：<strong>${esc(activeCard.title || '未命名')}</strong><br>按「啟動」後開始累積工時。`;
+                    targetBox.innerHTML = `準備記錄到：<strong>${esc(activeCard.title || '未命名')}</strong> <button type="button" class="worklog-action-btn" onclick="app.sandbox.switchLeftPanel('TODO')">換一張</button><br>按「啟動」後開始累積工時。也可以直接點左邊導覽列的卡片切換。`;
                 } else {
                     targetBox.innerText = '目前未綁定卡片。計時仍可使用，但不會寫入工時；先從任務矩陣選一張卡，或直接按卡片上的 ⏱️。';
                 }
@@ -3948,6 +3972,7 @@ const app = {
 
         if (viewName === 'sandbox') {
             this.renderTabs();
+            this.sandbox.autoFocus();
             this.sandbox.refreshActiveNoteUI();
             this.sandbox.renderTodo();
             this.sandbox.updateDisplay(true);
@@ -4108,6 +4133,7 @@ const app = {
                         </div>
                         <div style="display:flex; gap:5px;">
                             <button class="icon-btn chronicle-pin-btn ${card.chroniclePinned ? 'active' : ''}" onclick="app.actions.toggleChronicle('${id}')" title="${card.chroniclePinned ? '移出大事記' : '加入大事記'}">${card.chroniclePinned ? '⭐' : '☆'}</button>
+                            <button class="icon-btn" onclick="app.sandbox.focusTaskForTimer('${id}')" title="進入心流，專注在這張卡">🎯</button>
                             ${this.timerButtonHtml(card)}
                             ${card.isMemo ? '' : `<button class="icon-btn" onclick="app.actions.toggleDateMode('${id}')" title="單日／區間">↔️</button>`}
                             <button class="icon-btn" onclick="app.actions.cycleColor('${id}')" title="切換標記顏色">🎨</button>
@@ -6244,6 +6270,21 @@ app.taskNav = {
 
     goToCard(cardId, tabId) {
         this.ui.activeCardId = cardId;
+        if (app.state.view === 'sandbox') {
+            // 在心流沙盒裡：切換專注的卡片，不離開心流
+            if (tabId && tabId !== app.state.activeTabId && app.state.workspaces[tabId]) {
+                app.state.activeTabId = tabId;
+                app.state.filters.activeProject = null;
+                app.rememberPrefs();
+                app.renderTabs();
+            }
+            app.sandbox.setActiveTask(cardId);
+            this.setActiveCard(cardId);
+            if (this.isMobile()) this.close();
+            const card = app.worktime.getCard(cardId);
+            app.ui.toast(`🎯 專注在「${String(card?.title || '').trim() || '未命名'}」`);
+            return;
+        }
         // 使用 v2.1 既有跳轉機制，不改它本身。
         app.actions.jumpToCard(cardId, tabId);
         if (this.isMobile()) this.close();
