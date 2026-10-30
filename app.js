@@ -1,5 +1,5 @@
 // =====================================================================
-// 白板 & 心流沙盒 v3.3
+// 白板 & 心流沙盒 v3.4
 // ---------------------------------------------------------------------
 // v3.0 重整重點（資料邏輯）：
 // 1. 所有修改只走一個入口 app.saveToLocal()（= store.markDirty）：
@@ -27,7 +27,7 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 const provider = new firebase.auth.GoogleAuthProvider();
 
-const APP_VERSION = '3.3.2';
+const APP_VERSION = '3.4';
 const SCHEMA_VERSION = 3;
 const CLOUD_DOC_SOFT_LIMIT = 750 * 1024;   // 超過時提醒
 const CLOUD_DOC_HARD_LIMIT = 1000 * 1000;  // Firestore 單一文件上限約 1 MiB，保守一點
@@ -427,7 +427,7 @@ const app = {
             const seenTab = new Set();
             tabs = tabs.filter(t => { if (seenTab.has(t.id)) return false; seenTab.add(t.id); return true; })
                 .map(t => ({ id: String(t.id), name: String(t.name ?? '未命名分頁') }));
-            if (!tabs.some(t => t.id === 'main')) tabs.unshift({ id: 'main', name: '主工作區' });
+            if (!tabs.length) tabs.push({ id: 'main', name: '主工作區' });
 
             const workspaces = (src.workspaces && typeof src.workspaces === 'object') ? src.workspaces : {};
             const nodes = (src.nodes && typeof src.nodes === 'object') ? src.nodes : {};
@@ -809,7 +809,7 @@ const app = {
                 let deleted;
                 if (bTabs) deleted = tid in bTabs;
                 else deleted = !!(ta ? tB.tabs[tid] : tA.tabs[tid]);
-                if (tid === 'main' || hasContent || !deleted) {
+                if (hasContent || !deleted) {
                     tabs.push({ ...t });
                     if (tb && !ta) report.misc.push(`新分頁：${t.name}`);
                 } else if (ta) report.misc.push(`${labelB}刪除的分頁：${t.name}`);
@@ -817,8 +817,10 @@ const app = {
             const tabIds = new Set(tabs.map(t => t.id));
             const workspaces = {}, nodesOut = {};
             tabs.forEach(t => { workspaces[t.id] = []; nodesOut[t.id] = []; });
-            placed.forEach((list, tid) => { (workspaces[tabIds.has(tid) ? tid : 'main']).push(...list); });
-            nodesPlaced.forEach((list, tid) => { (nodesOut[tabIds.has(tid) ? tid : 'main']).push(...list); });
+            if (!tabs.length) { tabs.push({ id: 'main', name: '主工作區' }); tabIds.add('main'); workspaces.main = []; nodesOut.main = []; }
+            const fallbackTab = tabs[0].id;
+            placed.forEach((list, tid) => { (workspaces[tabIds.has(tid) ? tid : fallbackTab]).push(...list); });
+            nodesPlaced.forEach((list, tid) => { (nodesOut[tabIds.has(tid) ? tid : fallbackTab]).push(...list); });
 
             // --- 筆記本／詰棋／死線：逐欄位比對，文字衝突時兩邊都留 ---
             const ma = this.miscFields(A), mb = this.miscFields(B);
@@ -1516,7 +1518,7 @@ const app = {
                 </section>
                 <section class="data-section">
                     <h4>最近刪除 <span class="data-count">${trash.length}</span></h4>
-                    <div class="data-note">只存在這台裝置的瀏覽器裡。救回的卡片會放回原分頁（分頁不在了就放主工作區）。</div>
+                    <div class="data-note">只存在這台裝置的瀏覽器裡。救回的卡片會放回原工作區（工作區不在了就放第一個工作區）。</div>
                     <div class="data-scroll">${trashRows}</div>
                 </section>
                 <section class="data-section">
@@ -1610,7 +1612,7 @@ const app = {
             if (!item?.card) return;
             const card = deepClone(item.card);
             if (app.worktime.getCard(card.id)) card.id = app.makeId('card');
-            const tabId = app.state.workspaces[item.tabId] ? item.tabId : 'main';
+            const tabId = app.state.workspaces[item.tabId] ? item.tabId : app.state.tabs[0].id;
             app.state.workspaces[tabId].push(card);
             delete app.state.meta.tombstones.cards[card.id];
             await app.backup.remove('trash', id);
@@ -3962,9 +3964,9 @@ const app = {
         const isMobile = window.innerWidth <= 768;
         const html = this.state.tabs.map(t => {
             const isActive = t.id === this.state.activeTabId;
-            const gearBtn = (isActive && t.id !== 'main' && !isMobile) ? `<div style="margin-top:10px; font-size:1.1rem; cursor:pointer;" onclick="event.stopPropagation(); app.actions.manageTab(event, '${t.id}')">⚙️</div>` : '';
-            return `<div class="tab-item ${isActive ? 'active' : ''}" onclick="app.actions.switchTab('${t.id}')" oncontextmenu="app.actions.manageTab(event, '${t.id}')"><div class="tab-name">${esc(t.name)}</div>${gearBtn}</div>`;
-        }).join('') + `<div class="tab-add" onclick="app.actions.addTab()" title="新增工作區">＋</div>`;
+            const gearBtn = (isActive && !isMobile) ? `<div style="margin-top:10px; font-size:1.1rem; cursor:pointer;" title="管理工作區" onclick="event.stopPropagation(); app.tabsManager.open('${t.id}')">⚙️</div>` : '';
+            return `<div class="tab-item ${isActive ? 'active' : ''}" onclick="app.actions.switchTab('${t.id}')" oncontextmenu="event.preventDefault(); app.tabsManager.open('${t.id}')"><div class="tab-name">${esc(t.name)}</div>${gearBtn}</div>`;
+        }).join('') + `<div class="tab-add" onclick="app.tabsManager.open(null, true)" title="新增或管理工作區">＋</div>`;
         document.getElementById('tab-bar').innerHTML = html;
     },
 
@@ -5534,6 +5536,149 @@ ${planned.length ? planned.map(({ card }) => this.cardLine(card)).join('\n') : '
         }
     },
 
+    // ==========================================
+    // 🗂 工作區管理：新增、改名、排序、刪除（刪除時可以把卡片移到別的工作區）
+    // ==========================================
+    tabsManager: {
+        focusId: null,
+
+        open(focusId = null, focusNew = false) {
+            this.focusId = focusId;
+            document.getElementById('modal-tabs').style.display = 'flex';
+            this.render();
+            setTimeout(() => {
+                const el = focusNew ? document.getElementById('tabs-new-name') : document.querySelector(`[data-tab-name="${CSS.escape(focusId || '')}"]`);
+                el?.focus(); if (el && !focusNew) el.select?.();
+            }, 50);
+        },
+        close() { document.getElementById('modal-tabs').style.display = 'none'; app.renderAll(); },
+
+        counts(id) {
+            const cards = app.state.workspaces[id] || [];
+            const nodes = app.state.nodes[id] || [];
+            const mins = cards.reduce((sum, c) => sum + app.worktime.totalMinutes(c), 0);
+            return { cards: cards.length, nodes: nodes.length, mins };
+        },
+
+        render() {
+            const esc = s => app.entries.escapeHtml(s);
+            const tabs = app.state.tabs;
+            const rows = tabs.map((t, i) => {
+                const c = this.counts(t.id);
+                return `<div class="tabs-row ${t.id === this.focusId ? 'focus' : ''}">
+                    <span class="tabs-order">
+                        <button type="button" class="worklog-action-btn" ${i === 0 ? 'disabled' : ''} title="往上" onclick="app.tabsManager.move('${t.id}',-1)">▲</button>
+                        <button type="button" class="worklog-action-btn" ${i === tabs.length - 1 ? 'disabled' : ''} title="往下" onclick="app.tabsManager.move('${t.id}',1)">▼</button>
+                    </span>
+                    <input class="task-meta-input" data-tab-name="${esc(t.id)}" value="${esc(t.name)}" oninput="app.tabsManager.rename('${t.id}', this.value)" onblur="app.tabsManager.commitName('${t.id}', this)">
+                    <span class="tabs-meta">${c.cards} 張卡${c.nodes ? `・${c.nodes} 個節點` : ''}${c.mins ? `・${app.worktime.formatMinutes(c.mins)}` : ''}</span>
+                    <span class="tabs-actions">
+                        <button type="button" class="worklog-action-btn" onclick="app.tabsManager.go('${t.id}')">開啟</button>
+                        ${tabs.length > 1 ? `<button type="button" class="worklog-action-btn danger" onclick="app.tabsManager.remove('${t.id}')">刪除…</button>` : ''}
+                    </span>
+                </div>`;
+            }).join('');
+            document.getElementById('tabs-render-target').innerHTML = `
+                <div class="data-note" style="margin-bottom:8px;">工作區可以照你習慣的方式分：依案子、依角色、或乾脆只用一個。名稱直接改、▲▼ 調整順序。刪除時可以把卡片搬到別的工作區，不用一起刪。</div>
+                <div class="tabs-list">${rows}</div>
+                <div class="tabs-new">
+                    <input id="tabs-new-name" class="task-meta-input" placeholder="新工作區名稱，例如：氣候變遷署" onkeydown="if(event.key==='Enter') app.tabsManager.add()">
+                    <button type="button" class="excel-copy-btn" onclick="app.tabsManager.add()">＋ 新增工作區</button>
+                </div>
+                <div class="data-note" style="margin-top:8px;">💡 工作區名稱會一起交給 AI 產生公司工時表，名稱裡有「環境部」「化學署」「氣候」等字，AI 比較容易對應到公司案名。</div>`;
+        },
+
+        rename(id, value) {
+            const t = app.state.tabs.find(x => x.id === id);
+            if (!t || !value.trim()) return;
+            t.name = value.trim();
+            app.saveToLocal();
+            app.renderTabs();
+        },
+        commitName(id, el) {
+            const t = app.state.tabs.find(x => x.id === id);
+            if (t && !el.value.trim()) el.value = t.name;
+        },
+
+        move(id, dir) {
+            const tabs = app.state.tabs;
+            const i = tabs.findIndex(t => t.id === id);
+            const j = i + dir;
+            if (i < 0 || j < 0 || j >= tabs.length) return;
+            [tabs[i], tabs[j]] = [tabs[j], tabs[i]];
+            app.saveToLocal();
+            app.renderTabs();
+            this.render();
+        },
+
+        add() {
+            const input = document.getElementById('tabs-new-name');
+            const name = (input?.value || '').trim();
+            if (!name) { input?.focus(); return; }
+            const id = app.makeId('tab');
+            app.state.tabs.push({ id, name });
+            app.state.workspaces[id] = [];
+            app.state.nodes[id] = [];
+            app.saveToLocal();
+            app.renderTabs();
+            this.focusId = id;
+            this.render();
+            document.getElementById('tabs-new-name')?.focus();
+            app.ui.toast(`已新增工作區「${name}」`);
+        },
+
+        go(id) {
+            this.close();
+            app.actions.switchTab(id);
+        },
+
+        async remove(id) {
+            const esc = s => app.entries.escapeHtml(s);
+            const tabs = app.state.tabs;
+            const tab = tabs.find(t => t.id === id);
+            if (!tab || tabs.length <= 1) return;
+            const c = this.counts(id);
+            const others = tabs.filter(t => t.id !== id);
+            let choice = 'empty';
+            this._moveTarget = others[0].id;
+            if (c.cards || c.nodes) {
+                choice = await app.ui.dialog({
+                    title: `刪除工作區「${tab.name}」`,
+                    html: `<p>裡面有 <b>${c.cards}</b> 張卡片${c.nodes ? `、${c.nodes} 個發想節點` : ''}${c.mins ? `（${app.worktime.formatMinutes(c.mins)} 工時）` : ''}。</p>
+                        <label class="task-meta-field"><span class="task-meta-label">卡片要搬去哪裡？</span>
+                        <select id="tabs-move-target" class="task-meta-input" onchange="app.tabsManager._moveTarget=this.value">${others.map(t => `<option value="${t.id}">${esc(t.name)}</option>`).join('')}</select></label>
+                        <p class="data-note">選「一起刪除」的話，卡片會先放進「🗂 資料 → 最近刪除」。</p>`,
+                    buttons: [{ label: '取消', value: null }, { label: '連卡片一起刪除', value: 'delete', danger: true }, { label: '搬過去，再刪除工作區', value: 'move', primary: true }]
+                });
+                if (!choice) return;
+            } else if (!await app.ui.confirm('刪除工作區', `<p>刪除空的工作區「${esc(tab.name)}」？</p>`, '刪除', true)) return;
+            const target = choice === 'move' ? (others.some(t => t.id === this._moveTarget) ? this._moveTarget : others[0].id) : null;
+            const cards = app.state.workspaces[id] || [];
+            const nodes = app.state.nodes[id] || [];
+            if (choice === 'delete') {
+                const sb = app.state.sandbox;
+                if (sb.timerStatus !== 'IDLE' && cards.some(x => x.id === sb.timerTaskId)) app.sandbox.stopTimer();
+                if (!await app.backup.trashOrConfirm(cards.map(card => ({ card, tabId: id })), `刪除工作區「${tab.name}」`)) return;
+            }
+            await app.backup.save(`刪除工作區「${tab.name}」前`, app.store.serialize());
+            if (choice === 'move' && target) {
+                app.state.workspaces[target] = [...(app.state.workspaces[target] || []), ...cards];
+                app.state.nodes[target] = [...(app.state.nodes[target] || []), ...nodes];
+            }
+            app.state.tabs = tabs.filter(t => t.id !== id);
+            delete app.state.workspaces[id];
+            delete app.state.nodes[id];
+            if (app.state.activeTabId === id) app.state.activeTabId = target || app.state.tabs[0].id;
+            app.saveToLocal();
+            app.rememberPrefs();
+            app.renderTabs();
+            this.focusId = null;
+            this.render();
+            const tn = target ? app.state.tabs.find(t => t.id === target)?.name : '';
+            app.ui.toast(choice === 'move' ? `已刪除「${tab.name}」，${cards.length} 張卡片搬到「${tn}」` : `已刪除「${tab.name}」`);
+        }
+    },
+
     actions: {
         addCard(mode = 'free') {
             const today = app.worktime.localDateString();
@@ -5773,7 +5918,9 @@ ${planned.length ? planned.map(({ card }) => this.cardLine(card)).join('\n') : '
             app.state.activeTabId = id; app.saveToLocal(); app.rememberPrefs(); app.renderAll();
         },
         async manageTab(e, id) {
-            e.preventDefault();
+            e?.preventDefault?.();
+            app.tabsManager.open(id);
+            return;
             if (id === 'main') { app.ui.toast('「主工作區」無法修改或刪除'); return; }
             const tab = app.state.tabs.find(t => t.id === id);
             if (!tab) return;
