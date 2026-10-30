@@ -27,7 +27,7 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 const provider = new firebase.auth.GoogleAuthProvider();
 
-const APP_VERSION = '3.4';
+const APP_VERSION = '3.4.1';
 const SCHEMA_VERSION = 3;
 const CLOUD_DOC_SOFT_LIMIT = 750 * 1024;   // 超過時提醒
 const CLOUD_DOC_HARD_LIMIT = 1000 * 1000;  // Firestore 單一文件上限約 1 MiB，保守一點
@@ -2270,7 +2270,7 @@ const app = {
             if (String(card.waitingWho || '').trim()) parts.push(`⏳ 等 ${card.waitingWho.trim()}`);
             const conflicts = card.isMemo ? 0 : W.scheduleConflicts(card).length;
             if (conflicts) parts.push(`⚠ ${conflicts} 個排程重疊`);
-            if (!parts.length) parts.push(card.isMemo ? '自由卡（還沒補交付與日期）' : '尚未填寫');
+            if (!parts.length) parts.push(card.isMemo ? '自由卡・需要時再補' : '尚未填寫・可以請 AI 先填一版');
             return parts.join(' · ');
         },
 
@@ -2327,6 +2327,10 @@ const app = {
                     </button>
                     <div class="pm-section pm-section-plan">
                         <div class="pm-section-body">
+                            <div class="pm-ai-row">
+                                <span class="pm-hint">不知道怎麼填？讓 AI 依卡片內容先填一版，你再改。全部留白也沒關係。</span>
+                                <button type="button" class="worklog-add-btn" onclick="app.coach.open({ template: 'fill', cardId: '${id}' })">🧑‍🏫 請 AI 先填一版</button>
+                            </div>
                             <div class="task-meta-grid" style="grid-template-columns:1fr 1fr;">
                                 <label class="task-meta-field">
                                     <span class="task-meta-label">要交出什麼 <span class="pm-hint">（交付物：做完別人拿得到的東西）</span></span>
@@ -5189,6 +5193,7 @@ const app = {
         TEMPLATES: {
             wbs: { icon: '🧱', name: '示範拆解（WBS）', when: '剛接到工作、或專案方向剛確定時。先讓老師拆一版給你看。', needsBrief: true, importable: true },
             review: { icon: '🔍', name: '幫我檢查拆解', when: '已經有一版卡片，想知道哪裡拆得不好、漏了什麼。', needsBrief: true, importable: true },
+            fill: { icon: '✍️', name: '幫我填這張卡', when: '交付與進度不知道怎麼填時。AI 依卡片內容先填一版，貼回來就會自動帶入，你再修改。', needsCard: true },
             stuck: { icon: '🧭', name: '我卡住了', when: '某張卡做不下去，不知道是缺資訊、缺決策還是拆太大。', needsCard: true },
             ask: { icon: '💬', name: '幫我問同事', when: '要找人問問題或請人幫忙，想把問題縮到對方好回答。', needsCard: true },
             status: { icon: '📣', name: '進度報告', when: '要跟主管或合作者回報進度。會帶入週報內容。' },
@@ -5313,6 +5318,38 @@ ${cardsText}
 4. 給我修改後的版本，並說明你改了什麼、為什麼。
 
 ${this.IMPORT_FORMAT}`;
+
+            if (template === 'fill') {
+                if (!card) return '請先在上方選一張卡片。';
+                const notes = String(card.content || '').slice(0, 1500);
+                const entries = (card.entries || []).slice(-5).map(e => `- ${e.title}${e.content ? `：${String(e.content).slice(0, 200)}` : ''}`).join('\n');
+                const logs = app.worktime.getLogs(card).slice(-5).map(l => `- ${l.workDate} ${app.worktime.formatMinutes(app.worktime.logMinutes(l))}：${l.note || ''}`).join('\n');
+                return `${head}
+
+【這張卡】
+工作區：${app.state.tabs.find(t => (app.state.workspaces[t.id] || []).some(c => c.id === card.id))?.name || ''}
+專案：${String(card.project || '').trim() || '未分類'}
+${this.cardLine(card)}
+卡片筆記：
+${notes || '（無）'}
+${entries ? `最近的工作紀錄：\n${entries}\n` : ''}${logs ? `最近的工時：\n${logs}\n` : ''}${project ? `\n【專案背景】\n${this.briefText(project, b)}\n` : ''}
+【請你示範怎麼把這張卡寫成一個清楚的工作包】
+1. 先判斷：這張卡是一個「交付物」（做完別人拿得到東西），還是其實是一個步驟、或只是一個想法？如果太大，建議怎麼拆（簡短說明即可）。
+2. 幫我填好下面的欄位。資訊不足時，依常理先寫合理的假設，並在「待確認」說明。日期用 YYYY-MM-DD；不需要的欄位留空。
+3. 簡短說明你這樣寫的理由，以及我最該先跟誰確認什麼。
+
+最後請用下面的格式輸出「可貼回清單」，放在一個程式碼區塊裡（每行一個欄位，冒號後面填內容）：
+\`\`\`
+要交出什麼：
+怎樣算完成：
+預計開始：
+預計完成：
+下一步：
+在等誰：
+在等什麼：
+預估小時：
+\`\`\``;
+            }
 
             if (template === 'stuck' || template === 'ask') {
                 if (!card) return '請先在上方選一張卡片。';
@@ -5455,6 +5492,12 @@ ${planned.length ? planned.map(({ card }) => this.cardLine(card)).join('\n') : '
                     <button class="excel-copy-btn" onclick="app.coach.copy()">📋 複製提問</button>
                     <a class="excel-copy-btn" href="https://claude.ai/new" target="_blank" rel="noopener" onclick="app.coach.copy(true)">↗ 複製並打開 Claude</a>
                 </div>
+                ${st.template === 'fill' ? `
+                <div class="coach-import">
+                    <div class="task-meta-label">📥 把 AI 回覆裡的「可貼回清單」貼到這裡，會自動填進這張卡（之後可以再改）</div>
+                    <textarea id="coach-fill-text" class="task-meta-textarea" rows="7" placeholder="要交出什麼：網站檢核報告（含問題清單）&#10;怎樣算完成：主管看過並確認修正優先順序&#10;預計開始：2026-11-02&#10;預計完成：2026-11-06&#10;下一步：列出要檢核的頁面範圍&#10;在等誰：&#10;在等什麼：&#10;預估小時：6"></textarea>
+                    <div class="data-actions"><button class="excel-copy-btn" onclick="app.coach.applyFill()">✅ 填進這張卡</button></div>
+                </div>` : ''}
                 ${T.importable || st.template === 'stuck' ? `
                 <div class="coach-import">
                     <div class="task-meta-label">📥 把 AI 回覆裡的「可匯入清單」貼回來，變成卡片</div>
@@ -5473,6 +5516,50 @@ ${planned.length ? planned.map(({ card }) => this.cardLine(card)).join('\n') : '
         copy(silent = false) {
             const text = document.getElementById('coach-prompt')?.value || this.buildPrompt();
             app.worktime.copyText(text, silent ? '已複製提問，到 Claude 貼上即可' : '已複製提問，貼到 Claude 或其他 AI 即可');
+        },
+
+        parseFill(text) {
+            const map = { '要交出什麼': 'deliverable', '交付': 'deliverable', '怎樣算完成': 'acceptance', '完成標準': 'acceptance', '預計開始': 'start', '開始': 'start', '預計完成': 'end', '完成': 'end', '下一步': 'nextStep', '在等誰': 'waitingWho', '在等什麼': 'waitingWhat', '預估小時': 'hours', '預估工時': 'hours' };
+            const out = {};
+            String(text || '').replace(/```[a-z]*\n?/gi, '').split(/\r?\n/).forEach(line => {
+                const m = line.match(/^\s*[-*]?\s*\**([^:：*]+?)\**\s*[:：]\s*(.*)$/);
+                if (!m) return;
+                const key = map[m[1].trim()];
+                if (!key) return;
+                let v = m[2].trim().replace(/^[（(]?(無|空白|不需要|N\/A|—|-)[）)]?$/i, '');
+                if (key === 'start' || key === 'end') v = (v.match(/\d{4}-\d{2}-\d{2}/) || [''])[0];
+                if (key === 'hours') { const n = v.match(/\d+(?:\.\d+)?/); v = n ? Number(n[0]) : ''; }
+                out[key] = v;
+            });
+            return out;
+        },
+
+        applyFill() {
+            const card = app.worktime.getCard(this.state.cardId);
+            if (!card) { app.ui.toast('找不到這張卡片', 'warn'); return; }
+            const f = this.parseFill(document.getElementById('coach-fill-text')?.value);
+            const keys = Object.keys(f);
+            if (!keys.length) { app.ui.toast('沒有讀到欄位。每行要像「要交出什麼：…」這樣。', 'warn'); return; }
+            const W = app.worktime;
+            ['deliverable', 'acceptance', 'nextStep', 'waitingWho', 'waitingWhat'].forEach(k => {
+                if (f[k] === undefined) return;
+                if (f[k]) card[k] = f[k]; else if (k.startsWith('waiting')) delete card[k];
+                if (k === 'nextStep') card.nextAction = card.nextStep;
+            });
+            if (f.start || f.end) {
+                card.isMemo = false;
+                card.dateMode = 'range';
+                card.dateStart = f.start || f.end;
+                card.dateEnd = f.end && f.end >= card.dateStart ? f.end : card.dateStart;
+            }
+            if (f.hours) card.plannedMinutes = Math.round(Number(f.hours) * 60);
+            app.saveToLocal();
+            app.setPanelOpen('timeline', card.id, 'plan', true);
+            W.planningUi = {};
+            this.close();
+            const tab = app.actions.tabOfCard(card.id);
+            app.actions.jumpToCard(card.id, tab);
+            app.ui.toast(`已填入 ${keys.length} 個欄位，看一下哪裡要改`);
         },
 
         // 解析「- 名稱 | 開始 日期 | 完成 日期 | 完成標準 | 預估小時」與底下的「  - [ ] 步驟」
