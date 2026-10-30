@@ -27,7 +27,7 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 const provider = new firebase.auth.GoogleAuthProvider();
 
-const APP_VERSION = '3.4.3';
+const APP_VERSION = '3.4.4';
 const SCHEMA_VERSION = 3;
 const CLOUD_DOC_SOFT_LIMIT = 750 * 1024;   // 超過時提醒
 const CLOUD_DOC_HARD_LIMIT = 1000 * 1000;  // Firestore 單一文件上限約 1 MiB，保守一點
@@ -483,6 +483,7 @@ const app = {
                      'chronicleSummary', 'chronicleDate', 'dateStart', 'dateEnd', 'dateSingle', 'actualStart', 'actualEnd', 'timeCategory', 'dateMode', 'color'].forEach(k => {
                         if (card[k] !== undefined && card[k] !== null && typeof card[k] !== 'string') card[k] = String(card[k]);
                     });
+                    if (typeof card.project === 'string' && card.project !== card.project.trim()) card.project = card.project.trim();
                     if (card.title === undefined || card.title === null) card.title = '';
                     if (card.content === undefined || card.content === null) card.content = '';
                     if (card.project === undefined || card.project === null) card.project = '';
@@ -3869,7 +3870,7 @@ const app = {
                 } else if (activeCard) {
                     targetBox.innerHTML = `準備記錄到：<strong>${esc(activeCard.title || '未命名')}</strong> <button type="button" class="worklog-action-btn" onclick="app.sandbox.switchLeftPanel('TODO')">換一張</button><br>按「啟動」後開始累積工時。也可以直接點左邊導覽列的卡片切換。`;
                 } else {
-                    targetBox.innerText = '目前未綁定卡片。計時仍可使用，但不會寫入工時；先從任務矩陣選一張卡，或直接按卡片上的 ⏱️。';
+                    targetBox.innerText = '目前未綁定卡片。計時仍可使用，但不會寫入工時；先從任務清單選一張卡，或直接按卡片上的 ⏱️。';
                 }
             }
             if (display && gifBox && statusText) {
@@ -3961,7 +3962,18 @@ const app = {
     // UI 視圖渲染與控制
     // ==========================================
     switchView(viewName) {
+        const prevView = this.state.view;
         this.state.view = viewName;
+        // 心流裡已經有「任務清單」，左側導覽列先收起來，離開心流再恢復。
+        if (this.taskNav?.ui) {
+            if (viewName === 'sandbox' && prevView !== 'sandbox') {
+                this.taskNav.ui.openBeforeSandbox = this.taskNav.ui.open;
+                if (this.taskNav.ui.open) { this.taskNav.ui.open = false; this.taskNav.applyOpenState(); }
+            } else if (viewName !== 'sandbox' && prevView === 'sandbox' && this.taskNav.ui.openBeforeSandbox) {
+                this.taskNav.ui.open = true; this.taskNav.ui.openBeforeSandbox = false; this.taskNav.applyOpenState();
+                this.taskNav.safe(() => this.taskNav.renderList());
+            }
+        }
         document.querySelectorAll('.view-container').forEach(el => el.classList.remove('active'));
         document.querySelectorAll('.toolbar .btn').forEach(el => el.classList.remove('active'));
         if (document.getElementById('view-' + viewName)) document.getElementById('view-' + viewName).classList.add('active');
@@ -4018,7 +4030,7 @@ const app = {
     renderProjectBar() {
         const esc = s => this.entries.escapeHtml(s);
         const cards = this.state.workspaces[this.state.activeTabId] || []; const nodes = this.state.nodes[this.state.activeTabId] || [];
-        this._projectBarList = [...new Set([...cards.map(c => c.project), ...nodes.map(n => n.project)].filter(p => p && p.trim() !== ''))];
+        this._projectBarList = [...new Set([...cards.map(c => String(c.project || '').trim()), ...nodes.map(n => String(n.project || '').trim())].filter(Boolean))];
         let html = `<div class="proj-badge" onclick="app.setFilter('project', null)">清除過濾</div>`;
         this._projectBarList.forEach((p, i) => { const active = this.state.filters.activeProject === p ? 'active' : ''; html += `<div class="proj-badge ${active}" onclick="app.setFilterIndex(${i})">${esc(p)}</div>`; });
         document.getElementById('project-bar').innerHTML = html;
@@ -4040,7 +4052,7 @@ const app = {
     renderTimeline() {
         const esc = s => this.entries.escapeHtml(s);
         let cards = [...(this.state.workspaces[this.state.activeTabId] || [])];
-        if (this.state.filters.activeProject) cards = cards.filter(c => c.project === this.state.filters.activeProject);
+        if (this.state.filters.activeProject) cards = cards.filter(c => String(c.project || '').trim() === this.state.filters.activeProject);
         // 排序只排「顯示用的複本」，不改動資料本身的順序。
         cards.sort((a, b) => {
             const dA = this.timelineSortKey(a), dB = this.timelineSortKey(b);
@@ -4218,7 +4230,7 @@ const app = {
 
     renderMatrix() {
         let nodes = this.state.nodes[this.state.activeTabId] || []; 
-        if (this.state.filters.activeProject) nodes = nodes.filter(n => n.project === this.state.filters.activeProject);
+        if (this.state.filters.activeProject) nodes = nodes.filter(n => String(n.project || '').trim() === this.state.filters.activeProject);
         
         const getTagHtml = (tagVal) => {
             if (tagVal === 'q1') return `<div class="node-tag tag-q1">🔥 重要・緊急</div>`; if (tagVal === 'q2') return `<div class="node-tag tag-q2">📅 重要・不急</div>`;
