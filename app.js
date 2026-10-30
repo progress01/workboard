@@ -1,5 +1,5 @@
 // =====================================================================
-// 白板 & 心流沙盒 v3.5
+// 白板 & 心流沙盒 v3.6
 // ---------------------------------------------------------------------
 // v3.0 重整重點（資料邏輯）：
 // 1. 所有修改只走一個入口 app.saveToLocal()（= store.markDirty）：
@@ -27,7 +27,7 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 const provider = new firebase.auth.GoogleAuthProvider();
 
-const APP_VERSION = '3.5.1';
+const APP_VERSION = '3.6';
 const SCHEMA_VERSION = 3;
 const CLOUD_DOC_SOFT_LIMIT = 750 * 1024;   // 超過時提醒
 const CLOUD_DOC_HARD_LIMIT = 1000 * 1000;  // Firestore 單一文件上限約 1 MiB，保守一點
@@ -2347,7 +2347,10 @@ const app = {
                         <div class="pm-section-body">
                             <div class="pm-ai-row">
                                 <span class="pm-hint">不知道怎麼填？讓 AI 依卡片內容先填一版，你再改。全部留白也沒關係。</span>
-                                <button type="button" class="worklog-add-btn" onclick="app.coach.open({ template: 'fill', cardId: '${id}' })">🧑‍🏫 請 AI 先填一版</button>
+                                <span style="display:flex;gap:6px;flex-wrap:wrap;">
+                                    <button type="button" class="worklog-add-btn" onclick="app.gcal.open('${id}')" title="打開 Google 日曆新增活動">📅 加到日曆${card.calendarAddedAt ? ' ✓' : ''}</button>
+                                    <button type="button" class="worklog-add-btn" onclick="app.coach.open({ template: 'fill', cardId: '${id}' })">🧑‍🏫 請 AI 先填一版</button>
+                                </span>
                             </div>
                             <div class="task-meta-grid" style="grid-template-columns:1fr 1fr;">
                                 <label class="task-meta-field">
@@ -2383,7 +2386,7 @@ const app = {
                                     <input class="task-meta-input" ${fk('waitingWho')} value="${esc(card.waitingWho || '')}" placeholder="等誰" oninput="app.worktime.editText('${id}','waitingWho',this.value,'${source}')">
                                     <input class="task-meta-input" ${fk('waitingWhat')} value="${esc(card.waitingWhat || '')}" placeholder="等什麼（例如：確認規格、提供資料）" oninput="app.worktime.editText('${id}','waitingWhat',this.value,'${source}')">
                                     <input class="task-meta-input" ${fk('followUpDate')} type="date" value="${esc(card.followUpDate || '')}" title="哪天要追" onchange="app.worktime.updateCardField('${id}','followUpDate',this.value,'${source}')">
-                                    ${waitingSet ? `<button type="button" class="worklog-action-btn" onclick="app.worktime.clearWaiting('${id}','${source}')" title="已收到回覆，清除等待">✓ 收到了</button>` : '<span></span>'}
+                                    ${waitingSet ? `<span style="display:flex;gap:4px;"><button type="button" class="worklog-action-btn" onclick="app.gcal.followUp('${id}')" title="在追蹤日加一個提醒到 Google 日曆">📅 提醒</button><button type="button" class="worklog-action-btn" onclick="app.worktime.clearWaiting('${id}','${source}')" title="已收到回覆，清除等待">✓ 收到了</button></span>` : '<span></span>'}
                                 </div>
                             </div>
                             ${conflictPanel}
@@ -4147,6 +4150,7 @@ const app = {
                         </div>
                         <div style="display:flex; gap:5px;">
                             <button class="icon-btn chronicle-pin-btn ${card.chroniclePinned ? 'active' : ''}" onclick="app.actions.toggleChronicle('${id}')" title="${card.chroniclePinned ? '移出大事記' : '加入大事記'}">${card.chroniclePinned ? '⭐' : '☆'}</button>
+                            <button class="icon-btn" onclick="app.gcal.open('${id}')" title="加到 Google 日曆">📆</button>
                             <button class="icon-btn" onclick="app.sandbox.focusTaskForTimer('${id}')" title="進入心流，專注在這張卡">🎯</button>
                             ${this.timerButtonHtml(card)}
                             ${card.isMemo ? '' : `<button class="icon-btn" onclick="app.actions.toggleDateMode('${id}')" title="單日／區間">↔️</button>`}
@@ -6038,6 +6042,103 @@ ${planned.length ? planned.map(({ card }) => this.cardLine(card)).join('\n') : '
             }
             app.ui.toast(truncated ? '已打開 Gmail（內容較長：完整內容已複製，請在信裡貼上），按「傳送」才會寄出' : '已打開 Gmail，確認後按「傳送」就寄出了', 'info', 6000);
             return true;
+        }
+    },
+
+    // ==========================================
+    // 📅 加到 Google 日曆：打開 Google 日曆的新增活動頁，按「儲存」才會加入
+    // ==========================================
+    gcal: {
+        form: {},
+
+        tz() { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Taipei'; } catch { return 'Asia/Taipei'; } },
+        ymd(d) { return d.replace(/-/g, ''); },
+        addDay(dateStr, n) { const W = app.worktime; const d = W.parseLocalDate(dateStr); return d ? W.localDateString(W.addDays(d, n)) : dateStr; },
+
+        details(card) {
+            const lines = [];
+            const add = (l, v) => { const t = String(v ?? '').trim(); if (t) lines.push(`${l}：${t}`); };
+            add('專案', card.project);
+            add('要交出什麼', card.deliverable);
+            add('怎樣算完成', card.acceptance);
+            add('下一步', card.nextStep);
+            const todos = app.sandbox.parseSubtasks(card.content).filter(t => !t.completed).slice(0, 8);
+            if (todos.length) lines.push('', '待辦：', ...todos.map(t => `・${t.text}`));
+            const refs = app.refs.list(card).slice(0, 5);
+            if (refs.length) lines.push('', '參考資料：', ...refs.map(r => `・${r.title}：${r.url}`));
+            lines.push('', `白板：${location.origin}${location.pathname}`);
+            return lines.join('\n');
+        },
+
+        url({ title, start, end, allDay, details }) {
+            let dates;
+            if (allDay) dates = `${this.ymd(start)}/${this.ymd(this.addDay(end || start, 1))}`;
+            else dates = `${start.replace(/[-:]/g, '')}00/${end.replace(/[-:]/g, '')}00`;
+            return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(title)}&dates=${dates}&ctz=${encodeURIComponent(this.tz())}&details=${encodeURIComponent(details)}`;
+        },
+
+        openUrl(u) {
+            const win = window.open(u, '_blank', 'noopener');
+            if (!win) { app.ui.toast('瀏覽器擋住了新視窗，請允許此網站開啟彈出視窗後再試一次', 'warn', 6000); return false; }
+            app.ui.toast('已打開 Google 日曆，確認後按「儲存」就加進去了', 'info', 5000);
+            return true;
+        },
+
+        async open(cardId) {
+            const card = app.worktime.getCard(cardId);
+            if (!card) return;
+            const W = app.worktime;
+            const esc = s => app.entries.escapeHtml(s);
+            const today = W.localDateString();
+            const ps = W.plannedStart(card), pe = W.plannedEnd(card);
+            const pm = Math.round(W.plannedMinutes(card));
+            const dur = pm > 0 ? Math.min(pm, 8 * 60) : 60;
+            this.form = { mode: 'block', date: ps && ps >= today ? ps : today, time: '10:00', minutes: dur };
+            const durOpts = [30, 60, 90, 120, 180, 240].concat(dur).filter((v, i, a) => a.indexOf(v) === i).sort((a, b) => a - b);
+            const choice = await app.ui.dialog({
+                title: `📅 加到 Google 日曆：${String(card.title || '').trim() || '未命名卡片'}`,
+                html: `
+                    <label class="gcal-opt"><input type="radio" name="gcal-mode" value="block" checked onchange="app.gcal.form.mode=this.value"> <b>指定時段</b>（時間任務：把時間保留下來）</label>
+                    <div class="gcal-row">
+                        <input type="date" class="task-meta-input" value="${esc(this.form.date)}" onchange="app.gcal.form.date=this.value">
+                        <input type="time" class="task-meta-input" value="10:00" step="900" onchange="app.gcal.form.time=this.value">
+                        <select class="task-meta-input" onchange="app.gcal.form.minutes=Number(this.value)">${durOpts.map(m => `<option value="${m}" ${m === dur ? 'selected' : ''}>${W.formatMinutes(m)}</option>`).join('')}</select>
+                    </div>
+                    ${pm > 0 ? `<div class="data-note">長度預設用這張卡的預估工時（${W.formatMinutes(pm)}${pm > 480 ? '，超過 8 小時先排 8 小時，建議分幾段排' : ''}）。</div>` : ''}
+                    <label class="gcal-opt"><input type="radio" name="gcal-mode" value="allday" ${ps ? '' : 'disabled'} onchange="app.gcal.form.mode=this.value"> <b>整天</b>（${ps ? `${esc(ps)}${pe && pe !== ps ? ` ～ ${esc(pe)}` : ''}，用卡片的預計日期` : '這張卡還沒有預計日期'}）</label>
+                    <p class="data-note">說明欄會帶入：要交出什麼、完成標準、下一步、未完成的待辦、參考資料連結。</p>`,
+                buttons: [{ label: '取消', value: null }, { label: '打開 Google 日曆', value: 'go', primary: true }]
+            });
+            if (!choice) return;
+            const f = this.form;
+            const title = String(card.title || '').trim() || '未命名卡片';
+            let ok;
+            if (f.mode === 'allday' && ps) {
+                ok = this.openUrl(this.url({ title, start: ps, end: pe || ps, allDay: true, details: this.details(card) }));
+            } else {
+                const date = W.parseLocalDate(f.date) ? f.date : today;
+                const [h, m] = String(f.time || '10:00').split(':').map(Number);
+                const startD = new Date(W.parseLocalDate(date)); startD.setHours(h || 0, m || 0, 0, 0);
+                const endD = new Date(startD.getTime() + (Number(f.minutes) || 60) * 60000);
+                const fmt = d => `${W.localDateString(d)}T${String(d.getHours()).padStart(2, '0')}${String(d.getMinutes()).padStart(2, '0')}`;
+                ok = this.openUrl(this.url({ title, start: fmt(startD), end: fmt(endD), allDay: false, details: this.details(card) }));
+            }
+            if (ok) {
+                card.calendarAddedAt = new Date().toISOString();
+                app.saveToLocal();
+            }
+        },
+
+        // 等別人：在追蹤日加一個 15 分鐘的提醒
+        followUp(cardId) {
+            const card = app.worktime.getCard(cardId);
+            if (!card) return;
+            const W = app.worktime;
+            const who = String(card.waitingWho || '').trim(), what = String(card.waitingWhat || '').trim();
+            const date = W.parseLocalDate(card.followUpDate) ? card.followUpDate : W.localDateString();
+            const title = `追：${who ? '等' + who : '等回覆'}${what ? '（' + what + '）' : ''}｜${String(card.title || '').trim()}`;
+            const details = `${who ? `在等：${who}\n` : ''}${what ? `等什麼：${what}\n` : ''}\n${this.details(card)}`;
+            this.openUrl(this.url({ title, start: `${date}T0930`, end: `${date}T0945`, allDay: false, details }));
         }
     },
 
