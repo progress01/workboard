@@ -27,7 +27,7 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 const provider = new firebase.auth.GoogleAuthProvider();
 
-const APP_VERSION = '3.4.4';
+const APP_VERSION = '3.4.5';
 const SCHEMA_VERSION = 3;
 const CLOUD_DOC_SOFT_LIMIT = 750 * 1024;   // 超過時提醒
 const CLOUD_DOC_HARD_LIMIT = 1000 * 1000;  // Firestore 單一文件上限約 1 MiB，保守一點
@@ -2372,10 +2372,10 @@ const app = {
                                     <input class="task-meta-input" ${fk('progress')} type="number" min="0" max="100" step="10" value="${progress}" placeholder="選填" onchange="app.worktime.updateCardField('${id}','progress',this.value,'${source}',true)">
                                 </label>
                             </div>
-                            <label class="task-meta-field" style="margin-top:8px;">
+                            ${source === 'sandbox' ? '' : `<label class="task-meta-field" style="margin-top:8px;">
                                 <span class="task-meta-label">➡ 下一步 <span class="pm-hint">（回到這張卡時，從哪裡接）</span></span>
                                 <input class="task-meta-input" ${fk('nextStep')} value="${esc(card.nextStep || '')}" placeholder="例如：拿正式資料跑一次，確認圖表定位規則" oninput="app.worktime.editText('${id}','nextStep',this.value,'${source}')">
-                            </label>
+                            </label>`}
                             <div class="waiting-box ${waitingSet ? 'active' : ''}">
                                 <div class="task-meta-label">⏳ 在等別人？ <span class="pm-hint">（寫清楚等誰、等什麼、哪天要追，週報會自動列出來）</span></div>
                                 <div class="task-meta-grid" style="grid-template-columns:1fr 1.6fr 140px auto;margin-top:4px;">
@@ -3383,6 +3383,7 @@ const app = {
             card.nextStep = input.value;
             card.nextAction = input.value;
             app.saveToLocal();
+            app.updateNextStepPreview(card.id);
         },
 
         wrapMarkdown(prefix, suffix) {
