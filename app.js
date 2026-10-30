@@ -1,5 +1,5 @@
 // =====================================================================
-// 白板 & 心流沙盒 v3.4
+// 白板 & 心流沙盒 v3.5
 // ---------------------------------------------------------------------
 // v3.0 重整重點（資料邏輯）：
 // 1. 所有修改只走一個入口 app.saveToLocal()（= store.markDirty）：
@@ -27,7 +27,7 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 const provider = new firebase.auth.GoogleAuthProvider();
 
-const APP_VERSION = '3.4.5';
+const APP_VERSION = '3.5';
 const SCHEMA_VERSION = 3;
 const CLOUD_DOC_SOFT_LIMIT = 750 * 1024;   // 超過時提醒
 const CLOUD_DOC_HARD_LIMIT = 1000 * 1000;  // Firestore 單一文件上限約 1 MiB，保守一點
@@ -489,6 +489,7 @@ const app = {
                     if (card.project === undefined || card.project === null) card.project = '';
                     if (card.workLogs !== undefined) card.workLogs = Array.isArray(card.workLogs) ? fixListIds(card.workLogs, 'work', card.id) : [];
                     if (card.entries !== undefined) card.entries = Array.isArray(card.entries) ? fixListIds(card.entries, 'entry', card.id) : [];
+                    if (card.refs !== undefined) card.refs = Array.isArray(card.refs) ? fixListIds(card.refs, 'ref', card.id) : [];
                     if (!card.color) card.color = 'blue';
                     if (card.status === undefined || card.status === null || card.status === '') card.status = 0;
                     if (typeof card.status !== 'number') card.status = Number(card.status) || 0;
@@ -549,11 +550,11 @@ const app = {
         TEXT_FIELDS: { title: '標題', content: '內容', project: '專案', nextStep: '下一步', nextAction: '下一步（舊）', deliverable: '要交出什麼', acceptance: '怎樣算完成', chronicleSummary: '大事記摘要', category: '任務分類', waitingWho: '在等誰', waitingWhat: '在等什麼' },
         FIELD_LABELS: { followUpDate: '追蹤日', status: '狀態', color: '標記', dateSingle: '日期', dateStart: '開始日', dateEnd: '結束日', dateMode: '日期模式', isMemo: '卡片用途', progress: '進度', plannedMinutes: '預估工時', actualStart: '實際開始', actualEnd: '實際完成', chroniclePinned: '大事記', chronicleDate: '大事記日期', excludeFromGantt: '甘特顯示' },
         BLOCK_TEXT: ['content', 'deliverable', 'acceptance', 'chronicleSummary'],
-        LIST_FIELDS: ['workLogs', 'entries'],
+        LIST_FIELDS: ['workLogs', 'entries', 'refs'],
 
         isBlankCard(c) {
             return !String(c?.title || '').trim() && !String(c?.content || '').trim()
-                && !(c?.workLogs || []).length && !(c?.entries || []).length
+                && !(c?.workLogs || []).length && !(c?.entries || []).length && !(c?.refs || []).length
                 && !String(c?.nextStep || '').trim() && !String(c?.deliverable || '').trim();
         },
 
@@ -584,7 +585,7 @@ const app = {
             Object.entries(doc.workspaces).forEach(([tabId, list]) => list.forEach(c => {
                 const f = {};
                 Object.keys(c).forEach(k => { if (k !== 'updatedAt' && !this.LIST_FIELDS.includes(k)) f[k] = this.fieldHash(c[k]); });
-                cards[c.id] = { h: this.cardHash(c), tab: tabId, f, logs: (c.workLogs || []).map(x => x?.id).filter(Boolean), entries: (c.entries || []).map(x => x?.id).filter(Boolean) };
+                cards[c.id] = { h: this.cardHash(c), tab: tabId, f, logs: (c.workLogs || []).map(x => x?.id).filter(Boolean), entries: (c.entries || []).map(x => x?.id).filter(Boolean), refs: (c.refs || []).map(x => x?.id).filter(Boolean) };
             }));
             const nodes = {};
             Object.entries(doc.nodes).forEach(([tabId, list]) => list.forEach(n => { nodes[n.id] = { h: this.cardHash(n), tab: tabId }; }));
@@ -705,7 +706,7 @@ const app = {
             });
             if (notes.length) merged.content = `${String(merged.content || '').trim() ? String(merged.content).trim() + '\n\n' : ''}—— 合併時保留的${loserLabel}版本 ——\n${notes.join('\n')}`;
             this.LIST_FIELDS.forEach(k => {
-                const v = this.mergeList(a[k], b[k], bc ? (k === 'workLogs' ? bc.logs : bc.entries) : null, aWins);
+                const v = this.mergeList(a[k], b[k], bc ? ({ workLogs: bc.logs, entries: bc.entries, refs: bc.refs })[k] || null : null, aWins);
                 if (v !== undefined) merged[k] = v;
             });
             const sig = app.store.cardSig(merged);
@@ -1844,7 +1845,7 @@ const app = {
                 return;
             }
             container.style.display = 'block';
-            container.innerHTML = `${app.worktime.renderPlanningPanel(card, 'sandbox')}<div style="height:8px"></div>${app.worktime.renderPanel(card, 'sandbox')}<div style="height:8px"></div><div class="worklog-panel" id="worklog-panel-sandbox-${card.id}">${this.renderPanelInner(card, 'sandbox')}</div>`;
+            container.innerHTML = `${app.worktime.renderPlanningPanel(card, 'sandbox')}<div style="height:8px"></div>${app.refs.render(card, 'sandbox')}<div style="height:8px"></div>${app.worktime.renderPanel(card, 'sandbox')}<div style="height:8px"></div><div class="worklog-panel" id="worklog-panel-sandbox-${card.id}">${this.renderPanelInner(card, 'sandbox')}</div>`;
         },
 
         toggleExpanded(cardId, source = 'sandbox') {
@@ -4158,6 +4159,7 @@ const app = {
                         <div class="next-step-preview" id="next-preview-${id}" ${nextStep ? '' : 'style="display:none"'} onclick="app.actions.openPlanning('${id}')" title="點擊編輯下一步">➡ 下一步：<span>${esc(nextStep)}</span></div>
                         ${this.worktime.renderPlanningPanel(card, 'timeline')}
                         ${this.worktime.renderPanel(card, 'timeline')}
+                        ${this.refs.render(card, 'timeline')}
                         ${this.entries.renderCardPanel(card, 'timeline')}
                     </div>
                     <div class="card-footer" style="display: flex; gap: 8px; align-items: center; justify-content: flex-end;">
@@ -4165,6 +4167,7 @@ const app = {
                         <select class="icon-btn" style="width: auto; padding: 0 5px; font-size: 0.85rem;" onchange="if(this.value) { app.actions.moveCard('${id}', this.value); this.value=''; }">
                             <option value="" disabled selected>🚀 轉移至...</option>${tabOptionsHtml}
                         </select>
+                        <button class="icon-btn" onclick="app.tidy.run('${id}')" title="整理：把已勾選的待辦移到工作紀錄" style="width:34px; height:34px;">🧹</button>
                         <button class="icon-btn" onclick="app.coach.open({ template: 'stuck', cardId: '${id}' })" title="卡住了？請 AI 老師帶你想下一步" style="width:34px; height:34px;">🧑‍🏫</button>
                         <button class="icon-btn" onclick="app.actions.deleteCard('${id}')" style="color:#ef4444; border-color:#fca5a5; width:34px; height:34px;" title="刪除此卡片">🗑️</button>
                     </div>
@@ -5675,6 +5678,279 @@ ${planned.length ? planned.map(({ card }) => this.cardLine(card)).join('\n') : '
             app.state.filters.activeProject = null;
             if (app.state.view !== 'timeline') app.switchView('timeline'); else app.renderAll();
             app.ui.toast(`已建立 ${picked.length} 張卡片（專案：${project || '未分類'}）`);
+        }
+    },
+
+    // ==========================================
+    // 📎 參考資料（每張卡的連結清單）＋ 🧹 整理（已勾待辦移到工作紀錄）
+    // ==========================================
+    refs: {
+        editing: {},
+
+        list(card) { return Array.isArray(card?.refs) ? card.refs : []; },
+
+        isUrl(s) { return /^(https?:\/\/|\\\\|file:\/\/|[a-zA-Z]:\\)/.test(String(s || '').trim()); },
+
+        normalizeUrl(u) {
+            u = String(u || '').trim();
+            if (/^www\./i.test(u)) u = 'https://' + u;
+            return u;
+        },
+
+        // 網址顯示用的短名稱
+        shortLabel(url) {
+            const u = String(url || '');
+            const g = u.match(/docs\.google\.com\/(document|spreadsheets|presentation|forms)/);
+            if (g) return ({ document: 'Google 文件', spreadsheets: 'Google 試算表', presentation: 'Google 簡報', forms: 'Google 表單' })[g[1]];
+            if (/drive\.google\.com/.test(u)) return 'Google 雲端硬碟';
+            if (/mail\.google\.com/.test(u)) return 'Gmail 信件';
+            if (/^\\\\/.test(u)) return '網路磁碟路徑';
+            try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return u.slice(0, 40); }
+        },
+
+        render(card, source = 'timeline') {
+            const esc = s => app.entries.escapeHtml(s);
+            const id = card.id;
+            const refs = this.list(card);
+            const open = app.panelOpen(source, id, 'refs');
+            const known = new Set(refs.map(r => r.url));
+            const urlsInContent = this.findInContent(card).filter(f => !known.has(this.normalizeUrl(f.url))).length;
+            if (!open) {
+                return `<div class="refs-panel refs-collapsed" id="refs-panel-${source}-${id}">
+                    <button type="button" class="worktime-collapsed-btn" onclick="app.refs.toggle('${id}','${source}')">
+                        <span style="font-weight:bold;color:#475569;">📎 參考資料</span>
+                        <span class="worklog-count">${refs.length}</span>
+                        <span class="refs-chips">${refs.slice(0, 4).map(r => `<a class="ref-chip" href="${esc(this.href(r.url))}" target="_blank" rel="noopener" onclick="event.stopPropagation()" title="${esc(r.url)}">${esc(r.title || this.shortLabel(r.url))}</a>`).join('')}${refs.length > 4 ? `<span class="ref-more">+${refs.length - 4}</span>` : ''}</span>
+                        ${urlsInContent ? `<span class="ref-hint">筆記裡有 ${urlsInContent} 個連結可以搬進來</span>` : ''}
+                        <span class="worktime-open">展開 ▾</span>
+                    </button>
+                </div>`;
+            }
+            const editingId = this.editing[`${source}:${id}`];
+            const rows = refs.length ? refs.map(r => r.id === editingId ? `
+                <div class="ref-row ref-edit">
+                    <input id="refedit-title-${source}-${id}" class="worktime-input" value="${esc(r.title || '')}" placeholder="名稱">
+                    <input id="refedit-url-${source}-${id}" class="worktime-input" value="${esc(r.url || '')}" placeholder="網址或路徑" onkeydown="if(event.key==='Enter') app.refs.saveEdit('${id}','${r.id}','${source}')">
+                    <button class="worklog-action-btn" onclick="app.refs.cancelEdit('${id}','${source}')">取消</button>
+                    <button class="worklog-action-btn" style="color:#4338ca;border-color:#c7d2fe;" onclick="app.refs.saveEdit('${id}','${r.id}','${source}')">儲存</button>
+                </div>` : `
+                <div class="ref-row">
+                    <a class="ref-link" href="${esc(this.href(r.url))}" target="_blank" rel="noopener" title="${esc(r.url)}">🔗 ${esc(r.title || this.shortLabel(r.url))}</a>
+                    <span class="ref-url">${esc(this.shortLabel(r.url))}</span>
+                    <button class="worktime-edit" title="複製連結" onclick="app.worktime.copyText(${esc(JSON.stringify(r.url))}, '已複製連結')">📋</button>
+                    <button class="worktime-edit" title="修改" onclick="app.refs.startEdit('${id}','${r.id}','${source}')">✏️</button>
+                    <button class="worktime-delete" title="刪除" onclick="app.refs.remove('${id}','${r.id}','${source}')">×</button>
+                </div>`).join('') : '<div class="worktime-empty">還沒有參考資料。把常用的文件、試算表、信件連結放這裡，平常只會顯示名稱。</div>';
+            return `<div class="refs-panel" id="refs-panel-${source}-${id}">
+                <div class="worktime-header">
+                    <span style="font-weight:bold;color:#475569;">📎 參考資料 <span class="worklog-count">${refs.length}</span></span>
+                    <span style="display:flex;gap:6px;align-items:center;">
+                        ${urlsInContent ? `<button class="worklog-action-btn" onclick="app.refs.extractFromContent('${id}','${source}')" title="把筆記裡的網址搬進參考資料">從筆記抓連結（${urlsInContent}）</button>` : ''}
+                        <button class="worklog-action-btn" onclick="app.refs.toggle('${id}','${source}')">收合</button>
+                    </span>
+                </div>
+                <div class="ref-form">
+                    <input id="ref-title-${source}-${id}" class="worktime-input" placeholder="名稱，例如：管控表 115 上半年">
+                    <input id="ref-url-${source}-${id}" class="worktime-input" placeholder="貼上網址或網路磁碟路徑" onkeydown="if(event.key==='Enter') app.refs.add('${id}','${source}')">
+                    <button class="worklog-add-btn" onclick="app.refs.add('${id}','${source}')">＋ 加入</button>
+                </div>
+                <div class="ref-list">${rows}</div>
+            </div>`;
+        },
+
+        href(url) {
+            const u = String(url || '').trim();
+            if (/^\\\\/.test(u)) return 'file:' + u.replace(/\\/g, '/');
+            return this.normalizeUrl(u);
+        },
+
+        toggle(cardId, source = 'timeline') {
+            app.setPanelOpen(source, cardId, 'refs', !app.panelOpen(source, cardId, 'refs'));
+            this.refresh(cardId, source);
+        },
+
+        refresh(cardId, source = 'timeline') {
+            app.ui.defer(() => {
+                const card = app.worktime.getCard(cardId);
+                if (!card) return;
+                const el = document.getElementById(`refs-panel-${source}-${cardId}`);
+                if (el) el.outerHTML = this.render(card, source);
+            });
+        },
+
+        add(cardId, source = 'timeline') {
+            const card = app.worktime.getCard(cardId);
+            if (!card) return;
+            const titleEl = document.getElementById(`ref-title-${source}-${cardId}`);
+            const urlEl = document.getElementById(`ref-url-${source}-${cardId}`);
+            let title = (titleEl?.value || '').trim();
+            let url = (urlEl?.value || '').trim();
+            if (!url && this.isUrl(title)) { url = title; title = ''; }
+            if (!url) { app.ui.toast('請貼上網址或路徑', 'warn'); urlEl?.focus(); return; }
+            if (!Array.isArray(card.refs)) card.refs = [];
+            card.refs.push({ id: app.makeId('ref'), title: title || this.shortLabel(url), url: this.normalizeUrl(url), createdAt: new Date().toISOString() });
+            app.saveToLocal();
+            this.refresh(cardId, source);
+            setTimeout(() => document.getElementById(`ref-title-${source}-${cardId}`)?.focus(), 60);
+        },
+
+        startEdit(cardId, refId, source) { this.editing[`${source}:${cardId}`] = refId; this.refresh(cardId, source); },
+        cancelEdit(cardId, source) { delete this.editing[`${source}:${cardId}`]; this.refresh(cardId, source); },
+        saveEdit(cardId, refId, source) {
+            const card = app.worktime.getCard(cardId);
+            const r = this.list(card).find(x => x.id === refId);
+            if (!r) return;
+            const url = (document.getElementById(`refedit-url-${source}-${cardId}`)?.value || '').trim();
+            const title = (document.getElementById(`refedit-title-${source}-${cardId}`)?.value || '').trim();
+            if (!url) { app.ui.toast('網址不能是空的；不要的話按 × 刪除', 'warn'); return; }
+            r.url = this.normalizeUrl(url);
+            r.title = title || this.shortLabel(url);
+            delete this.editing[`${source}:${cardId}`];
+            app.saveToLocal();
+            this.refresh(cardId, source);
+        },
+        async remove(cardId, refId, source) {
+            const card = app.worktime.getCard(cardId);
+            const r = this.list(card).find(x => x.id === refId);
+            if (!r) return;
+            if (!await app.ui.confirm('刪除參考資料', `<p>刪除「${app.entries.escapeHtml(r.title || r.url)}」？</p>`, '刪除', true)) return;
+            card.refs = card.refs.filter(x => x.id !== refId);
+            app.saveToLocal();
+            this.refresh(cardId, source);
+        },
+
+        // 找出筆記裡的連結：網址那一行，名稱取前一行（像「公司網站審查表」）或同一行網址前的文字
+        findInContent(card) {
+            const lines = String(card?.content || '').split('\n');
+            const urlRe = /(https?:\/\/[^\s)）\]」，、。；]+|\\\\[^\s，、。；)）]+)/;
+            const isHeading = t => t && !urlRe.test(t) && t.length <= 30 && !/^- \[[ xX]\]/.test(t) && t !== '---' && !/^[*※]/.test(t) && !/[:：].{6,}/.test(t);
+            const clean = t => t.replace(/^[-*•]\s*/, '').replace(/[:：]$/, '').replace(/[（(][^）)]*[）)]\s*$/, '').trim();
+            const found = [];
+            let group = null; // 連續的網址沿用同一個標題
+            lines.forEach((line, i) => {
+                const m = line.match(urlRe);
+                if (!m) { if (line.trim()) group = null; return; }
+                const before = line.slice(0, m.index).replace(/^[\s\-*•\d.、)）]+/, '').replace(/[:：\s]+$/, '').trim();
+                const after = line.slice(m.index + m[0].length).trim();
+                let title = before, titleLine = -1, parentLine = -1;
+                if (!title && i > 0) {
+                    const prev = lines[i - 1].trim();
+                    if (isHeading(prev)) {
+                        title = clean(prev);
+                        titleLine = i - 1;
+                        // 「-115上半年」這種子項目，加上再上一層的標題
+                        const prev2 = i > 1 ? lines[i - 2].trim() : '';
+                        if (/^[-•]/.test(prev) && isHeading(prev2) && !/^[-•]/.test(prev2)) { title = `${clean(prev2)} ${title}`; parentLine = i - 2; }
+                        else if (/^[-•]/.test(prev) && i > 2 && found.length && found[found.length - 1].parent) { title = `${found[found.length - 1].parent} ${title}`; parentLine = found[found.length - 1].parentLine; }
+                        group = { name: title, n: 1 };
+                    } else if (group && urlRe.test(prev)) {
+                        group.n += 1;
+                        title = `${group.name} ${group.n}`;
+                    }
+                }
+                const parentHeading = (() => {
+                    const p1 = i > 1 ? lines[i - 2].trim() : '';
+                    return titleLine >= 0 && /^[-•]/.test(lines[i - 1].trim()) && isHeading(p1) && !/^[-•]/.test(p1) ? clean(p1) : (found.length ? found[found.length - 1].parent : null);
+                })();
+                found.push({ line: i, titleLine, parentLine, url: m[0], title: title || '', rest: after, parent: parentHeading });
+            });
+            return found;
+        },
+
+        async extractFromContent(cardId, source = 'timeline') {
+            const card = app.worktime.getCard(cardId);
+            if (!card) return;
+            const known0 = new Set(this.list(card).map(r => r.url));
+            const found = this.findInContent(card).filter(f => !known0.has(this.normalizeUrl(f.url)));
+            if (!found.length) { app.ui.toast('筆記裡沒有新的連結'); return; }
+            const esc = s => app.entries.escapeHtml(s);
+            const ok = await app.ui.dialog({
+                title: `從筆記搬 ${found.length} 個連結到參考資料`,
+                wide: true,
+                html: `<p>會把下面的連結加進「📎 參考資料」，並從筆記裡刪掉這些網址行（名稱那一行也會一起移走）。其他文字不動。</p>
+                    <div class="diff-block">${found.map(f => `<div style="padding:3px 0;font-size:.84rem;"><b>${esc(f.title || this.shortLabel(f.url))}</b><br><span style="color:#64748b;word-break:break-all;">${esc(f.url)}</span></div>`).join('')}</div>
+                    <p class="data-note">名稱之後可以在參考資料裡用 ✏️ 修改。</p>`,
+                buttons: [{ label: '取消', value: false }, { label: '搬過去', value: true, primary: true }]
+            });
+            if (!ok) return;
+            if (!Array.isArray(card.refs)) card.refs = [];
+            const now = new Date().toISOString();
+            const have = new Set(card.refs.map(r => r.url));
+            const remove = new Set();
+            found.forEach(f => {
+                const url = this.normalizeUrl(f.url);
+                if (!have.has(url)) { card.refs.push({ id: app.makeId('ref'), title: f.title || this.shortLabel(url), url, createdAt: now }); have.add(url); }
+                if (f.rest) return; // 網址後面還有文字的行，只搬連結、保留那一行
+                remove.add(f.line);
+                if (f.titleLine >= 0) remove.add(f.titleLine);
+            });
+            // 整組子連結都搬走時，上一層的小標題（例如「我的管控表」）也一起移走
+            const parents = new Map();
+            found.forEach(f => { if (f.parentLine >= 0) { const g = parents.get(f.parentLine) || { all: true }; g.all = g.all && remove.has(f.line); parents.set(f.parentLine, g); } });
+            parents.forEach((g, ln) => { if (g.all) remove.add(ln); });
+            const lines = String(card.content || '').split('\n').filter((_, i) => !remove.has(i));
+            card.content = lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+            app.saveToLocal();
+            app.setPanelOpen(source, cardId, 'refs', true);
+            app.refreshCard(cardId, source);
+            if (source === 'sandbox' || app.state.view === 'sandbox') app.sandbox.refreshActiveNoteUI();
+            app.ui.toast(`已搬 ${found.length} 個連結到參考資料`);
+        }
+    },
+
+    tidy: {
+        // 已勾選的待辦（含它底下縮排的子行）
+        findDone(content) {
+            const lines = String(content || '').split('\n');
+            const done = [];
+            const remove = new Set();
+            for (let i = 0; i < lines.length; i++) {
+                const m = lines[i].match(/^(\s*)[-*]\s+\[[xX]\]\s+(.*)$/);
+                if (!m) continue;
+                const indent = m[1].length;
+                const block = [m[2].trim()];
+                remove.add(i);
+                let j = i + 1;
+                while (j < lines.length && lines[j].trim() && (lines[j].match(/^(\s*)/)[1].length > indent)) {
+                    block.push(lines[j].trim().replace(/^[-*]\s+(\[[ xX]\]\s+)?/, ''));
+                    remove.add(j);
+                    j++;
+                }
+                done.push(block);
+                i = j - 1;
+            }
+            return { done, remaining: lines.filter((_, i) => !remove.has(i)).join('\n').replace(/\n{3,}/g, '\n\n').replace(/\s+$/, '') };
+        },
+
+        async run(cardId, source = 'timeline') {
+            const card = app.worktime.getCard(cardId);
+            if (!card) return;
+            if (source === 'sandbox') app.sandbox.saveActiveNote();
+            const { done, remaining } = this.findDone(card.content);
+            if (!done.length) { app.ui.toast('沒有已勾選的待辦需要整理'); return; }
+            const esc = s => app.entries.escapeHtml(s);
+            const ok = await app.ui.dialog({
+                title: `整理：${done.length} 項已完成`,
+                html: `<p>這些已勾選的待辦會移到今天的一筆工作紀錄，並從卡片筆記裡移除：</p>
+                    <div class="diff-block">${done.map(b => `<div style="padding:2px 0;font-size:.86rem;">✅ ${esc(b[0])}${b.length > 1 ? `<br><small style="color:#64748b;">${b.slice(1).map(esc).join('<br>')}</small>` : ''}</div>`).join('')}</div>
+                    <p class="data-note">沒勾的待辦、問題、連結和其他文字都不會動。</p>`,
+                buttons: [{ label: '取消', value: false }, { label: '整理', value: true, primary: true }]
+            });
+            if (!ok) return;
+            const d = new Date();
+            const now = d.toISOString();
+            if (!Array.isArray(card.entries)) card.entries = [];
+            card.entries.push({
+                id: app.makeId('entry'),
+                title: `完成：${d.getMonth() + 1}/${d.getDate()} 整理（${done.length} 項）`,
+                content: done.map(b => `✅ ${b[0]}${b.length > 1 ? '\n' + b.slice(1).map(x => `   ${x}`).join('\n') : ''}`).join('\n'),
+                createdAt: now, updatedAt: now
+            });
+            card.content = remaining;
+            app.saveToLocal();
+            app.refreshCard(cardId, source);
+            if (app.state.view === 'sandbox' && app.state.sandbox.activeTaskId === cardId) app.sandbox.refreshActiveNoteUI();
+            app.ui.toast(`已把 ${done.length} 項移到工作紀錄`);
         }
     },
 

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>白板 & 心流沙盒 v3.3</title>
+    <title>白板 & 心流沙盒 v3.5</title>
     
     <!-- Firebase Compat -->
     <script src="https://www.gstatic.com/firebasejs/10.8.1/firebase-app-compat.js"></script>
@@ -629,6 +629,19 @@
 
         /* ===== v3.1：交付與進度、等待、週報、AI 老師 ===== */
         .pm-hint { font-weight:normal; color:#94a3b8; font-size:.72rem; }
+        .refs-panel { border:1px solid #e2e8f0; border-radius:8px; background:#f8fafc; overflow:hidden; margin-top:6px; }
+        .refs-chips { display:inline-flex; gap:4px; flex-wrap:wrap; min-width:0; overflow:hidden; }
+        .ref-chip { background:#fff; border:1px solid #c7d2fe; color:#4338ca; border-radius:999px; padding:1px 8px; font-size:.74rem; text-decoration:none; max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .ref-chip:hover { background:#eef2ff; }
+        .ref-more { color:#94a3b8; font-size:.74rem; }
+        .ref-hint { color:#c2410c; font-size:.72rem; white-space:nowrap; }
+        .ref-form { display:grid; grid-template-columns:minmax(120px,1fr) minmax(160px,2fr) auto; gap:6px; padding:8px 10px; }
+        .ref-row { display:grid; grid-template-columns:minmax(0,1fr) auto auto auto auto; gap:6px; align-items:center; padding:6px 10px; border-top:1px solid #f1f5f9; font-size:.84rem; }
+        .ref-row.ref-edit { grid-template-columns:minmax(100px,1fr) minmax(140px,2fr) auto auto; }
+        .ref-link { color:#4338ca; text-decoration:none; font-weight:bold; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .ref-link:hover { text-decoration:underline; }
+        .ref-url { color:#94a3b8; font-size:.74rem; white-space:nowrap; }
+        @media (max-width: 768px) { .ref-form { grid-template-columns:1fr; } .ref-url { display:none; } .ref-hint { display:none; } }
         .pm-ai-row { display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:8px; padding:6px 8px; background:#eef2ff; border-radius:8px; }
         .waiting-box { margin-top:8px; padding:8px 10px; border:1px dashed #cbd5e1; border-radius:8px; background:#fff; }
         .waiting-box.active { border-color:#fdba74; background:#fff7ed; }
@@ -729,7 +742,7 @@
     <!-- 登入畫面 -->
     <div id="login-screen">
         <h1 style="font-size: 2.5rem; margin-bottom: 10px;">白板系統</h1>
-        <p style="color: #94a3b8; margin-bottom: 30px;">v3.3</p>
+        <p style="color: #94a3b8; margin-bottom: 30px;">v3.5</p>
         <button onclick="app.login()" style="padding: 14px 28px; font-size: 1.1rem; border-radius: 30px; border: none; background: #3b82f6; color: white; font-weight: bold; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.3);">
             使用 Google 登入
         </button>
@@ -980,6 +993,7 @@
                             <button class="sb-btn-outline" onclick="app.sandbox.insertTemplate('bug')">🐛 Bug</button>
                             <button class="sb-btn-outline" onclick="app.sandbox.insertTemplate('dissect')">🔍 拆解</button>
                             <button class="sb-btn-outline" onclick="app.sandbox.insertTemplate('review')">📝 覆盤</button>
+                            <button class="sb-btn-outline" onclick="app.state.sandbox.activeTaskId ? app.tidy.run(app.state.sandbox.activeTaskId, 'sandbox') : app.ui.toast('先選一張卡片')" title="把已勾選的待辦移到工作紀錄">🧹 整理</button>
                             
                             <span style="color: #ccc; margin: 0 5px;">|</span>
                             <span style="font-size: 0.85rem; color: #666;">MD：</span>
