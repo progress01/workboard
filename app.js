@@ -27,7 +27,7 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 const provider = new firebase.auth.GoogleAuthProvider();
 
-const APP_VERSION = '3.5';
+const APP_VERSION = '3.5.1';
 const SCHEMA_VERSION = 3;
 const CLOUD_DOC_SOFT_LIMIT = 750 * 1024;   // 超過時提醒
 const CLOUD_DOC_HARD_LIMIT = 1000 * 1000;  // Firestore 單一文件上限約 1 MiB，保守一點
@@ -4167,6 +4167,7 @@ const app = {
                         <select class="icon-btn" style="width: auto; padding: 0 5px; font-size: 0.85rem;" onchange="if(this.value) { app.actions.moveCard('${id}', this.value); this.value=''; }">
                             <option value="" disabled selected>🚀 轉移至...</option>${tabOptionsHtml}
                         </select>
+                        <button class="icon-btn" onclick="app.mail.sendCard('${id}')" title="寄一份給自己（打開 Gmail，按傳送才會寄出）" style="width:34px; height:34px;">✉️</button>
                         <button class="icon-btn" onclick="app.tidy.run('${id}')" title="整理：把已勾選的待辦移到工作紀錄" style="width:34px; height:34px;">🧹</button>
                         <button class="icon-btn" onclick="app.coach.open({ template: 'stuck', cardId: '${id}' })" title="卡住了？請 AI 老師帶你想下一步" style="width:34px; height:34px;">🧑‍🏫</button>
                         <button class="icon-btn" onclick="app.actions.deleteCard('${id}')" style="color:#ef4444; border-color:#fca5a5; width:34px; height:34px;" title="刪除此卡片">🗑️</button>
@@ -5955,6 +5956,92 @@ ${planned.length ? planned.map(({ card }) => this.cardLine(card)).join('\n') : '
     },
 
     // ==========================================
+    // ✉️ 寄給自己：把卡片整理成一封信，打開 Gmail 撰寫視窗（按傳送才會寄出）
+    // ==========================================
+    mail: {
+        GMAIL_URL_LIMIT: 7000,
+
+        cardText(card) {
+            const W = app.worktime;
+            const tabName = app.state.tabs.find(t => (app.state.workspaces[t.id] || []).some(c => c.id === card.id))?.name || '';
+            const lines = [];
+            const add = (label, v) => { const t = String(v ?? '').trim(); if (t) lines.push(`${label}：${t}`); };
+            lines.push(`【${String(card.title || '').trim() || '未命名卡片'}】`);
+            add('工作區', tabName);
+            add('專案', card.project);
+            add('狀態', W.statusLabel(card.status));
+            const s = W.plannedStart(card), e = W.plannedEnd(card);
+            if (!card.isMemo && (s || e)) add('預計', s && e && s !== e ? `${s} ～ ${e}` : (s || e));
+            add('要交出什麼', card.deliverable);
+            add('怎樣算完成', card.acceptance);
+            add('下一步', card.nextStep);
+            if (card.waitingWho || card.waitingWhat) add('在等', `${card.waitingWho || ''} ${card.waitingWhat || ''}`);
+            if (String(card.content || '').trim()) lines.push('', '■ 筆記', String(card.content).trim());
+            const refs = app.refs.list(card);
+            if (refs.length) lines.push('', '■ 參考資料', ...refs.map(r => `- ${r.title || app.refs.shortLabel(r.url)}：${r.url}`));
+            const entries = [...(card.entries || [])].sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
+            if (entries.length) {
+                lines.push('', '■ 工作紀錄');
+                entries.forEach(en => {
+                    const d = en.createdAt ? W.localDateString(new Date(en.createdAt)) : '';
+                    lines.push(`- ${d} ${en.title || ''}`.trim());
+                    if (String(en.content || '').trim()) lines.push(...String(en.content).trim().split('\n').map(x => `    ${x}`));
+                });
+            }
+            const logs = W.getLogs(card);
+            if (logs.length) {
+                const byDay = {};
+                logs.forEach(l => { if (l.workDate) byDay[l.workDate] = (byDay[l.workDate] || 0) + W.logMinutes(l); });
+                lines.push('', `■ 工時：共 ${W.formatMinutes(W.totalMinutes(card))}`, ...Object.keys(byDay).sort().map(d => `- ${d}：${W.formatMinutes(byDay[d])}`));
+            }
+            if (String(card.chronicleSummary || '').trim()) lines.push('', '■ 大事記摘要', String(card.chronicleSummary).trim());
+            lines.push('', `—— 由「白板 & 心流沙盒」寄出 ${new Date().toLocaleString('zh-TW', { hour12: false })}`);
+            return lines.join('\n');
+        },
+
+        silentCopy(text) {
+            const fallback = () => {
+                try {
+                    const ta = document.createElement('textarea'); ta.value = text;
+                    ta.style.position = 'fixed'; ta.style.opacity = '0'; document.body.appendChild(ta);
+                    ta.select(); document.execCommand('copy'); ta.remove();
+                } catch {}
+            };
+            try {
+                if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(text).catch(fallback);
+                else fallback();
+            } catch { fallback(); }
+        },
+
+        subject(card, reason = '') {
+            const d = new Date();
+            return `【白板${reason ? '・' + reason : ''}】${String(card.title || '').trim() || '未命名卡片'}（${d.getMonth() + 1}/${d.getDate()}）`;
+        },
+
+        // 打開 Gmail 撰寫視窗；內容太長時，信裡放前段，完整內容同時複製到剪貼簿。
+        sendCard(cardId, reason = '') {
+            const card = app.worktime.getCard(cardId);
+            if (!card) return false;
+            const to = app.currentUser?.email || '';
+            const subject = this.subject(card, reason);
+            let body = this.cardText(card);
+            const full = body;
+            const build = b => `https://mail.google.com/mail/?view=cm&fs=1&tf=1${to ? `&to=${encodeURIComponent(to)}` : ''}&su=${encodeURIComponent(subject)}&body=${encodeURIComponent(b)}`;
+            let truncated = false;
+            while (build(body).length > this.GMAIL_URL_LIMIT && body.length > 200) { body = body.slice(0, Math.floor(body.length * 0.85)); truncated = true; }
+            if (truncated) body += '\n\n……（內容太長，信裡只放前段。完整內容已複製到剪貼簿，請在這裡貼上取代）';
+            const win = window.open(build(body), '_blank', 'noopener');
+            if (truncated || !win) this.silentCopy(`${subject}\n\n${full}`);
+            if (!win) {
+                app.ui.toast('瀏覽器擋住了新視窗。卡片內容已複製到剪貼簿，可以自己貼到信裡寄出。', 'warn', 7000);
+                return false;
+            }
+            app.ui.toast(truncated ? '已打開 Gmail（內容較長：完整內容已複製，請在信裡貼上），按「傳送」才會寄出' : '已打開 Gmail，確認後按「傳送」就寄出了', 'info', 6000);
+            return true;
+        }
+    },
+
+    // ==========================================
     // 🗂 工作區管理：新增、改名、排序、刪除（刪除時可以把卡片移到別的工作區）
     // ==========================================
     tabsManager: {
@@ -6201,9 +6288,17 @@ ${planned.length ? planned.map(({ card }) => this.cardLine(card)).join('\n') : '
             const mins = app.worktime.totalMinutes(card);
             const blank = app.sync.isBlankCard(card);
             if (!blank) {
-                const ok = await app.ui.confirm('刪除卡片',
-                    `<p>刪除「${app.entries.escapeHtml(card.title || '未命名卡片')}」${mins ? `（含 ${app.worktime.formatMinutes(mins)} 工時紀錄）` : ''}？</p><p>會先放進「🗂 資料 → 最近刪除」，需要時可以救回。</p>`, '刪除', true);
-                if (!ok) return;
+                const choice = await app.ui.dialog({
+                    title: '刪除卡片',
+                    html: `<p>刪除「${app.entries.escapeHtml(card.title || '未命名卡片')}」${mins ? `（含 ${app.worktime.formatMinutes(mins)} 工時紀錄）` : ''}？</p><p>要長期留存的內容（規則、連結、處理經過），可以先寄一份給自己。刪除後也會先放進「🗂 資料 → 最近刪除」。</p>`,
+                    buttons: [
+                        { label: '取消', value: null },
+                        { label: '直接刪除', value: 'delete', danger: true },
+                        { label: '✉️ 寄給自己再刪除', value: 'mail', primary: true }
+                    ]
+                });
+                if (!choice) return;
+                if (choice === 'mail') app.mail.sendCard(id, '封存');
             }
             const sb = app.state.sandbox;
             if (sb.timerStatus !== 'IDLE' && sb.timerTaskId === id) app.sandbox.stopTimer('心流計時（刪除卡片前結算）');
