@@ -27,7 +27,7 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 const provider = new firebase.auth.GoogleAuthProvider();
 
-const APP_VERSION = '3.4.1';
+const APP_VERSION = '3.4.2';
 const SCHEMA_VERSION = 3;
 const CLOUD_DOC_SOFT_LIMIT = 750 * 1024;   // 超過時提醒
 const CLOUD_DOC_HARD_LIMIT = 1000 * 1000;  // Firestore 單一文件上限約 1 MiB，保守一點
@@ -478,6 +478,11 @@ const app = {
                     }
                     while (seenCard[card.id]) card.id += 'x';
                     seenCard[card.id] = true;
+                    // 文字與日期欄位一律存成字串（舊資料或手動編輯可能留下數字等其他型別）
+                    ['title', 'content', 'project', 'category', 'deliverable', 'acceptance', 'nextStep', 'nextAction', 'waitingWho', 'waitingWhat', 'followUpDate',
+                     'chronicleSummary', 'chronicleDate', 'dateStart', 'dateEnd', 'dateSingle', 'actualStart', 'actualEnd', 'timeCategory', 'dateMode', 'color'].forEach(k => {
+                        if (card[k] !== undefined && card[k] !== null && typeof card[k] !== 'string') card[k] = String(card[k]);
+                    });
                     if (card.title === undefined || card.title === null) card.title = '';
                     if (card.content === undefined || card.content === null) card.content = '';
                     if (card.project === undefined || card.project === null) card.project = '';
@@ -1272,7 +1277,18 @@ const app = {
         saveState: 'saved',
         saveError: null,
 
+        lastErrorAt: 0,
+        reportError(err, where = '') {
+            console.error(where, err);
+            if (Date.now() - this.lastErrorAt < 4000) return;
+            this.lastErrorAt = Date.now();
+            const msg = String(err?.message || err || '').slice(0, 120);
+            try { this.toast(`⚠️ 畫面發生錯誤${where ? `（${where}）` : ''}：${msg}。資料沒有受影響；如果一直出現，把這段訊息截圖給我。`, 'warn', 8000); } catch {}
+        },
+
         installGlobalHandlers() {
+            window.addEventListener('error', e => { if (e?.error || e?.message) app.ui.reportError(e.error || e.message); });
+            window.addEventListener('unhandledrejection', e => app.ui.reportError(e?.reason || 'Promise 錯誤'));
             document.addEventListener('pointerdown', () => { this.pointerDown = true; }, true);
             const release = () => {
                 if (!this.pointerDown) return;
@@ -2267,7 +2283,7 @@ const app = {
             if (progress !== '') parts.push(`${progress}%`);
             const planned = W.plannedMinutes(card), actual = W.totalMinutes(card);
             if (planned || actual) parts.push(`工時 ${W.formatMinutes(actual)}${planned ? ` / ${W.formatMinutes(planned)}` : ''}`);
-            if (String(card.waitingWho || '').trim()) parts.push(`⏳ 等 ${card.waitingWho.trim()}`);
+            if (String(card.waitingWho || '').trim()) parts.push(`⏳ 等 ${String(card.waitingWho || '').trim()}`);
             const conflicts = card.isMemo ? 0 : W.scheduleConflicts(card).length;
             if (conflicts) parts.push(`⚠ ${conflicts} 個排程重疊`);
             if (!parts.length) parts.push(card.isMemo ? '自由卡・需要時再補' : '尚未填寫・可以請 AI 先填一版');
@@ -3280,9 +3296,9 @@ const app = {
             }
             sb.activeTaskId = id;
             if (sb.timerStatus === 'IDLE') sb.timerTaskId = id || null;
-            this.persistTimer();
-            this.refreshActiveNoteUI(); this.renderTodo(); this.updateDisplay(true);
-            app.refreshTimerButtons();
+            // 每一步各自保護：某張卡顯示出錯時，切換仍然完成，不會卡在上一張。
+            [() => this.persistTimer(), () => this.refreshActiveNoteUI(), () => this.renderTodo(), () => this.updateDisplay(true), () => app.refreshTimerButtons()]
+                .forEach(fn => { try { fn(); } catch (err) { app.ui.reportError(err, '切換任務'); } });
         },
 
         focusTaskForTimer(id) {
@@ -4124,7 +4140,7 @@ const app = {
         if (!who && !what) return '';
         const today = this.worktime.localDateString();
         const due = card.followUpDate && card.followUpDate <= today && Number(card.status) !== 2;
-        const label = `⏳ 等${who ? ' ' + who : ''}${card.followUpDate ? ` · ${due ? '該追了' : card.followUpDate.slice(5) + ' 追'}` : ''}`;
+        const label = `⏳ 等${who ? ' ' + who : ''}${card.followUpDate ? ` · ${due ? '該追了' : String(card.followUpDate || '').slice(5) + ' 追'}` : ''}`;
         return `<span class="waiting-badge ${due ? 'due' : ''}" title="${esc(`等 ${who || '（未填）'}：${what || '（未填）'}`)}">${esc(label)}</span>`;
     },
 
@@ -4345,7 +4361,7 @@ const app = {
         document.querySelectorAll('[data-gantt-mode]').forEach(btn => btn.classList.toggle('active', btn.dataset.ganttMode === mode));
         document.querySelectorAll('[data-gantt-scale]').forEach(btn => btn.classList.toggle('active', btn.dataset.ganttScale === scale));
 
-        const projects = [...new Set(sourceEntries.map(({card}) => card.project?.trim() ? card.project.trim() : NO_PROJECT))]
+        const projects = [...new Set(sourceEntries.map(({card}) => card.project?.trim() ? String(card.project || '').trim() : NO_PROJECT))]
             .sort((a,b) => (a === NO_PROJECT ? '未分類專案' : a).localeCompare(b === NO_PROJECT ? '未分類專案' : b, 'zh-Hant'));
         if (filters.project && !projects.includes(filters.project)) filters.project = '';
         if (projectSelect) {
@@ -4384,7 +4400,7 @@ const app = {
         }
 
         let entries = sourceEntries.filter(({card}) => {
-            const projectKey = card.project?.trim() ? card.project.trim() : NO_PROJECT;
+            const projectKey = card.project?.trim() ? String(card.project || '').trim() : NO_PROJECT;
             if (filters.project && projectKey !== filters.project) return false;
             if (!filters.month) return true;
             const [y, m] = filters.month.split('-').map(Number);
@@ -4816,7 +4832,7 @@ const app = {
             if (kind === 'next') return `${p}${dates ? `（${dates}）` : ''}${next ? ` → ${next}` : ''}`;
             if (kind === 'waiting') {
                 const who = String(card.waitingWho || '').trim(), what = String(card.waitingWhat || '').trim();
-                return `${p}：等 ${who || '（未填）'}${what ? `（${what}）` : ''}${card.followUpDate ? ` · ${card.followUpDate.slice(5)} 追` : ''}`;
+                return `${p}：等 ${who || '（未填）'}${what ? `（${what}）` : ''}${card.followUpDate ? ` · ${String(card.followUpDate || '').slice(5)} 追` : ''}`;
             }
             if (kind === 'overdue') return `${p}（原訂 ${W.plannedEnd(card).slice(5)} 完成）${next ? ` → ${next}` : ''}`;
             return p;
