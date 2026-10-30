@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>白板 & 心流沙盒 v3.6</title>
+    <title>白板 & 心流沙盒 v3.7</title>
     
     <!-- Firebase Compat -->
     <script src="https://www.gstatic.com/firebasejs/10.8.1/firebase-app-compat.js"></script>
@@ -645,6 +645,13 @@
         .gcal-opt { display:flex; gap:6px; align-items:center; margin:10px 0 4px; font-size:.9rem; }
         .gcal-row { display:grid; grid-template-columns:1fr 120px 120px; gap:6px; margin-left:22px; }
         @media (max-width: 768px) { .gcal-row { grid-template-columns:1fr 1fr; } }
+        .question-badge { background:#fefce8; color:#a16207; border:1px solid #fde68a; border-radius:999px; padding:2px 8px; font-size:.74rem; white-space:nowrap; margin-right:4px; cursor:help; }
+        .note-tools { display:flex; gap:6px; flex-wrap:wrap; margin:2px 0 6px; }
+        .note-tools button { border:1px dashed #cbd5e1; background:#fff; color:#64748b; border-radius:6px; padding:2px 8px; font-size:.76rem; cursor:pointer; }
+        .note-tools button:hover { border-color:#a5b4fc; color:#4338ca; background:#eef2ff; }
+        .report-question { background:#fefce8; border-color:#fde68a; }
+        .sb-questions { margin:4px 0 0 38px; }
+        .sb-question { font-size:.8rem; color:#a16207; padding:2px 0; }
         .pm-ai-row { display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:8px; padding:6px 8px; background:#eef2ff; border-radius:8px; }
         .waiting-box { margin-top:8px; padding:8px 10px; border:1px dashed #cbd5e1; border-radius:8px; background:#fff; }
         .waiting-box.active { border-color:#fdba74; background:#fff7ed; }
@@ -745,7 +752,7 @@
     <!-- 登入畫面 -->
     <div id="login-screen">
         <h1 style="font-size: 2.5rem; margin-bottom: 10px;">白板系統</h1>
-        <p style="color: #94a3b8; margin-bottom: 30px;">v3.6</p>
+        <p style="color: #94a3b8; margin-bottom: 30px;">v3.7</p>
         <button onclick="app.login()" style="padding: 14px 28px; font-size: 1.1rem; border-radius: 30px; border: none; background: #3b82f6; color: white; font-weight: bold; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.3);">
             使用 Google 登入
         </button>
@@ -993,6 +1000,8 @@
                         <div class="sb-template-bar">
                             <span style="font-size: 0.85rem; color: #666;">⚡ 快捷：</span>
                             <button class="sb-btn-outline" onclick="app.sandbox.insertPrefix('- [ ] ')">✅ 待辦</button>
+                            <button class="sb-btn-outline" onmousedown="event.preventDefault()" onclick="app.questions.insert(document.getElementById('sb-activeNoteArea'),'question')" title="新增一個待確認的問題">❓ 問題</button>
+                            <button class="sb-btn-outline" onmousedown="event.preventDefault()" onclick="app.questions.insert(document.getElementById('sb-activeNoteArea'),'answer')" title="在游標所在的問題下面寫答案">💬 回答</button>
                             <button class="sb-btn-outline" onclick="app.sandbox.insertTemplate('bug')">🐛 Bug</button>
                             <button class="sb-btn-outline" onclick="app.sandbox.insertTemplate('dissect')">🔍 拆解</button>
                             <button class="sb-btn-outline" onclick="app.sandbox.insertTemplate('review')">📝 覆盤</button>

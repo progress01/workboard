@@ -1,5 +1,5 @@
 // =====================================================================
-// 白板 & 心流沙盒 v3.6
+// 白板 & 心流沙盒 v3.7
 // ---------------------------------------------------------------------
 // v3.0 重整重點（資料邏輯）：
 // 1. 所有修改只走一個入口 app.saveToLocal()（= store.markDirty）：
@@ -27,7 +27,7 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 const provider = new firebase.auth.GoogleAuthProvider();
 
-const APP_VERSION = '3.6';
+const APP_VERSION = '3.7';
 const SCHEMA_VERSION = 3;
 const CLOUD_DOC_SOFT_LIMIT = 750 * 1024;   // 超過時提醒
 const CLOUD_DOC_HARD_LIMIT = 1000 * 1000;  // Firestore 單一文件上限約 1 MiB，保守一點
@@ -3521,6 +3521,7 @@ const app = {
                             <button class="${isActive ? 'sb-btn-info' : 'sb-btn-outline'} sb-btn" style="padding:4px 8px; font-size:0.8rem;" onclick="app.sandbox.setActiveTask('${c.id}')">${isActive ? '🎯' : '📝'}</button>
                         </div>
                     </div>
+                    ${app.questions.open(c).length ? `<div class="sb-questions">${app.questions.open(c).map(q => `<div class="sb-question">❓ ${esc(q.text)}</div>`).join('')}</div>` : ''}
                     ${subtasks.length ? `<div class="sb-subtasks-container">${subtasks.map(st => `
                         <div class="sb-subtask-item ${st.completed ? 'completed' : ''}">
                             <input type="checkbox" ${st.completed ? 'checked' : ''} onchange="app.sandbox.toggleSubtask('${c.id}', ${st.lineIndex});">
@@ -4160,6 +4161,11 @@ const app = {
                     <div class="card-body">
                         <input type="text" class="input-title" ${fk('title')} value="${esc(card.title)}" placeholder="🏷️ 標題..." oninput="app.actions.editCardText('${id}', 'title', this.value)">
                         <textarea class="input-content" ${fk('content')} placeholder="📝 寫下卡片細節..." oninput="this.style.height='auto'; this.style.height=this.scrollHeight+'px'; app.actions.editCardText('${id}', 'content', this.value)">${esc(card.content)}</textarea>
+                        <div class="note-tools">
+                            <button type="button" onclick="app.questions.insertInCard('${id}','todo')" onmousedown="event.preventDefault()" title="新增一行待辦">＋ ✅ 待辦</button>
+                            <button type="button" onclick="app.questions.insertInCard('${id}','question')" onmousedown="event.preventDefault()" title="新增一個待確認的問題">＋ ❓ 問題</button>
+                            <button type="button" onclick="app.questions.insertInCard('${id}','answer')" onmousedown="event.preventDefault()" title="在游標所在的問題下面寫答案">＋ 💬 回答</button>
+                        </div>
                         <div class="next-step-preview" id="next-preview-${id}" ${nextStep ? '' : 'style="display:none"'} onclick="app.actions.openPlanning('${id}')" title="點擊編輯下一步">➡ 下一步：<span>${esc(nextStep)}</span></div>
                         ${this.worktime.renderPlanningPanel(card, 'timeline')}
                         ${this.worktime.renderPanel(card, 'timeline')}
@@ -4181,6 +4187,13 @@ const app = {
     },
 
     cardBadgesHtml(card) {
+        const esc = s => this.entries.escapeHtml(s);
+        const openQ = this.questions.open(card);
+        const qBadge = openQ.length ? `<span class="question-badge" title="${esc(openQ.map(q => '❓ ' + q.text).join('\n'))}">❓ ${openQ.length}</span>` : '';
+        return qBadge + this.waitingBadgeHtml(card);
+    },
+
+    waitingBadgeHtml(card) {
         const esc = s => this.entries.escapeHtml(s);
         const who = String(card.waitingWho || '').trim();
         const what = String(card.waitingWhat || '').trim();
@@ -4847,7 +4860,7 @@ const app = {
                 const s = W.plannedStart(card), e = W.plannedEnd(card) || s;
                 return !!s && !(e < r.s || s > r.e);
             };
-            const out = { wk, nx, done: [], doing: [], next: [], waiting: [], overdue: [], minutes: 0 };
+            const out = { wk, nx, done: [], doing: [], next: [], waiting: [], overdue: [], questions: [], minutes: 0 };
             this.rows().forEach(row => {
                 const { card } = row;
                 const mins = W.getLogs(card).reduce((sum, l) => inRange(l.workDate, wk) ? sum + W.logMinutes(l) : sum, 0);
@@ -4861,6 +4874,7 @@ const app = {
                 if (status !== 2 && (String(card.waitingWho || '').trim() || String(card.waitingWhat || '').trim() || status === 3)) out.waiting.push(item);
                 const pe = W.plannedEnd(card);
                 if (status !== 2 && !card.isMemo && pe && pe < today && this.filters.week === 0) out.overdue.push(item);
+                if (status !== 2) app.questions.open(card).forEach(q => out.questions.push({ ...item, q }));
             });
             const byProject = (a, b) => this.projectOf(a.card).localeCompare(this.projectOf(b.card), 'zh-Hant') || String(W.plannedEnd(a.card)).localeCompare(String(W.plannedEnd(b.card)));
             ['done', 'doing', 'next', 'waiting', 'overdue'].forEach(k => out[k].sort(byProject));
@@ -4881,6 +4895,7 @@ const app = {
                 const who = String(card.waitingWho || '').trim(), what = String(card.waitingWhat || '').trim();
                 return `${p}：等 ${who || '（未填）'}${what ? `（${what}）` : ''}${card.followUpDate ? ` · ${String(card.followUpDate || '').slice(5)} 追` : ''}`;
             }
+            if (kind === 'question') return `${p}：❓ ${arguments[1].q?.text || ''}`;
             if (kind === 'overdue') return `${p}（原訂 ${W.plannedEnd(card).slice(5)} 完成）${next ? ` → ${next}` : ''}`;
             return p;
         },
@@ -4895,6 +4910,7 @@ const app = {
                 sec('進行中', 'doing', data.doing, '（無）'),
                 data.overdue.length ? sec('已過預計完成日', 'overdue', data.overdue, '') : '',
                 sec('卡住／需要協助', 'waiting', data.waiting, '目前沒有'),
+                data.questions.length ? sec('待確認問題', 'question', data.questions, '') : '',
                 sec(`下週預計（${fmt(data.nx)}）`, 'next', data.next, '（尚未排定）'),
                 `本週投入工時：${W.formatMinutes(data.minutes)}`
             ].filter(Boolean).join('\n\n');
@@ -4939,6 +4955,7 @@ const app = {
                     ${block('✅', '本週完成', 'done', data.done, '本週還沒有標記完成的卡片。')}
                     ${block('🚧', '進行中', 'doing', data.doing, '本週沒有記到工時的卡片。')}
                     ${data.overdue.length ? block('⚠️', '已過預計完成日', 'overdue', data.overdue, '') : ''}
+                    ${block('❓', '待確認問題', 'question', data.questions, '沒有待確認的問題。在卡片筆記按「＋ ❓ 問題」記下來，有答案時按「＋ 💬 回答」。')}
                     ${block('⏳', '卡住／需要協助', 'waiting', data.waiting, '沒有在等別人的事。卡片「交付與進度」裡可以填「在等誰」。')}
                     ${block('📅', '下週預計', 'next', data.next, '下週還沒有排定的工作包。')}
                 </div>
@@ -5442,6 +5459,7 @@ ${this.IMPORT_FORMAT}`;
 ${ctx}
 我想詢問／請求的對象：${card.waitingWho || '（請幫我判斷該問誰）'}
 我想知道或需要對方做的事：${card.waitingWhat || '（請依卡片內容判斷）'}
+${app.questions.open(card).length ? `這張卡目前還沒有答案的問題（請挑出最該問這個人的，或合併成一則訊息）：\n${app.questions.open(card).map(q => `- ${q.text}`).join('\n')}` : ''}
 
 【請幫我把問題縮到對方好回答】
 1. 對方不是這個專案的負責人，請只放他回答這一題需要的最少背景。
@@ -5903,6 +5921,91 @@ ${planned.length ? planned.map(({ card }) => this.cardLine(card)).join('\n') : '
         }
     },
 
+    // ==========================================
+    // ❓ 問題清單：筆記裡「❓ 問題」與其下的「💬 回答」
+    // ==========================================
+    questions: {
+        Q: '❓',
+        A: '💬',
+
+        // 回傳 [{ line, text, answers: [..], answerLines: [..] }]
+        parse(content) {
+            const lines = String(content || '').split('\n');
+            const out = [];
+            let cur = null;
+            lines.forEach((raw, i) => {
+                const t = raw.trim();
+                if (t.startsWith(this.Q)) {
+                    cur = { line: i, text: t.slice(this.Q.length).trim(), answers: [], answerLines: [] };
+                    out.push(cur);
+                } else if (cur && t.startsWith(this.A)) {
+                    cur.answers.push(t.slice(this.A.length).trim());
+                    cur.answerLines.push(i);
+                } else if (t) {
+                    cur = null;
+                }
+            });
+            return out.filter(q => q.text);
+        },
+        open(card) { return this.parse(card?.content).filter(q => !q.answers.some(Boolean)); },
+        answered(card) { return this.parse(card?.content).filter(q => q.answers.some(Boolean)); },
+
+        // 在 textarea 插入：問題＝新的一行開頭「❓ 」；回答＝目前這行下面插入「　💬 」
+        insert(textarea, kind) {
+            if (!textarea) return;
+            if (kind === 'todo') return this.insertLine(textarea, '- [ ] ');
+            const v = textarea.value;
+            const pos = textarea.selectionStart ?? v.length;
+            let insertAt, text;
+            if (kind === 'answer') {
+                const lineEnd = v.indexOf('\n', pos);
+                insertAt = lineEnd === -1 ? v.length : lineEnd;
+                text = `\n    ${this.A} `;
+            } else {
+                const lineStart = v.lastIndexOf('\n', pos - 1) + 1;
+                const lineText = v.slice(lineStart, (v.indexOf('\n', pos) === -1 ? v.length : v.indexOf('\n', pos)));
+                if (!lineText.trim()) { insertAt = lineStart; text = `${this.Q} `; }
+                else { const lineEnd = v.indexOf('\n', pos); insertAt = lineEnd === -1 ? v.length : lineEnd; text = `\n${this.Q} `; }
+            }
+            textarea.value = v.slice(0, insertAt) + text + v.slice(insertAt);
+            const caret = insertAt + text.length;
+            textarea.focus();
+            textarea.selectionStart = textarea.selectionEnd = caret;
+            textarea.dispatchEvent(new Event('input', { bubbles: true }));
+        },
+
+        insertLine(textarea, prefix) {
+            const v = textarea.value;
+            const pos = textarea.selectionStart ?? v.length;
+            const lineStart = v.lastIndexOf('\n', pos - 1) + 1;
+            const lineEndIdx = v.indexOf('\n', pos);
+            const lineText = v.slice(lineStart, lineEndIdx === -1 ? v.length : lineEndIdx);
+            let insertAt, text;
+            if (!lineText.trim()) { insertAt = lineStart; text = prefix; }
+            else { insertAt = lineEndIdx === -1 ? v.length : lineEndIdx; text = `\n${prefix}`; }
+            textarea.value = v.slice(0, insertAt) + text + v.slice(insertAt);
+            textarea.focus();
+            textarea.selectionStart = textarea.selectionEnd = insertAt + text.length;
+            textarea.dispatchEvent(new Event('input', { bubbles: true }));
+        },
+
+        insertInCard(cardId, kind) {
+            const ta = document.querySelector(`[data-fk="${CSS.escape(`timeline:${cardId}:content`)}"]`);
+            this.insert(ta, kind);
+        },
+
+        // 所有卡片裡還沒答案的問題
+        allOpen(filterFn = null) {
+            const out = [];
+            app.worktime.allCards().forEach(row => {
+                if (filterFn && !filterFn(row)) return;
+                if (Number(row.card.status) === 2) return;
+                this.open(row.card).forEach(q => out.push({ ...row, q }));
+            });
+            return out;
+        }
+    },
+
     tidy: {
         // 已勾選的待辦（含它底下縮排的子行）
         findDone(content) {
@@ -5931,14 +6034,18 @@ ${planned.length ? planned.map(({ card }) => this.cardLine(card)).join('\n') : '
             const card = app.worktime.getCard(cardId);
             if (!card) return;
             if (source === 'sandbox') app.sandbox.saveActiveNote();
-            const { done, remaining } = this.findDone(card.content);
-            if (!done.length) { app.ui.toast('沒有已勾選的待辦需要整理'); return; }
+            const { done, remaining: afterTodos } = this.findDone(card.content);
+            // 已有答案的問題（❓＋💬）一起移走
+            const answered = app.questions.parse(afterTodos).filter(q => q.answers.some(Boolean));
+            const drop = new Set(answered.flatMap(q => [q.line, ...q.answerLines]));
+            const remaining = afterTodos.split('\n').filter((_, i) => !drop.has(i)).join('\n').replace(/\n{3,}/g, '\n\n').replace(/\s+$/, '');
+            if (!done.length && !answered.length) { app.ui.toast('沒有已勾選的待辦或已回答的問題需要整理'); return; }
             const esc = s => app.entries.escapeHtml(s);
             const ok = await app.ui.dialog({
-                title: `整理：${done.length} 項已完成`,
-                html: `<p>這些已勾選的待辦會移到今天的一筆工作紀錄，並從卡片筆記裡移除：</p>
-                    <div class="diff-block">${done.map(b => `<div style="padding:2px 0;font-size:.86rem;">✅ ${esc(b[0])}${b.length > 1 ? `<br><small style="color:#64748b;">${b.slice(1).map(esc).join('<br>')}</small>` : ''}</div>`).join('')}</div>
-                    <p class="data-note">沒勾的待辦、問題、連結和其他文字都不會動。</p>`,
+                title: `整理：${done.length ? `${done.length} 項已完成` : ''}${done.length && answered.length ? '、' : ''}${answered.length ? `${answered.length} 個問題已回答` : ''}`,
+                html: `<p>這些會移到今天的一筆工作紀錄，並從卡片筆記裡移除：</p>
+                    <div class="diff-block">${done.map(b => `<div style="padding:2px 0;font-size:.86rem;">✅ ${esc(b[0])}${b.length > 1 ? `<br><small style="color:#64748b;">${b.slice(1).map(esc).join('<br>')}</small>` : ''}</div>`).join('')}${answered.map(q => `<div style="padding:2px 0;font-size:.86rem;">❓ ${esc(q.text)}<br><small style="color:#64748b;">💬 ${q.answers.filter(Boolean).map(esc).join('<br>💬 ')}</small></div>`).join('')}</div>
+                    <p class="data-note">沒勾的待辦、還沒回答的問題、連結和其他文字都不會動。</p>`,
                 buttons: [{ label: '取消', value: false }, { label: '整理', value: true, primary: true }]
             });
             if (!ok) return;
@@ -5947,15 +6054,18 @@ ${planned.length ? planned.map(({ card }) => this.cardLine(card)).join('\n') : '
             if (!Array.isArray(card.entries)) card.entries = [];
             card.entries.push({
                 id: app.makeId('entry'),
-                title: `完成：${d.getMonth() + 1}/${d.getDate()} 整理（${done.length} 項）`,
-                content: done.map(b => `✅ ${b[0]}${b.length > 1 ? '\n' + b.slice(1).map(x => `   ${x}`).join('\n') : ''}`).join('\n'),
+                title: `完成：${d.getMonth() + 1}/${d.getDate()} 整理（${[done.length ? `${done.length} 項` : '', answered.length ? `${answered.length} 題` : ''].filter(Boolean).join('、')}）`,
+                content: [
+                    ...done.map(b => `✅ ${b[0]}${b.length > 1 ? '\n' + b.slice(1).map(x => `   ${x}`).join('\n') : ''}`),
+                    ...answered.map(q => `❓ ${q.text}\n${q.answers.filter(Boolean).map(a => `   💬 ${a}`).join('\n')}`)
+                ].join('\n'),
                 createdAt: now, updatedAt: now
             });
             card.content = remaining;
             app.saveToLocal();
             app.refreshCard(cardId, source);
             if (app.state.view === 'sandbox' && app.state.sandbox.activeTaskId === cardId) app.sandbox.refreshActiveNoteUI();
-            app.ui.toast(`已把 ${done.length} 項移到工作紀錄`);
+            app.ui.toast(`已移到工作紀錄：${[done.length ? `${done.length} 項待辦` : '', answered.length ? `${answered.length} 個問題` : ''].filter(Boolean).join('、')}`);
         }
     },
 
@@ -6317,6 +6427,7 @@ ${planned.length ? planned.map(({ card }) => this.cardLine(card)).join('\n') : '
             card[field] = value;
             app.saveToLocal();
             app.taskNav.scheduleRender();
+            if (field === 'content') { clearTimeout(this._badgeT); this._badgeT = setTimeout(() => app.updateCardBadges(id), 300); }
         },
 
         // 舊介面相容：一般欄位更新。
