@@ -1,5 +1,5 @@
 // =====================================================================
-// 白板 & 心流沙盒 v3.2
+// 白板 & 心流沙盒 v3.3
 // ---------------------------------------------------------------------
 // v3.0 重整重點（資料邏輯）：
 // 1. 所有修改只走一個入口 app.saveToLocal()（= store.markDirty）：
@@ -27,11 +27,23 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 const provider = new firebase.auth.GoogleAuthProvider();
 
-const APP_VERSION = '3.2';
+const APP_VERSION = '3.3';
 const SCHEMA_VERSION = 3;
 const CLOUD_DOC_SOFT_LIMIT = 750 * 1024;   // 超過時提醒
 const CLOUD_DOC_HARD_LIMIT = 1000 * 1000;  // Firestore 單一文件上限約 1 MiB，保守一點
 const POMODORO_MS = 25 * 60 * 1000;
+
+// 公司工時表的工作類別（工時紀錄可選；工作日誌與 Excel 會照這個輸出）
+const WORK_CATEGORIES = [
+    'P01 文件/簡報製作', 'P02 問題追蹤/派工/時程控管', 'P03 網站企劃/系統規劃', 'P04 系統測試/網站檢核', 'P05 資料蒐集/盤點/分析',
+    'U01 內部會議/討論/聯繫', 'U02 外部會議/討論/聯繫', 'U03 請款/報表/公文作業', 'U04 工作日誌填寫', 'U05 課程/訓練/進修',
+    'U06 公司/部門/行政事務', 'U07 其他', '000 休假', '執行工作'
+];
+function workCategoryOptions(selected, emptyLabel = '（不指定）') {
+    const esc = v => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    const list = selected && !WORK_CATEGORIES.includes(selected) ? [...WORK_CATEGORIES, selected] : WORK_CATEGORIES;
+    return `<option value="">${emptyLabel}</option>` + list.map(c => `<option value="${esc(c)}" ${c === selected ? 'selected' : ''}>${esc(c)}</option>`).join('');
+}
 
 function defaultMeta() {
     return {
@@ -2358,6 +2370,10 @@ const app = {
                                     </select>
                                 </label>
                                 <label class="task-meta-field">
+                                    <span class="task-meta-label">預設工時類別 <span class="pm-hint">（計時／補登時自動帶入）</span></span>
+                                    <select class="task-meta-input" ${fk('timeCategory')} onchange="app.worktime.updateCardField('${id}','timeCategory',this.value,'${source}')">${workCategoryOptions(card.timeCategory || '')}</select>
+                                </label>
+                                <label class="task-meta-field">
                                     <span class="task-meta-label">任務分類（可留白）</span>
                                     <input class="task-meta-input" ${fk('category')} value="${category}" placeholder="例如：圖表處理" oninput="app.worktime.editText('${id}','category',this.value,'${source}')">
                                 </label>
@@ -2459,6 +2475,7 @@ const app = {
                             <input id="logedit-h-${source}-${id}" class="worktime-input" type="number" min="0" step="1" value="${Math.floor(mins / 60) || ''}" placeholder="小時">
                             <input id="logedit-m-${source}-${id}" class="worktime-input" type="number" min="0" step="1" value="${mins % 60 || ''}" placeholder="分鐘">
                         </span>
+                        <select id="logedit-cat-${source}-${id}" class="worktime-input">${workCategoryOptions(log.category || '')}</select>
                         <input id="logedit-note-${source}-${id}" class="worktime-input" type="text" value="${esc(log.note || '')}" placeholder="工作內容" onkeydown="if(event.key==='Enter') app.worktime.saveLogEdit('${id}','${log.id}','${source}')">
                         <button class="worklog-action-btn" onclick="app.worktime.cancelLogEdit('${id}','${source}')">取消</button>
                         <button class="worklog-action-btn" style="color:#4338ca;border-color:#c7d2fe;" onclick="app.worktime.saveLogEdit('${id}','${log.id}','${source}')">儲存</button>
@@ -2468,7 +2485,7 @@ const app = {
                 <div class="worktime-row">
                     <span>${esc(log.workDate || '')}${this.logTimeRange(log) ? `<br><small style="color:#94a3b8">${esc(this.logTimeRange(log))}</small>` : ''}</span>
                     <strong>${this.formatMinutes(this.logMinutes(log))}</strong>
-                    <span class="worktime-row-note" title="${esc(log.note || '')}">${esc(log.note || (log.source === 'timer' ? '心流計時' : '手動補登'))} <span class="worktime-source">${log.source === 'timer' ? '· 計時' : '· 手動'}</span></span>
+                    <span class="worktime-row-note" title="${esc(log.note || '')}">${log.category ? `<span class="worktime-cat">${esc(log.category.split(' ')[0])}</span> ` : ''}${esc(log.note || (log.source === 'timer' ? '心流計時' : '手動補登'))} <span class="worktime-source">${log.source === 'timer' ? '· 計時' : '· 手動'}</span></span>
                     <button class="worktime-edit" title="修改此筆工時" onclick="app.worktime.startLogEdit('${id}','${log.id}','${source}')">✏️</button>
                     <button class="worktime-delete" title="刪除此筆工時" onclick="app.worktime.deleteLog('${id}','${log.id}','${source}')">×</button>
                 </div>`;
@@ -2500,6 +2517,10 @@ const app = {
                         <label class="task-meta-field">
                             <span class="task-meta-label">分鐘</span>
                             <input id="worktime-minutes-${source}-${id}" class="worktime-input" type="number" min="0" step="1" placeholder="30">
+                        </label>
+                        <label class="task-meta-field">
+                            <span class="task-meta-label">類別</span>
+                            <select id="worktime-cat-${source}-${id}" class="worktime-input">${workCategoryOptions(card.timeCategory || '')}</select>
                         </label>
                         <label class="task-meta-field worktime-note-field">
                             <span class="task-meta-label">工作內容</span>
@@ -2645,8 +2666,11 @@ const app = {
                 minutes: totalMinutes,
                 note: noteEl?.value.trim() || '手動補登',
                 source: 'manual', createdAt: now, updatedAt: now,
-                ...(/^\d{2}:\d{2}$/.test(startTime) ? { startTime } : {})
+                ...(/^\d{2}:\d{2}$/.test(startTime) ? { startTime } : {}),
+                ...((() => { const c = document.getElementById(`worktime-cat-${source}-${cardId}`)?.value || ''; return c ? { category: c } : {}; })())
             });
+            const catSel = document.getElementById(`worktime-cat-${source}-${cardId}`)?.value || '';
+            if (catSel && !card.timeCategory) card.timeCategory = catSel; // 第一次選的類別記成這張卡的預設
             this.ensureStarted(card, workDate);
             app.saveToLocal();
             app.refreshCard(cardId, source);
@@ -2668,7 +2692,8 @@ const app = {
                 seconds: sec,
                 note,
                 source: 'timer', createdAt: now, updatedAt: now,
-                ...(span ? { startTime: this.clock(span[0]), endTime: this.clock(span[1]) } : {})
+                ...(span ? { startTime: this.clock(span[0]), endTime: this.clock(span[1]) } : {}),
+                ...(card.timeCategory ? { category: card.timeCategory } : {})
             });
             this.ensureStarted(card, day);
             app.saveToLocal();
@@ -2714,6 +2739,7 @@ const app = {
             const h = Math.max(0, Number(document.getElementById(`logedit-h-${source}-${cardId}`)?.value) || 0);
             const m = Math.max(0, Number(document.getElementById(`logedit-m-${source}-${cardId}`)?.value) || 0);
             const note = document.getElementById(`logedit-note-${source}-${cardId}`)?.value || '';
+            const cat = document.getElementById(`logedit-cat-${source}-${cardId}`)?.value || '';
             const totalMinutes = Math.round((h * 60 + m) * 100) / 100;
             if (!this.parseLocalDate(date)) { app.ui.toast('日期格式不正確', 'warn'); return; }
             if (totalMinutes <= 0) { app.ui.toast('工時必須大於 0；不要的紀錄請按 × 刪除', 'warn'); return; }
@@ -2722,6 +2748,7 @@ const app = {
             delete log.hours;
             delete log.seconds;
             log.note = note.trim() || (log.source === 'timer' ? '心流計時' : '手動補登');
+            if (cat) log.category = cat; else delete log.category;
             log.updatedAt = new Date().toISOString();
             this.ensureStarted(card, log.workDate);
             delete this.logEditing[`${source}:${cardId}`];
@@ -4904,7 +4931,7 @@ const app = {
                     if (!inR(log.workDate) || W.logMinutes(log) <= 0) return;
                     const range = W.logTimeRange(log);
                     rows.push({
-                        kind: 'work', date: log.workDate, time: range, sortTime: range ? range.slice(0, 5) : '99:99',
+                        kind: 'work', category: log.category || card.timeCategory || '', date: log.workDate, time: range, sortTime: range ? range.slice(0, 5) : '99:99',
                         minutes: W.logMinutes(log), project, title, tabName,
                         content: String(log.note || '').trim() || (log.source === 'timer' ? '心流計時' : '手動補登'),
                         source: log.source === 'timer' ? '計時' : '手動', cardId: card.id
@@ -4974,7 +5001,8 @@ const app = {
                     const t = x.time ? `${x.time} ` : '';
                     const dur = x.minutes ? `（${W.formatMinutes(x.minutes)}）` : '';
                     const mark = x.kind === 'note' ? '📝 ' : '';
-                    lines.push(`・${t}${mark}[${x.project}] ${x.title}：${x.content}${dur}`);
+                    const cat = x.kind === 'work' && x.category ? `〔${x.category}〕` : '';
+                    lines.push(`・${t}${mark}${cat}[${x.project}] ${x.title}：${x.content}${dur}`);
                 });
             });
             lines.push('', `合計工時：${W.formatMinutes(total)}`);
@@ -5000,7 +5028,7 @@ const app = {
                     <div class="journal-day-head"><b>${esc(this.dayLabel(date))}</b><span>${W.formatMinutes(list.reduce((s, x) => s + x.minutes, 0))}</span></div>
                     ${list.map(x => `<button type="button" class="journal-row ${x.kind}" onclick="app.actions.jumpToCard('${x.cardId}')">
                         <span class="journal-time">${esc(x.time || '—')}</span>
-                        <span class="journal-main"><span class="journal-proj">${esc(x.project)}</span> ${esc(x.title)}<br><small>${x.kind === 'note' ? `📝 ${esc(x.source)}：` : ''}${esc(x.content)}</small></span>
+                        <span class="journal-main">${x.kind === 'work' && x.category ? `<span class="journal-cat">${esc(x.category)}</span> ` : ''}<span class="journal-proj">${esc(x.project)}</span> ${esc(x.title)}<br><small>${x.kind === 'note' ? `📝 ${esc(x.source)}：` : ''}${esc(x.content)}</small></span>
                         <span class="journal-dur">${x.minutes ? esc(W.formatMinutes(x.minutes)) : ''}</span>
                     </button>`).join('')}
                 </div>`).join('');
@@ -5044,6 +5072,18 @@ const app = {
                     ws.views = [{ state: 'frozen', ySplit: 1 }];
                 };
                 // 1) 每日彙總（一天一張卡一列）
+                // 0) 公司工時表格式：日期｜工作類別｜工作項目｜專案｜分鐘（同一天、同卡、同類別合併）
+                const s0 = wb.addWorksheet('公司工時格式');
+                s0.addRow(['日期', '工作類別', '工作項目', '專案', '工時(分鐘)']);
+                const groups = new Map();
+                data.rows.filter(x => x.kind === 'work').forEach(x => {
+                    const k = `${x.date}|${x.cardId}|${x.category}`;
+                    if (!groups.has(k)) groups.set(k, { date: x.date, category: x.category || '（未選類別）', title: x.title, project: x.project, minutes: 0 });
+                    groups.get(k).minutes += x.minutes;
+                });
+                [...groups.values()].forEach(g => s0.addRow([g.date, g.category, g.title, g.project, Math.round(g.minutes)]));
+                style(s0, [12, 26, 30, 40, 11]);
+                s0.autoFilter = { from: 'A1', to: 'E1' };
                 const s1 = wb.addWorksheet('每日彙總');
                 s1.addRow(['日期', '星期', '專案', '工作項目', '工作內容', '工時(小時)']);
                 this.summary(data).forEach(g => {
@@ -5056,10 +5096,10 @@ const app = {
                 s1.autoFilter = { from: 'A1', to: 'F1' };
                 // 2) 明細（每一筆）
                 const s2 = wb.addWorksheet('明細');
-                s2.addRow(['日期', '時間', '工時(分鐘)', '工時(小時)', '專案', '工作項目', '內容', '來源', '工作區']);
-                data.rows.forEach(x => s2.addRow([x.date, x.time, Math.round(x.minutes), x.minutes ? this.hours(x.minutes) : '', x.project, x.title, x.content, x.source, x.tabName]));
-                style(s2, [12, 13, 11, 11, 16, 26, 48, 10, 12]);
-                s2.autoFilter = { from: 'A1', to: 'I1' };
+                s2.addRow(['日期', '時間', '工時(分鐘)', '工時(小時)', '工作類別', '專案', '工作項目', '內容', '來源', '工作區']);
+                data.rows.forEach(x => s2.addRow([x.date, x.time, Math.round(x.minutes), x.minutes ? this.hours(x.minutes) : '', x.kind === 'work' ? (x.category || '') : '', x.project, x.title, x.content, x.source, x.tabName]));
+                style(s2, [12, 13, 11, 11, 24, 16, 26, 48, 10, 12]);
+                s2.autoFilter = { from: 'A1', to: 'J1' };
                 // 3) 每日合計
                 const s3 = wb.addWorksheet('每日合計');
                 s3.addRow(['日期', '星期', '工時(小時)']);
