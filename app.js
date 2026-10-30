@@ -1,5 +1,5 @@
 // =====================================================================
-// 白板 & 心流沙盒 v3.1
+// 白板 & 心流沙盒 v3.2
 // ---------------------------------------------------------------------
 // v3.0 重整重點（資料邏輯）：
 // 1. 所有修改只走一個入口 app.saveToLocal()（= store.markDirty）：
@@ -27,7 +27,7 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 const provider = new firebase.auth.GoogleAuthProvider();
 
-const APP_VERSION = '3.1';
+const APP_VERSION = '3.2';
 const SCHEMA_VERSION = 3;
 const CLOUD_DOC_SOFT_LIMIT = 750 * 1024;   // 超過時提醒
 const CLOUD_DOC_HARD_LIMIT = 1000 * 1000;  // Firestore 單一文件上限約 1 MiB，保守一點
@@ -2466,7 +2466,7 @@ const app = {
                 }
                 return `
                 <div class="worktime-row">
-                    <span>${esc(log.workDate || '')}</span>
+                    <span>${esc(log.workDate || '')}${this.logTimeRange(log) ? `<br><small style="color:#94a3b8">${esc(this.logTimeRange(log))}</small>` : ''}</span>
                     <strong>${this.formatMinutes(this.logMinutes(log))}</strong>
                     <span class="worktime-row-note" title="${esc(log.note || '')}">${esc(log.note || (log.source === 'timer' ? '心流計時' : '手動補登'))} <span class="worktime-source">${log.source === 'timer' ? '· 計時' : '· 手動'}</span></span>
                     <button class="worktime-edit" title="修改此筆工時" onclick="app.worktime.startLogEdit('${id}','${log.id}','${source}')">✏️</button>
@@ -2488,6 +2488,10 @@ const app = {
                         <label class="task-meta-field">
                             <span class="task-meta-label">日期</span>
                             <input id="worktime-date-${source}-${id}" class="worktime-input" type="date" value="${defaultDate}">
+                        </label>
+                        <label class="task-meta-field">
+                            <span class="task-meta-label">開始（選填）</span>
+                            <input id="worktime-start-${source}-${id}" class="worktime-input" type="time">
                         </label>
                         <label class="task-meta-field">
                             <span class="task-meta-label">小時</span>
@@ -2632,6 +2636,7 @@ const app = {
                 return;
             }
             const workDate = this.parseLocalDate(dateEl?.value) ? dateEl.value : this.localDateString();
+            const startTime = (document.getElementById(`worktime-start-${source}-${cardId}`)?.value || '').slice(0, 5);
             if (!Array.isArray(card.workLogs)) card.workLogs = [];
             const now = new Date().toISOString();
             card.workLogs.push({
@@ -2639,7 +2644,8 @@ const app = {
                 workDate,
                 minutes: totalMinutes,
                 note: noteEl?.value.trim() || '手動補登',
-                source: 'manual', createdAt: now, updatedAt: now
+                source: 'manual', createdAt: now, updatedAt: now,
+                ...(/^\d{2}:\d{2}$/.test(startTime) ? { startTime } : {})
             });
             this.ensureStarted(card, workDate);
             app.saveToLocal();
@@ -2648,7 +2654,7 @@ const app = {
             app.ui.toast(`已補登 ${this.formatMinutes(totalMinutes)}`);
         },
 
-        addTimerLog(cardId, seconds, note = '心流計時', workDate = null) {
+        addTimerLog(cardId, seconds, note = '心流計時', workDate = null, span = null) {
             const card = this.getCard(cardId);
             const sec = Math.round(Number(seconds) || 0);
             if (!card || sec <= 0) return false;
@@ -2661,11 +2667,32 @@ const app = {
                 minutes: Math.round((sec / 60) * 100) / 100,
                 seconds: sec,
                 note,
-                source: 'timer', createdAt: now, updatedAt: now
+                source: 'timer', createdAt: now, updatedAt: now,
+                ...(span ? { startTime: this.clock(span[0]), endTime: this.clock(span[1]) } : {})
             });
             this.ensureStarted(card, day);
             app.saveToLocal();
             return true;
+        },
+
+        clock(ms) { const d = new Date(ms); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; },
+
+        // 這筆工時的時段（有就回傳 'HH:MM–HH:MM'）。舊的計時紀錄用寫入時間往回推。
+        logTimeRange(log) {
+            if (log.startTime && log.endTime) return `${log.startTime}–${log.endTime}`;
+            if (log.startTime) {
+                const [h, m] = log.startTime.split(':').map(Number);
+                const end = h * 60 + m + Math.round(this.logMinutes(log));
+                return end < 24 * 60 ? `${log.startTime}–${String(Math.floor(end / 60)).padStart(2, '0')}:${String(end % 60).padStart(2, '0')}` : log.startTime;
+            }
+            if (log.source === 'timer' && log.createdAt) {
+                const end = new Date(log.createdAt);
+                if (!Number.isNaN(end.getTime()) && this.localDateString(end) === log.workDate) {
+                    const start = new Date(end.getTime() - this.logMinutes(log) * 60000);
+                    if (this.localDateString(start) === log.workDate) return `${this.clock(start)}–${this.clock(end)}`;
+                }
+            }
+            return '';
         },
 
         startLogEdit(cardId, logId, source = 'timeline') {
@@ -3304,7 +3331,7 @@ const app = {
         addQuickLog() {
             const inputEl = document.getElementById('sb-quickLogInput'); const text = inputEl.value.trim(); if (!text) return;
             const noteArea = document.getElementById('sb-activeNoteArea');
-            const now = new Date(); const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+            const now = new Date(); const timeStr = `${now.getMonth() + 1}/${now.getDate()} ${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
             noteArea.value += `\n**[${timeStr}]** ${text}`;
             inputEl.value = ''; noteArea.scrollTop = noteArea.scrollHeight; this.saveActiveNote();
         },
@@ -3453,8 +3480,8 @@ const app = {
             }
         },
 
-        splitByDay(segments) {
-            const map = {};
+        splitByDay(segments, withSpan = false) {
+            const map = {}, span = {};
             (segments || []).forEach(([a, b]) => {
                 let s = a;
                 while (s < b) {
@@ -3463,10 +3490,12 @@ const app = {
                     const e = Math.min(b, nextMidnight);
                     const key = app.worktime.localDateString(d);
                     map[key] = (map[key] || 0) + (e - s);
+                    if (!span[key]) span[key] = [s, e];
+                    else { span[key][0] = Math.min(span[key][0], s); span[key][1] = Math.max(span[key][1], e); }
                     s = e;
                 }
             });
-            return map;
+            return withSpan ? { map, span } : map;
         },
 
         // 同一個瀏覽器開了兩個分頁時，只有「目前這段計時」的擁有者能寫入工時，避免重複記兩次。
@@ -3505,7 +3534,7 @@ const app = {
             const wasRunning = sb.timerStatus === 'RUNNING';
             this.closeSegment();
             const taskId = sb.timerTaskId;
-            const byDay = this.splitByDay(sb.segments);
+            const { map: byDay, span } = this.splitByDay(sb.segments, true);
             const totalMs = Object.values(byDay).reduce((a, b) => a + b, 0);
             sb.segments = [];
             const card = taskId ? app.worktime.getCard(taskId) : null;
@@ -3513,7 +3542,7 @@ const app = {
             if (card) {
                 Object.entries(byDay).sort().forEach(([day, ms]) => {
                     const sec = Math.round(ms / 1000);
-                    if (sec > 0 && app.worktime.addTimerLog(taskId, sec, note, day)) written += sec;
+                    if (sec > 0 && app.worktime.addTimerLog(taskId, sec, note, day, span[day])) written += sec;
                 });
             } else if (totalMs >= 60 * 1000) {
                 app.ui.toast(`這段 ${Math.round(totalMs / 60000)} 分鐘的計時沒有綁定卡片，沒有寫入工時。`, 'warn', 5000);
@@ -4810,6 +4839,7 @@ const app = {
                     ${block('⏳', '卡住／需要協助', 'waiting', data.waiting, '沒有在等別人的事。卡片「交付與進度」裡可以填「在等誰」。')}
                     ${block('📅', '下週預計', 'next', data.next, '下週還沒有排定的工作包。')}
                 </div>
+                ${app.journal.renderPanel()}
                 <div class="report-text-wrap">
                     <div class="report-text-head">
                         <b>可以直接貼給主管或合作者的文字</b>
@@ -4824,6 +4854,233 @@ const app = {
         },
 
         copy() { app.worktime.copyText(this.text(), '已複製週報文字'); }
+    },
+
+    // ==========================================
+    // 🗒 工作日誌：日期｜時間｜工時｜專案｜卡片｜內容（給公司填工時用）
+    // 來源：工時紀錄（計時／補登）、卡片的工作紀錄、心流沙盒的「閃念」
+    // ==========================================
+    journal: {
+        filters: { range: 'week', from: '', to: '', withNotes: true },
+
+        range() {
+            const W = app.worktime;
+            const today = new Date();
+            const f = this.filters;
+            let s, e;
+            if (f.range === 'lastweek') { s = W.addDays(W.startOfWeek(today), -7); e = W.addDays(s, 6); }
+            else if (f.range === 'month') { s = W.startOfMonth(today); e = W.endOfMonth(today); }
+            else if (f.range === 'lastmonth') { s = W.startOfMonth(new Date(today.getFullYear(), today.getMonth() - 1, 1)); e = W.endOfMonth(s); }
+            else if (f.range === 'today') { s = new Date(today); e = new Date(today); }
+            else if (f.range === 'custom' && W.parseLocalDate(f.from) && W.parseLocalDate(f.to)) { s = W.parseLocalDate(f.from); e = W.parseLocalDate(f.to); if (e < s) [s, e] = [e, s]; }
+            else { s = W.startOfWeek(today); e = W.addDays(s, 6); }
+            return { s: W.localDateString(s), e: W.localDateString(e) };
+        },
+
+        // 閃念：「**[10/30 09:12]** 內容」（舊格式只有時間、沒有日期的略過）
+        quickNotes(card) {
+            const out = [];
+            const year = new Date().getFullYear();
+            String(card.content || '').split('\n').forEach(line => {
+                const m = line.match(/^\s*\*\*\[(\d{1,2})\/(\d{1,2})\s+(\d{2}:\d{2})\]\*\*\s*(.*)$/);
+                if (!m) return;
+                let y = year;
+                const date = `${y}-${String(m[1]).padStart(2, '0')}-${String(m[2]).padStart(2, '0')}`;
+                if (date > app.worktime.localDateString()) y -= 1; // 跨年：未來日期視為去年
+                out.push({ date: `${y}-${String(m[1]).padStart(2, '0')}-${String(m[2]).padStart(2, '0')}`, time: m[3], text: m[4].trim() });
+            });
+            return out;
+        },
+
+        collect() {
+            const W = app.worktime;
+            const r = this.range();
+            const inR = d => d && d >= r.s && d <= r.e;
+            const rows = [];
+            W.allCards().forEach(({ card, tabName }) => {
+                const project = String(card.project || '').trim() || '未分類';
+                const title = String(card.title || '').trim() || '未命名卡片';
+                W.getLogs(card).forEach(log => {
+                    if (!inR(log.workDate) || W.logMinutes(log) <= 0) return;
+                    const range = W.logTimeRange(log);
+                    rows.push({
+                        kind: 'work', date: log.workDate, time: range, sortTime: range ? range.slice(0, 5) : '99:99',
+                        minutes: W.logMinutes(log), project, title, tabName,
+                        content: String(log.note || '').trim() || (log.source === 'timer' ? '心流計時' : '手動補登'),
+                        source: log.source === 'timer' ? '計時' : '手動', cardId: card.id
+                    });
+                });
+                if (!this.filters.withNotes) return;
+                (card.entries || []).forEach(en => {
+                    const d = en.createdAt ? new Date(en.createdAt) : null;
+                    if (!d || Number.isNaN(d.getTime())) return;
+                    const date = W.localDateString(d);
+                    if (!inR(date)) return;
+                    const text = [String(en.title || '').trim(), String(en.content || '').trim()].filter(Boolean).join('：');
+                    rows.push({ kind: 'note', date, time: W.clock(d), sortTime: W.clock(d), minutes: 0, project, title, tabName, content: text || '（空白紀錄）', source: '工作紀錄', cardId: card.id });
+                });
+                this.quickNotes(card).forEach(q => {
+                    if (!inR(q.date)) return;
+                    rows.push({ kind: 'note', date: q.date, time: q.time, sortTime: q.time, minutes: 0, project, title, tabName, content: q.text, source: '閃念', cardId: card.id });
+                });
+            });
+            rows.sort((a, b) => a.date.localeCompare(b.date) || a.sortTime.localeCompare(b.sortTime) || a.project.localeCompare(b.project, 'zh-Hant'));
+            const days = new Map();
+            rows.forEach(x => { if (!days.has(x.date)) days.set(x.date, []); days.get(x.date).push(x); });
+            return { r, rows, days };
+        },
+
+        dayLabel(date) {
+            const d = app.worktime.parseLocalDate(date);
+            return d ? `${d.getMonth() + 1}/${d.getDate()}（${'日一二三四五六'[d.getDay()]}）` : date;
+        },
+        hours(min) { return Math.round(min / 60 * 100) / 100; },
+
+        // 每天 × 卡片的彙總：大多數公司工時表要的就是這個
+        summary(data) {
+            const out = [];
+            data.days.forEach((list, date) => {
+                const byCard = new Map();
+                list.forEach(x => {
+                    const k = x.cardId;
+                    if (!byCard.has(k)) byCard.set(k, { date, project: x.project, title: x.title, minutes: 0, items: [], cardId: k });
+                    const g = byCard.get(k);
+                    g.minutes += x.minutes;
+                    if (x.kind === 'work' && !['心流計時', '手動補登'].includes(x.content) && !g.items.includes(x.content)) g.items.push(x.content);
+                    if (x.kind === 'note' && !g.items.includes(x.content)) g.items.push(x.content);
+                });
+                byCard.forEach(g => {
+                    if (!g.items.length) {
+                        const card = app.worktime.getCard(g.cardId);
+                        const d = String(card?.deliverable || '').trim();
+                        g.items.push(d ? `執行：${d}` : '（未填工作內容）');
+                    }
+                    out.push(g);
+                });
+            });
+            return out;
+        },
+
+        text(data = this.collect()) {
+            const W = app.worktime;
+            if (!data.rows.length) return `【工作日誌】${data.r.s} ～ ${data.r.e}\n（這段期間沒有紀錄）`;
+            const lines = [`【工作日誌】${data.r.s} ～ ${data.r.e}`];
+            let total = 0;
+            data.days.forEach((list, date) => {
+                const dayMin = list.reduce((s, x) => s + x.minutes, 0);
+                total += dayMin;
+                lines.push('', `■ ${this.dayLabel(date)}　共 ${W.formatMinutes(dayMin)}`);
+                list.forEach(x => {
+                    const t = x.time ? `${x.time} ` : '';
+                    const dur = x.minutes ? `（${W.formatMinutes(x.minutes)}）` : '';
+                    const mark = x.kind === 'note' ? '📝 ' : '';
+                    lines.push(`・${t}${mark}[${x.project}] ${x.title}：${x.content}${dur}`);
+                });
+            });
+            lines.push('', `合計工時：${W.formatMinutes(total)}`);
+            return lines.join('\n');
+        },
+
+        set(field, value) {
+            if (field === 'range') this.filters.range = value;
+            if (field === 'from' || field === 'to') { this.filters[field] = value; this.filters.range = 'custom'; }
+            if (field === 'withNotes') this.filters.withNotes = !!value;
+            app.report.render();
+        },
+
+        renderPanel() {
+            const esc = s => app.entries.escapeHtml(s);
+            const W = app.worktime;
+            const data = this.collect();
+            const f = this.filters;
+            const totalMin = data.rows.reduce((s, x) => s + x.minutes, 0);
+            const opt = (v, l) => `<option value="${v}" ${f.range === v ? 'selected' : ''}>${l}</option>`;
+            const days = [...data.days.entries()].map(([date, list]) => `
+                <div class="journal-day">
+                    <div class="journal-day-head"><b>${esc(this.dayLabel(date))}</b><span>${W.formatMinutes(list.reduce((s, x) => s + x.minutes, 0))}</span></div>
+                    ${list.map(x => `<button type="button" class="journal-row ${x.kind}" onclick="app.actions.jumpToCard('${x.cardId}')">
+                        <span class="journal-time">${esc(x.time || '—')}</span>
+                        <span class="journal-main"><span class="journal-proj">${esc(x.project)}</span> ${esc(x.title)}<br><small>${x.kind === 'note' ? `📝 ${esc(x.source)}：` : ''}${esc(x.content)}</small></span>
+                        <span class="journal-dur">${x.minutes ? esc(W.formatMinutes(x.minutes)) : ''}</span>
+                    </button>`).join('')}
+                </div>`).join('');
+            return `
+                <section class="journal-panel">
+                    <div class="report-text-head">
+                        <b>🗒 工作日誌（給公司填工時用）</b>
+                        <span style="display:flex;gap:6px;flex-wrap:wrap;">
+                            <button class="excel-copy-btn" onclick="app.journal.copy()">📋 複製日誌文字</button>
+                            <button class="excel-copy-btn" onclick="app.journal.exportXlsx()">⬇️ 匯出 Excel</button>
+                        </span>
+                    </div>
+                    <div class="journal-controls">
+                        <select class="gantt-filter-select" onchange="app.journal.set('range',this.value)">
+                            ${opt('today', '今天')}${opt('week', '本週')}${opt('lastweek', '上週')}${opt('month', '本月')}${opt('lastmonth', '上個月')}${opt('custom', '自訂日期')}
+                        </select>
+                        <input type="date" class="gantt-filter-select" value="${esc(f.range === 'custom' ? f.from : data.r.s)}" onchange="app.journal.set('from',this.value)">
+                        <span>～</span>
+                        <input type="date" class="gantt-filter-select" value="${esc(f.range === 'custom' ? f.to : data.r.e)}" onchange="app.journal.set('to',this.value)">
+                        <label class="journal-check"><input type="checkbox" ${f.withNotes ? 'checked' : ''} onchange="app.journal.set('withNotes',this.checked)"> 包含工作紀錄與閃念</label>
+                        <span class="report-hours">合計 <b>${W.formatMinutes(totalMin)}</b></span>
+                    </div>
+                    ${data.rows.length ? `<div class="journal-days">${days}</div>` : '<div class="data-empty" style="padding:12px;">這段期間沒有工時或工作紀錄。用卡片上的 ⏱️ 計時，或在「工時」補登，就會出現在這裡。</div>'}
+                    <div class="data-note" style="padding:0 12px 10px;">時間欄：計時的紀錄會自動有起訖時間；補登時可以選填「開始」時間。只有日期的補登，時間欄會留白。</div>
+                </section>`;
+        },
+
+        copy() { app.worktime.copyText(this.text(), '已複製工作日誌'); },
+
+        async exportXlsx() {
+            if (!window.ExcelJS) return app.ui.toast('Excel 匯出元件尚未載入，請確認網路後重新整理', 'warn');
+            const W = app.worktime;
+            const data = this.collect();
+            try {
+                const wb = new ExcelJS.Workbook();
+                wb.creator = '白板 & 心流沙盒';
+                const style = (ws, widths) => {
+                    W.styleExcelHeader(ws.getRow(1));
+                    widths.forEach((w, i) => ws.getColumn(i + 1).width = w);
+                    ws.eachRow((row, n) => { if (n > 1) row.alignment = { vertical: 'top', wrapText: true }; });
+                    ws.views = [{ state: 'frozen', ySplit: 1 }];
+                };
+                // 1) 每日彙總（一天一張卡一列）
+                const s1 = wb.addWorksheet('每日彙總');
+                s1.addRow(['日期', '星期', '專案', '工作項目', '工作內容', '工時(小時)']);
+                this.summary(data).forEach(g => {
+                    const d = W.parseLocalDate(g.date);
+                    s1.addRow([g.date, d ? '日一二三四五六'[d.getDay()] : '', g.project, g.title, g.items.join('；'), this.hours(g.minutes)]);
+                });
+                const n1 = s1.rowCount;
+                s1.addRow(['', '', '', '', '合計', { formula: `SUM(F2:F${Math.max(2, n1)})` }]).font = { bold: true };
+                style(s1, [12, 6, 16, 26, 48, 11]);
+                s1.autoFilter = { from: 'A1', to: 'F1' };
+                // 2) 明細（每一筆）
+                const s2 = wb.addWorksheet('明細');
+                s2.addRow(['日期', '時間', '工時(分鐘)', '工時(小時)', '專案', '工作項目', '內容', '來源', '工作區']);
+                data.rows.forEach(x => s2.addRow([x.date, x.time, Math.round(x.minutes), x.minutes ? this.hours(x.minutes) : '', x.project, x.title, x.content, x.source, x.tabName]));
+                style(s2, [12, 13, 11, 11, 16, 26, 48, 10, 12]);
+                s2.autoFilter = { from: 'A1', to: 'I1' };
+                // 3) 每日合計
+                const s3 = wb.addWorksheet('每日合計');
+                s3.addRow(['日期', '星期', '工時(小時)']);
+                data.days.forEach((list, date) => {
+                    const d = W.parseLocalDate(date);
+                    s3.addRow([date, d ? '日一二三四五六'[d.getDay()] : '', this.hours(list.reduce((s, x) => s + x.minutes, 0))]);
+                });
+                style(s3, [12, 6, 11]);
+
+                const buf = await wb.xlsx.writeBuffer();
+                const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url; a.download = `工作日誌_${data.r.s.replace(/-/g, '')}-${data.r.e.replace(/-/g, '')}.xlsx`;
+                document.body.appendChild(a); a.click(); a.remove();
+                setTimeout(() => URL.revokeObjectURL(url), 1000);
+            } catch (err) {
+                console.error(err);
+                app.ui.toast('Excel 匯出失敗：' + (err?.message || err), 'warn', 6000);
+            }
+        }
     },
 
     // ==========================================

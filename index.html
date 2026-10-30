@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>白板 & 心流沙盒 v3.1</title>
+    <title>白板 & 心流沙盒 v3.2</title>
     
     <!-- Firebase Compat -->
     <script src="https://www.gstatic.com/firebasejs/10.8.1/firebase-app-compat.js"></script>
@@ -388,7 +388,7 @@
         .variance-negative { color:#047857 !important; }
         .color-select-wrap { display:flex; align-items:center; gap:6px; }
         .color-chip { width:13px; height:13px; border-radius:50%; border:1px solid rgba(0,0,0,.15); flex:0 0 auto; }
-        .worktime-form { grid-template-columns:118px 82px 82px minmax(150px,1fr) auto; }
+        .worktime-form { grid-template-columns:118px 96px 72px 72px minmax(150px,1fr) auto; }
         .worktime-row { grid-template-columns:88px 78px minmax(0,1fr) auto auto; }
         .worktime-edit { border:0; background:transparent; color:#4338ca; cursor:pointer; padding:2px 5px; }
         .gantt-filter-bar { margin:0 auto 10px; max-width:980px; display:flex; align-items:flex-end; justify-content:center; gap:10px; flex-wrap:wrap; padding:10px 12px; background:#fff; border:1px solid #e2e8f0; border-radius:8px; }
@@ -683,6 +683,25 @@
             .report-hours { margin-left:0; }
             .card-footer .input-project { min-width:0; flex:1; }
         }
+
+        /* ===== v3.2：工作日誌 ===== */
+        .journal-panel { margin-top:14px; border:1px solid #e2e8f0; border-radius:10px; overflow:hidden; background:#fff; }
+        .journal-controls { display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding:10px 12px; border-bottom:1px solid #f1f5f9; }
+        .journal-check { font-size:.84rem; color:#475569; display:inline-flex; gap:4px; align-items:center; }
+        .journal-days { max-height:520px; overflow-y:auto; padding:6px 12px 10px; }
+        .journal-day { margin:8px 0 12px; }
+        .journal-day-head { display:flex; justify-content:space-between; padding:4px 2px; border-bottom:2px solid #e0e7ff; color:#3730a3; font-size:.9rem; }
+        .journal-row { display:grid; grid-template-columns:96px minmax(0,1fr) auto; gap:10px; width:100%; text-align:left; border:none; border-bottom:1px solid #f1f5f9; background:transparent; padding:7px 2px; cursor:pointer; font-size:.84rem; color:#334155; }
+        .journal-row:hover { background:#f8fafc; }
+        .journal-row.note { color:#64748b; }
+        .journal-row small { color:#64748b; }
+        .journal-time { font-variant-numeric:tabular-nums; color:#475569; }
+        .journal-proj { background:#eef2ff; color:#4338ca; border-radius:4px; padding:0 5px; font-size:.75rem; }
+        .journal-dur { font-weight:bold; color:#4338ca; white-space:nowrap; }
+        @media (max-width: 768px) {
+            .journal-row { grid-template-columns:70px minmax(0,1fr) auto; gap:6px; }
+            .journal-controls input[type=date] { flex:1; min-width:0; }
+        }
     </style>
 </head>
 <body>
@@ -690,7 +709,7 @@
     <!-- 登入畫面 -->
     <div id="login-screen">
         <h1 style="font-size: 2.5rem; margin-bottom: 10px;">白板系統</h1>
-        <p style="color: #94a3b8; margin-bottom: 30px;">v3.1</p>
+        <p style="color: #94a3b8; margin-bottom: 30px;">v3.2</p>
         <button onclick="app.login()" style="padding: 14px 28px; font-size: 1.1rem; border-radius: 30px; border: none; background: #3b82f6; color: white; font-weight: bold; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.3);">
             使用 Google 登入
         </button>
@@ -708,7 +727,7 @@
                 <button class="btn" onclick="app.switchView('chronicle')" id="btn-view-chronicle">⚡ <span class="nav-btn-label">大事記</span></button>
                 <button class="btn" onclick="app.switchView('gantt')" id="btn-view-gantt">📊 <span class="nav-btn-label">甘特圖</span></button>
                 <button class="btn" onclick="app.switchView('calendar')" id="btn-view-calendar">📅 <span class="nav-btn-label">日曆</span></button>
-                <button class="btn" onclick="app.switchView('report')" id="btn-view-report" title="本週完成、進行中、卡住、下週預計">📋 <span class="nav-btn-label keep">週報</span></button>
+                <button class="btn" onclick="app.switchView('report')" id="btn-view-report" title="週報與工作日誌（可匯出 Excel 填工時）">📋 <span class="nav-btn-label keep">週報／日誌</span></button>
                 
                 <!-- SPA 沙盒入口 -->
                 <button class="btn" onclick="app.switchView('sandbox')" id="btn-view-sandbox" style="border-color:#10b981; color:#10b981; font-weight:bold;">🚀 <span class="nav-btn-label">心流沙盒</span></button>
@@ -837,7 +856,7 @@
 
             <!-- 週報 -->
             <div id="view-report" class="view-container">
-                <h3 style="text-align: center; color: #475569; margin-top: 0; margin-bottom:6px;">📋 週報</h3>
+                <h3 style="text-align: center; color: #475569; margin-top: 0; margin-bottom:6px;">📋 週報／工作日誌</h3>
                 <p style="text-align:center; color:#64748b; font-size:.88rem; margin:0 0 16px;">從卡片自動整理，不用另外維護。別人問進度時，先看這頁。</p>
                 <div id="report-render-target"></div>
             </div>
