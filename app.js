@@ -1,5 +1,5 @@
 // =====================================================================
-// 白板 & 心流沙盒 v3.7
+// 白板 & 心流沙盒 v3.8
 // ---------------------------------------------------------------------
 // v3.0 重整重點（資料邏輯）：
 // 1. 所有修改只走一個入口 app.saveToLocal()（= store.markDirty）：
@@ -27,7 +27,7 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 const provider = new firebase.auth.GoogleAuthProvider();
 
-const APP_VERSION = '3.7';
+const APP_VERSION = '3.8';
 const SCHEMA_VERSION = 3;
 const CLOUD_DOC_SOFT_LIMIT = 750 * 1024;   // 超過時提醒
 const CLOUD_DOC_HARD_LIMIT = 1000 * 1000;  // Firestore 單一文件上限約 1 MiB，保守一點
@@ -484,6 +484,14 @@ const app = {
                         if (card[k] !== undefined && card[k] !== null && typeof card[k] !== 'string') card[k] = String(card[k]);
                     });
                     if (typeof card.project === 'string' && card.project !== card.project.trim()) card.project = card.project.trim();
+                    if (typeof card.content === 'string' && /(^|\n)\s*(❓|💬)/.test(card.content)) {
+                        card.content = card.content.split('\n').map(l => {
+                            const t = l.trim();
+                            if (t.startsWith('❓')) return `- [?] ${t.replace(/^❓\uFE0F?/, '').trim()}`;
+                            if (t.startsWith('💬')) return `- [A] ${t.replace(/^💬\uFE0F?/, '').trim()}`;
+                            return l;
+                        }).join('\n');
+                    }
                     if (card.title === undefined || card.title === null) card.title = '';
                     if (card.content === undefined || card.content === null) card.content = '';
                     if (card.project === undefined || card.project === null) card.project = '';
@@ -3350,6 +3358,7 @@ const app = {
                 if (nextStepBox) nextStepBox.style.display = 'block';
                 if (nextStepInput) nextStepInput.value = card.nextStep || '';
                 app.entries.renderSandbox(card);
+                this.renderCountdown();
                 return;
             }
             app.state.sandbox.activeTaskId = null;
@@ -3358,6 +3367,7 @@ const app = {
             if (nextStepBox) nextStepBox.style.display = 'none';
             if (nextStepInput) nextStepInput.value = '';
             app.entries.renderSandbox(null);
+            this.renderCountdown();
         },
 
         renameActiveTask() {
@@ -3911,34 +3921,64 @@ const app = {
                 + `<button type="button" class="timer-pill-btn" title="停止並記錄" onclick="event.stopPropagation(); app.sandbox.stopTimer()">⏹</button>`;
         },
 
-        syncDeadlineInputs() {
-            const t = document.getElementById('sb-deadlineTask');
-            const d = document.getElementById('sb-deadlineDate');
-            if (t) t.value = app.state.sandbox.deadlineTask || '';
-            if (d) d.value = app.state.sandbox.deadlineDate || '';
-            this.renderCountdown();
-        },
+        syncDeadlineInputs() { this.renderCountdown(); },
+        updateCountdown() { this.renderCountdown(); },
 
-        updateCountdown() {
-            app.state.sandbox.deadlineTask = document.getElementById('sb-deadlineTask').value;
-            app.state.sandbox.deadlineDate = document.getElementById('sb-deadlineDate').value;
-            app.saveToLocal();
-            this.renderCountdown();
+        // 截止日：自動用卡片的「預計完成」。沒有的話可以直接在這裡設定。
+        daysLeft(dateStr) {
+            const d = app.worktime.parseLocalDate(dateStr);
+            if (!d) return null;
+            const today = new Date(); today.setHours(0, 0, 0, 0);
+            return Math.round((d - today) / 86400000);
         },
+        dayText(n) { return n > 0 ? `還剩 ${n} 天` : (n === 0 ? '今天到期' : `已過期 ${-n} 天`); },
 
         renderCountdown() {
-            const box = document.getElementById('sb-countdownDisplay');
+            const box = document.getElementById('sb-deadline-box');
             if (!box) return;
-            const task = app.state.sandbox.deadlineTask || '';
-            const target = app.worktime.parseLocalDate(app.state.sandbox.deadlineDate);
-            if (!target) { box.style.display = 'none'; return; }
-            const today = new Date(); today.setHours(0, 0, 0, 0);
-            const diffDays = Math.round((target - today) / 86400000);
-            box.style.display = 'block';
-            box.style.color = 'white';
-            if (diffDays > 0) { box.style.background = '#dc3545'; box.textContent = `🔥 ${task} 倒數：${diffDays} 天`; }
-            else if (diffDays === 0) { box.style.background = '#ffc107'; box.style.color = '#333'; box.textContent = `🔥 ${task} 今天截止！`; }
-            else { box.style.background = '#6c757d'; box.textContent = `🚨 ${task} 已過期 ${Math.abs(diffDays)} 天`; }
+            const esc = s => app.entries.escapeHtml(s);
+            const W = app.worktime;
+            const card = this.activeCard();
+            let focus = '';
+            if (!card) {
+                focus = `<div class="dl-focus none">還沒有選卡片。從「📋 任務清單」選一張，這裡會顯示它的截止日。</div>`;
+            } else {
+                const title = esc(String(card.title || '').trim() || '未命名卡片');
+                const end = card.isMemo ? '' : W.plannedEnd(card);
+                const n = end ? this.daysLeft(end) : null;
+                if (n === null) {
+                    focus = `<div class="dl-focus none"><b>${title}</b>：還沒排完成日
+                        <div class="dl-set"><input type="date" value="" onchange="app.sandbox.setDeadline('${card.id}', this.value)" title="選了就設定為這張卡的預計完成日"><span class="pm-hint">選日期就設定好</span></div></div>`;
+                } else {
+                    const cls = n < 0 ? 'over' : (n === 0 ? 'today' : (n <= 2 ? 'soon' : 'ok'));
+                    focus = `<div class="dl-focus ${cls}"><b>${title}</b><br><span class="dl-big">${esc(end.slice(5).replace('-', '/'))} 截止・${this.dayText(n)}</span>
+                        <div class="dl-set"><input type="date" value="${esc(end)}" onchange="app.sandbox.setDeadline('${card.id}', this.value)" title="改預計完成日"><span class="pm-hint">可以直接改</span></div></div>`;
+                }
+            }
+            const upcoming = W.allCards()
+                .filter(({ card: c }) => Number(c.status) !== 2 && !c.isMemo && W.plannedEnd(c) && (!card || c.id !== card.id))
+                .map(r => ({ ...r, n: this.daysLeft(W.plannedEnd(r.card)) }))
+                .filter(r => r.n !== null && r.n <= 14 && r.n >= -30)
+                .sort((a, b) => a.n - b.n)
+                .slice(0, 3);
+            const list = upcoming.length ? `<div class="dl-list"><div class="pm-hint" style="margin-bottom:2px;">接下來要到期（14 天內，含過期 30 天內）</div>${upcoming.map(r => `<button type="button" class="dl-row" onclick="app.taskNav.goToCard('${r.card.id}','${r.tabId}')" title="切換專注到這張卡"><span>${esc(String(r.card.title || '').trim() || '未命名')}</span><span class="dl-days ${r.n < 0 ? 'over' : ''}">${esc(W.plannedEnd(r.card).slice(5).replace('-', '/'))}・${this.dayText(r.n)}</span></button>`).join('')}</div>` : '';
+            box.innerHTML = `<div class="dl-head">📅 截止日</div>${focus}${list}`;
+        },
+
+        setDeadline(cardId, value) {
+            const card = app.worktime.getCard(cardId);
+            if (!card || !app.worktime.parseLocalDate(value)) return;
+            const W = app.worktime;
+            card.isMemo = false;
+            const start = W.plannedStart(card);
+            const wasScheduled = !!W.plannedEnd(card);
+            card.dateMode = 'range';
+            card.dateEnd = value;
+            card.dateStart = start && start <= value ? start : value;
+            app.saveToLocal();
+            this.renderCountdown();
+            app.refreshCard(cardId, 'sandbox');
+            app.ui.toast(`已設定「${String(card.title || '').trim() || '未命名'}」的完成日：${value}${wasScheduled ? '' : '（這張卡改為排程工項）'}`);
         },
 
         downloadMarkdown() {
@@ -4217,6 +4257,7 @@ const app = {
             if (source === 'sandbox' || this.state.view === 'sandbox') {
                 if (card && this.state.sandbox.activeTaskId === cardId) this.entries.renderSandbox(card);
                 this.sandbox.renderTodo();
+                this.sandbox.renderCountdown();
                 if (source === 'sandbox') return;
             }
             const wrap = document.querySelector(`#timeline-render-target .card-wrapper[data-wrap-id="${CSS.escape(cardId)}"]`);
@@ -5846,7 +5887,7 @@ ${planned.length ? planned.map(({ card }) => this.cardLine(card)).join('\n') : '
         findInContent(card) {
             const lines = String(card?.content || '').split('\n');
             const urlRe = /(https?:\/\/[^\s)）\]」，、。；]+|\\\\[^\s，、。；)）]+)/;
-            const isHeading = t => t && !urlRe.test(t) && t.length <= 30 && !/^- \[[ xX]\]/.test(t) && t !== '---' && !/^[*※]/.test(t) && !/[:：].{6,}/.test(t);
+            const isHeading = t => t && !urlRe.test(t) && t.length <= 30 && !/^- \[[ xX?aA]\]/.test(t) && t !== '---' && !/^[*※]/.test(t) && !/[:：].{6,}/.test(t);
             const clean = t => t.replace(/^[-*•]\s*/, '').replace(/[:：]$/, '').replace(/[（(][^）)]*[）)]\s*$/, '').trim();
             const found = [];
             let group = null; // 連續的網址沿用同一個標題
@@ -5922,24 +5963,29 @@ ${planned.length ? planned.map(({ card }) => this.cardLine(card)).join('\n') : '
     },
 
     // ==========================================
-    // ❓ 問題清單：筆記裡「❓ 問題」與其下的「💬 回答」
+    // ❓ 問題清單：筆記裡「- [?] 問題」與其下的「- [A] 回答」（舊的 ❓/💬 寫法也認得，載入時自動轉換）
     // ==========================================
     questions: {
-        Q: '❓',
-        A: '💬',
+        Q: '- [?]',
+        A: '- [A]',
+        LEGACY_Q: '❓',
+        LEGACY_A: '💬',
 
         // 回傳 [{ line, text, answers: [..], answerLines: [..] }]
         parse(content) {
             const lines = String(content || '').split('\n');
             const out = [];
             let cur = null;
+            const qRe = /^[-*]\s+\[\?\]\s?(.*)$/, aRe = /^[-*]\s+\[[aA]\]\s?(.*)$/;
             lines.forEach((raw, i) => {
                 const t = raw.trim();
-                if (t.startsWith(this.Q)) {
-                    cur = { line: i, text: t.slice(this.Q.length).trim(), answers: [], answerLines: [] };
+                const qm = t.match(qRe) || (t.startsWith(this.LEGACY_Q) ? [t, t.slice(this.LEGACY_Q.length)] : null);
+                const am = t.match(aRe) || (t.startsWith(this.LEGACY_A) ? [t, t.slice(this.LEGACY_A.length)] : null);
+                if (qm) {
+                    cur = { line: i, text: qm[1].trim(), answers: [], answerLines: [] };
                     out.push(cur);
-                } else if (cur && t.startsWith(this.A)) {
-                    cur.answers.push(t.slice(this.A.length).trim());
+                } else if (cur && am) {
+                    cur.answers.push(am[1].trim());
                     cur.answerLines.push(i);
                 } else if (t) {
                     cur = null;
@@ -5950,28 +5996,13 @@ ${planned.length ? planned.map(({ card }) => this.cardLine(card)).join('\n') : '
         open(card) { return this.parse(card?.content).filter(q => !q.answers.some(Boolean)); },
         answered(card) { return this.parse(card?.content).filter(q => q.answers.some(Boolean)); },
 
-        // 在 textarea 插入：問題＝新的一行開頭「❓ 」；回答＝目前這行下面插入「　💬 」
+        // 在 textarea 插入：問題＝新的一行「- [?] 」；回答＝目前這行下面插入「- [A] 」（不縮排）
         insert(textarea, kind) {
             if (!textarea) return;
             if (kind === 'todo') return this.insertLine(textarea, '- [ ] ');
-            const v = textarea.value;
-            const pos = textarea.selectionStart ?? v.length;
-            let insertAt, text;
-            if (kind === 'answer') {
-                const lineEnd = v.indexOf('\n', pos);
-                insertAt = lineEnd === -1 ? v.length : lineEnd;
-                text = `\n    ${this.A} `;
-            } else {
-                const lineStart = v.lastIndexOf('\n', pos - 1) + 1;
-                const lineText = v.slice(lineStart, (v.indexOf('\n', pos) === -1 ? v.length : v.indexOf('\n', pos)));
-                if (!lineText.trim()) { insertAt = lineStart; text = `${this.Q} `; }
-                else { const lineEnd = v.indexOf('\n', pos); insertAt = lineEnd === -1 ? v.length : lineEnd; text = `\n${this.Q} `; }
-            }
-            textarea.value = v.slice(0, insertAt) + text + v.slice(insertAt);
-            const caret = insertAt + text.length;
-            textarea.focus();
-            textarea.selectionStart = textarea.selectionEnd = caret;
-            textarea.dispatchEvent(new Event('input', { bubbles: true }));
+            if (kind === 'question') return this.insertLine(textarea, `${this.Q} `);
+            if (kind === 'answer') return this.insertLine(textarea, `${this.A} `);
+            return this.insertLine(textarea, `${this.Q} `);
         },
 
         insertLine(textarea, prefix) {
@@ -6057,7 +6088,7 @@ ${planned.length ? planned.map(({ card }) => this.cardLine(card)).join('\n') : '
                 title: `完成：${d.getMonth() + 1}/${d.getDate()} 整理（${[done.length ? `${done.length} 項` : '', answered.length ? `${answered.length} 題` : ''].filter(Boolean).join('、')}）`,
                 content: [
                     ...done.map(b => `✅ ${b[0]}${b.length > 1 ? '\n' + b.slice(1).map(x => `   ${x}`).join('\n') : ''}`),
-                    ...answered.map(q => `❓ ${q.text}\n${q.answers.filter(Boolean).map(a => `   💬 ${a}`).join('\n')}`)
+                    ...answered.map(q => `- [?] ${q.text}\n${q.answers.filter(Boolean).map(a => `- [A] ${a}`).join('\n')}`)
                 ].join('\n'),
                 createdAt: now, updatedAt: now
             });

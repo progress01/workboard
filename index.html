@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>白板 & 心流沙盒 v3.7</title>
+    <title>白板 & 心流沙盒 v3.8</title>
     
     <!-- Firebase Compat -->
     <script src="https://www.gstatic.com/firebasejs/10.8.1/firebase-app-compat.js"></script>
@@ -652,6 +652,21 @@
         .report-question { background:#fefce8; border-color:#fde68a; }
         .sb-questions { margin:4px 0 0 38px; }
         .sb-question { font-size:.8rem; color:#a16207; padding:2px 0; }
+        .dl-head { font-weight:bold; color:#334155; margin:4px 0 8px; font-size:.92rem; }
+        .dl-focus { border-radius:10px; padding:10px 12px; font-size:.9rem; line-height:1.5; }
+        .dl-focus.ok { background:#eef2ff; color:#3730a3; }
+        .dl-focus.soon { background:#fff7ed; color:#9a3412; }
+        .dl-focus.today { background:#fef3c7; color:#92400e; font-weight:bold; }
+        .dl-focus.over { background:#fee2e2; color:#991b1b; font-weight:bold; }
+        .dl-focus.none { background:#f8fafc; color:#64748b; border:1px dashed #cbd5e1; }
+        .dl-focus .dl-big { font-size:1.15rem; font-weight:bold; }
+        .dl-set { display:flex; gap:6px; align-items:center; margin-top:6px; }
+        .dl-set input { flex:1; padding:6px; border:1px solid #cbd5e1; border-radius:6px; }
+        .dl-list { margin-top:10px; }
+        .dl-row { display:flex; justify-content:space-between; gap:8px; width:100%; border:none; background:transparent; padding:5px 2px; border-bottom:1px solid #f1f5f9; cursor:pointer; font-size:.82rem; color:#334155; text-align:left; }
+        .dl-row:hover { background:#f8fafc; }
+        .dl-row .dl-days { white-space:nowrap; color:#64748b; }
+        .dl-row .dl-days.over { color:#b91c1c; font-weight:bold; }
         .pm-ai-row { display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:8px; padding:6px 8px; background:#eef2ff; border-radius:8px; }
         .waiting-box { margin-top:8px; padding:8px 10px; border:1px dashed #cbd5e1; border-radius:8px; background:#fff; }
         .waiting-box.active { border-color:#fdba74; background:#fff7ed; }
@@ -752,7 +767,7 @@
     <!-- 登入畫面 -->
     <div id="login-screen">
         <h1 style="font-size: 2.5rem; margin-bottom: 10px;">白板系統</h1>
-        <p style="color: #94a3b8; margin-bottom: 30px;">v3.7</p>
+        <p style="color: #94a3b8; margin-bottom: 30px;">v3.8</p>
         <button onclick="app.login()" style="padding: 14px 28px; font-size: 1.1rem; border-radius: 30px; border: none; background: #3b82f6; color: white; font-weight: bold; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.3);">
             使用 Google 登入
         </button>
@@ -948,10 +963,7 @@
                             </div>
 
                             <hr style="border:0; border-top:1px dashed #ced4da; margin: 20px 0;">
-                            <h4 style="margin:5px 0; color:var(--danger);">🎯 死線倒數</h4>
-                            <input type="text" id="sb-deadlineTask" placeholder="專案名稱" oninput="app.sandbox.updateCountdown()" style="width:100%; padding:8px; margin-bottom:5px;">
-                            <input type="date" id="sb-deadlineDate" onchange="app.sandbox.updateCountdown()" style="width:100%; padding:8px;">
-                            <div id="sb-countdownDisplay" style="display:none; margin-top:15px; padding:10px; background:var(--danger); color:white; text-align:center; border-radius:5px; font-weight:bold;"></div>
+                            <div id="sb-deadline-box"></div>
                         </div>
 
                         <!-- 任務清單 (動態解析 Markdown 子任務) -->
