@@ -1,5 +1,5 @@
 // =====================================================================
-// 白板 & 心流沙盒 v3.8
+// 白板 & 心流沙盒 v3.9
 // ---------------------------------------------------------------------
 // v3.0 重整重點（資料邏輯）：
 // 1. 所有修改只走一個入口 app.saveToLocal()（= store.markDirty）：
@@ -27,7 +27,7 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 const provider = new firebase.auth.GoogleAuthProvider();
 
-const APP_VERSION = '3.8';
+const APP_VERSION = '3.9';
 const SCHEMA_VERSION = 3;
 const CLOUD_DOC_SOFT_LIMIT = 750 * 1024;   // 超過時提醒
 const CLOUD_DOC_HARD_LIMIT = 1000 * 1000;  // Firestore 單一文件上限約 1 MiB，保守一點
@@ -3351,6 +3351,7 @@ const app = {
             const nextStepBox = document.getElementById('sb-nextStepBox');
             const nextStepInput = document.getElementById('sb-nextStepInput');
             if (!titleEl || !noteArea) return;
+            this._lastCaret = null; // 換卡：還沒點過筆記，插入時放在最後
             const card = this.activeCard();
             if (card) {
                 iconEl.style.display = 'inline'; titleEl.value = card.title || ''; titleEl.style.color = 'var(--primary)';
@@ -3402,6 +3403,7 @@ const app = {
 
         wrapMarkdown(prefix, suffix) {
             const noteArea = document.getElementById('sb-activeNoteArea');
+            if (document.activeElement !== noteArea) { const p = this.caretPos(noteArea); noteArea.selectionStart = noteArea.selectionEnd = p; }
             const start = noteArea.selectionStart; const end = noteArea.selectionEnd;
             const selectedText = noteArea.value.substring(start, end);
             noteArea.value = noteArea.value.substring(0, start) + prefix + selectedText + suffix + noteArea.value.substring(end);
@@ -3409,28 +3411,61 @@ const app = {
             this.saveActiveNote();
         },
 
-        insertPrefix(prefix) {
-            const noteArea = document.getElementById('sb-activeNoteArea'); const start = noteArea.selectionStart;
-            noteArea.value = noteArea.value.substring(0, start) + prefix + noteArea.value.substring(start);
-            noteArea.focus(); noteArea.selectionStart = noteArea.selectionEnd = start + prefix.length;
+        // 插入位置：游標所在那一行的下一行（游標在空行就直接用那行）。
+        // 還沒點過筆記時，selectionStart 是 0，會插到最上面，所以改插到最後。
+        insertBlock(text, { inline = false } = {}) {
+            const ta = document.getElementById('sb-activeNoteArea');
+            if (!ta) return;
+            const v = ta.value;
+            let pos = this.caretPos(ta);
+            let at, ins;
+            if (inline) { at = pos; ins = text; }
+            else {
+                const lineStart = v.lastIndexOf('\n', pos - 1) + 1;
+                const lineEndIdx = v.indexOf('\n', pos);
+                const lineEnd = lineEndIdx === -1 ? v.length : lineEndIdx;
+                if (!v.slice(lineStart, lineEnd).trim()) { at = lineStart; ins = text; ta.value = v.slice(0, lineStart) + v.slice(lineEnd); }
+                else { at = lineEnd; ins = '\n' + text; }
+            }
+            const base = ta.value;
+            ta.value = base.slice(0, at) + ins + base.slice(at);
+            ta.focus();
+            ta.selectionStart = ta.selectionEnd = at + ins.length;
+            this._lastCaret = ta.selectionStart;
             this.saveActiveNote();
         },
 
-        insertTemplate(type) {
-            let tpl = "";
-            if (type === 'bug') tpl = "\n### 🐛 異常現象\n\n### 🔬 測試假設\n\n### 🛠️ 下一步\n";
-            else if (type === 'dissect') tpl = "\n### 🎯 現況與目標\n\n### 🚧 卡關點\n\n### 💡 解法構思\n- [ ] \n- [ ] \n";
-            else if (type === 'review') tpl = "\n### ✅ 已完成\n\n### ❌ 待優化\n\n### 📌 備註\n";
-            this.insertPrefix(tpl);
+        // 游標在筆記裡就用游標；剛點了下拉選單等（筆記失焦）就用離開時的位置；都沒有就放最後。
+        caretPos(ta) {
+            if (document.activeElement === ta) return ta.selectionStart ?? ta.value.length;
+            if (this._lastCaret != null && this._lastCaret <= ta.value.length) return this._lastCaret;
+            return ta.value.length;
         },
 
-        addQuickLog() {
-            const inputEl = document.getElementById('sb-quickLogInput'); const text = inputEl.value.trim(); if (!text) return;
-            const noteArea = document.getElementById('sb-activeNoteArea');
-            const now = new Date(); const timeStr = `${now.getMonth() + 1}/${now.getDate()} ${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
-            noteArea.value += `\n**[${timeStr}]** ${text}`;
-            inputEl.value = ''; noteArea.scrollTop = noteArea.scrollHeight; this.saveActiveNote();
+        insertPrefix(prefix) { this.insertBlock(prefix); },
+
+        stampText() {
+            const now = new Date();
+            return `**[${now.getMonth() + 1}/${now.getDate()} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}]** `;
         },
+        insertStamp() { this.insertBlock(this.stampText()); },
+
+        insertTemplate(type) {
+            const tpl = {
+                bug: "### 🐛 異常現象\n\n### 🔬 測試假設\n\n### 🛠️ 下一步\n",
+                dissect: "### 🎯 現況與目標\n\n### 🚧 卡關點\n\n### 💡 解法構思\n- [ ] ",
+                review: "### ✅ 已完成\n\n### ❌ 待優化\n\n### 📌 備註\n"
+            }[type];
+            if (!tpl) return;
+            const ta = document.getElementById('sb-activeNoteArea');
+            const pos = this.caretPos(ta);
+            this.insertBlock(tpl);
+            // 游標停在第一個標題下面，直接開始寫
+            const start = ta.value.indexOf(tpl.split('\n')[0], Math.max(0, pos - 1));
+            if (start >= 0) { const p = ta.value.indexOf('\n', start) + 1; ta.selectionStart = ta.selectionEnd = p; }
+        },
+
+        addQuickLog() { this.insertStamp(); },
 
         async mergeSelectedCards() {
             const checkboxes = [...document.querySelectorAll('.todo-cb-merge:checked')];
@@ -3943,7 +3978,7 @@ const app = {
             if (!card) {
                 focus = `<div class="dl-focus none">還沒有選卡片。從「📋 任務清單」選一張，這裡會顯示它的截止日。</div>`;
             } else {
-                const title = esc(String(card.title || '').trim() || '未命名卡片');
+                const title = esc(String(card.title || '').trim().split('\n')[0] || '未命名卡片');
                 const end = card.isMemo ? '' : W.plannedEnd(card);
                 const n = end ? this.daysLeft(end) : null;
                 if (n === null) {
@@ -3961,7 +3996,7 @@ const app = {
                 .filter(r => r.n !== null && r.n <= 14 && r.n >= -30)
                 .sort((a, b) => a.n - b.n)
                 .slice(0, 3);
-            const list = upcoming.length ? `<div class="dl-list"><div class="pm-hint" style="margin-bottom:2px;">接下來要到期（14 天內，含過期 30 天內）</div>${upcoming.map(r => `<button type="button" class="dl-row" onclick="app.taskNav.goToCard('${r.card.id}','${r.tabId}')" title="切換專注到這張卡"><span>${esc(String(r.card.title || '').trim() || '未命名')}</span><span class="dl-days ${r.n < 0 ? 'over' : ''}">${esc(W.plannedEnd(r.card).slice(5).replace('-', '/'))}・${this.dayText(r.n)}</span></button>`).join('')}</div>` : '';
+            const list = upcoming.length ? `<div class="dl-list"><div class="pm-hint" style="margin-bottom:2px;">接下來要到期（14 天內，含過期 30 天內）</div>${upcoming.map(r => `<button type="button" class="dl-row" onclick="app.taskNav.goToCard('${r.card.id}','${r.tabId}')" title="切換專注到這張卡"><span class="dl-title">${esc(String(r.card.title || '').trim().split('\n')[0] || '未命名')}</span><span class="dl-days ${r.n < 0 ? 'over' : ''}">${esc(W.plannedEnd(r.card).slice(5).replace('-', '/'))}・${this.dayText(r.n)}</span></button>`).join('')}</div>` : '';
             box.innerHTML = `<div class="dl-head">📅 截止日</div>${focus}${list}`;
         },
 
@@ -6007,7 +6042,7 @@ ${planned.length ? planned.map(({ card }) => this.cardLine(card)).join('\n') : '
 
         insertLine(textarea, prefix) {
             const v = textarea.value;
-            const pos = textarea.selectionStart ?? v.length;
+            const pos = textarea.id === 'sb-activeNoteArea' ? app.sandbox.caretPos(textarea) : (textarea.selectionStart ?? v.length);
             const lineStart = v.lastIndexOf('\n', pos - 1) + 1;
             const lineEndIdx = v.indexOf('\n', pos);
             const lineText = v.slice(lineStart, lineEndIdx === -1 ? v.length : lineEndIdx);

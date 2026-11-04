@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>白板 & 心流沙盒 v3.8</title>
+    <title>白板 & 心流沙盒 v3.9</title>
     
     <!-- Firebase Compat -->
     <script src="https://www.gstatic.com/firebasejs/10.8.1/firebase-app-compat.js"></script>
@@ -255,6 +255,8 @@
         .sb-btn-primary { background: var(--primary); }
         .sb-btn-outline { background: transparent; border: 1px solid #ced4da; color: #343a40; padding: 5px 8px; font-size: 0.85rem;}
         .sb-btn-outline:hover { background: #f8f9fa; }
+        .sb-bar-sep { flex:1; }
+        .sb-tpl-select { width:120px; padding:5px 6px; border:1px solid #ced4da; border-radius:4px; background:#fff; font-size:.85rem; color:#343a40; cursor:pointer; }
         .sb-btn-md { background: #e9ecef; border: 1px solid #ced4da; color: #495057; font-family: monospace; padding: 4px 8px;}
 
         /* Todo List & Sub-tasks */
@@ -653,7 +655,7 @@
         .sb-questions { margin:4px 0 0 38px; }
         .sb-question { font-size:.8rem; color:#a16207; padding:2px 0; }
         .dl-head { font-weight:bold; color:#334155; margin:4px 0 8px; font-size:.92rem; }
-        .dl-focus { border-radius:10px; padding:10px 12px; font-size:.9rem; line-height:1.5; }
+        .dl-focus { overflow-wrap:anywhere; border-radius:10px; padding:10px 12px; font-size:.9rem; line-height:1.5; }
         .dl-focus.ok { background:#eef2ff; color:#3730a3; }
         .dl-focus.soon { background:#fff7ed; color:#9a3412; }
         .dl-focus.today { background:#fef3c7; color:#92400e; font-weight:bold; }
@@ -665,6 +667,7 @@
         .dl-list { margin-top:10px; }
         .dl-row { display:flex; justify-content:space-between; gap:8px; width:100%; border:none; background:transparent; padding:5px 2px; border-bottom:1px solid #f1f5f9; cursor:pointer; font-size:.82rem; color:#334155; text-align:left; }
         .dl-row:hover { background:#f8fafc; }
+        .dl-row .dl-title { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; flex:1; }
         .dl-row .dl-days { white-space:nowrap; color:#64748b; }
         .dl-row .dl-days.over { color:#b91c1c; font-weight:bold; }
         .pm-ai-row { display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:8px; padding:6px 8px; background:#eef2ff; border-radius:8px; }
@@ -767,7 +770,7 @@
     <!-- 登入畫面 -->
     <div id="login-screen">
         <h1 style="font-size: 2.5rem; margin-bottom: 10px;">白板系統</h1>
-        <p style="color: #94a3b8; margin-bottom: 30px;">v3.8</p>
+        <p style="color: #94a3b8; margin-bottom: 30px;">v3.9</p>
         <button onclick="app.login()" style="padding: 14px 28px; font-size: 1.1rem; border-radius: 30px; border: none; background: #3b82f6; color: white; font-weight: bold; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.3);">
             使用 Google 登入
         </button>
@@ -1010,28 +1013,23 @@
                         <div id="sb-entry-context" style="display:none;"></div>
 
                         <div class="sb-template-bar">
-                            <span style="font-size: 0.85rem; color: #666;">⚡ 快捷：</span>
-                            <button class="sb-btn-outline" onclick="app.sandbox.insertPrefix('- [ ] ')">✅ 待辦</button>
+                            <button class="sb-btn-outline" onmousedown="event.preventDefault()" onclick="app.sandbox.insertPrefix('- [ ] ')" title="新增一行待辦">✅ 待辦</button>
                             <button class="sb-btn-outline" onmousedown="event.preventDefault()" onclick="app.questions.insert(document.getElementById('sb-activeNoteArea'),'question')" title="新增一個待確認的問題">❓ 問題</button>
                             <button class="sb-btn-outline" onmousedown="event.preventDefault()" onclick="app.questions.insert(document.getElementById('sb-activeNoteArea'),'answer')" title="在游標所在的問題下面寫答案">💬 回答</button>
-                            <button class="sb-btn-outline" onclick="app.sandbox.insertTemplate('bug')">🐛 Bug</button>
-                            <button class="sb-btn-outline" onclick="app.sandbox.insertTemplate('dissect')">🔍 拆解</button>
-                            <button class="sb-btn-outline" onclick="app.sandbox.insertTemplate('review')">📝 覆盤</button>
-                            <button class="sb-btn-outline" onclick="app.state.sandbox.activeTaskId ? app.tidy.run(app.state.sandbox.activeTaskId, 'sandbox') : app.ui.toast('先選一張卡片')" title="把已勾選的待辦移到工作紀錄">🧹 整理</button>
-                            
-                            <span style="color: #ccc; margin: 0 5px;">|</span>
-                            <span style="font-size: 0.85rem; color: #666;">MD：</span>
-                            <button class="sb-btn-md" onclick="app.sandbox.wrapMarkdown('**', '**')"><b>B</b></button>
-                            <button class="sb-btn-md" onclick="app.sandbox.wrapMarkdown('*', '*')"><i>I</i></button>
-                            <button class="sb-btn-md" onclick="app.sandbox.wrapMarkdown('`', '`')">`code`</button>
+                            <button class="sb-btn-outline" onmousedown="event.preventDefault()" onclick="app.sandbox.insertStamp()" title="新增一行，前面加上現在的日期時間（會出現在工作日誌）">🕒 時間</button>
+                            <button class="sb-btn-outline" onmousedown="event.preventDefault()" onclick="app.state.sandbox.activeTaskId ? app.tidy.run(app.state.sandbox.activeTaskId, 'sandbox') : app.ui.toast('先選一張卡片')" title="把已勾選的待辦、已回答的問題移到工作紀錄">🧹 整理</button>
+                            <span class="sb-bar-sep"></span>
+                            <select class="sb-tpl-select" onchange="app.sandbox.insertTemplate(this.value); this.value=''" title="插入一段整理用的範本（插在游標那一行下面）">
+                                <option value="">📄 範本…</option>
+                                <option value="dissect">🔍 拆解：現況／卡關／解法</option>
+                                <option value="bug">🐛 Bug：現象／假設／下一步</option>
+                                <option value="review">📝 覆盤：完成／待優化／備註</option>
+                            </select>
+                            <button class="sb-btn-md" onmousedown="event.preventDefault()" onclick="app.sandbox.wrapMarkdown('**', '**')" title="粗體"><b>B</b></button>
                         </div>
 
-                        <textarea id="sb-activeNoteArea" placeholder="這裡是這張卡的筆記，邊打邊存。&#10;&#10;✨ 輸入「- [ ] 事項」會變成子任務，可以在「📋 任務清單」直接勾選。&#10;想換卡：用「📋 任務清單」，或打開 🧭 導覽列點卡片。&#10;沒有選卡片時，這裡會記在全域草稿。" oninput="app.sandbox.saveActiveNote()"></textarea>
+                        <textarea id="sb-activeNoteArea" placeholder="這裡是這張卡的筆記，邊打邊存。&#10;&#10;✨ 輸入「- [ ] 事項」會變成子任務，可以在「📋 任務清單」直接勾選。&#10;想換卡：用「📋 任務清單」，或打開 🧭 導覽列點卡片。&#10;按「🕒 時間」會加一行現在時間，寫的東西會出現在工作日誌。&#10;沒有選卡片時，這裡會記在全域草稿。" oninput="app.sandbox.saveActiveNote()" onblur="app.sandbox._lastCaret = this.selectionStart"></textarea>
 
-                        <div style="display: flex; gap: 8px; margin-top: 10px;">
-                            <button class="sb-btn sb-btn-success" style="pointer-events: none;">閃念</button>
-                            <input type="text" id="sb-quickLogInput" placeholder="輸入短語或進度，按 Enter 自動打上時間戳..." style="flex:1; padding:8px; border:2px solid var(--success); border-radius:4px;" onkeypress="if(event.key === 'Enter') app.sandbox.addQuickLog()">
-                        </div>
                     </div>
                 </div>
             </div>
