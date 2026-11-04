@@ -1,5 +1,5 @@
 // =====================================================================
-// 白板 & 心流沙盒 v3.11
+// 白板 & 心流沙盒 v3.12
 // ---------------------------------------------------------------------
 // v3.0 重整重點（資料邏輯）：
 // 1. 所有修改只走一個入口 app.saveToLocal()（= store.markDirty）：
@@ -27,7 +27,7 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 const provider = new firebase.auth.GoogleAuthProvider();
 
-const APP_VERSION = '3.11';
+const APP_VERSION = '3.12';
 const SCHEMA_VERSION = 3;
 const CLOUD_DOC_SOFT_LIMIT = 750 * 1024;   // 超過時提醒
 const CLOUD_DOC_HARD_LIMIT = 1000 * 1000;  // Firestore 單一文件上限約 1 MiB，保守一點
@@ -3523,6 +3523,67 @@ const app = {
         },
 
         renderTodo() {
+            try { this._renderTodoList(); } finally {
+                try { this.renderDoneHint(); this.renderCountdown(); } catch (err) { app.ui.reportError(err, '完成提示'); }
+            }
+        },
+
+        // 待辦全部勾完（不管是點勾還是自己打 [x]）→ 問要不要把卡片標完成；反過來，已完成的卡又多了沒勾的待辦 → 問要不要重新打開
+        doneState(card) {
+            if (!card) return null;
+            const subs = this.parseSubtasks(card.content);
+            if (!subs.length) return null;
+            const allDone = subs.every(st => st.completed);
+            const completed = Number(card.status) === 2;
+            if (allDone && !completed) return 'ask-complete';
+            if (!allDone && completed) return 'ask-reopen';
+            return null;
+        },
+
+        renderDoneHint() {
+            const box = document.getElementById('sb-done-hint');
+            if (!box) return;
+            const card = this.activeCard();
+            const st = this.doneState(card);
+            const key = card ? `${card.id}|${st}|${card.content}` : '';
+            if (!st || (this._doneDismissed || {})[card.id] === key) { box.innerHTML = ''; box.style.display = 'none'; return; }
+            box.style.display = 'flex';
+            box.innerHTML = st === 'ask-complete'
+                ? `<span>🎉 待辦都勾完了，這張卡要標成完成嗎？</span>
+                   <span class="sb-done-actions"><button type="button" class="primary" onclick="app.sandbox.completeActive(true)">✅ 完成並 🧹 整理</button><button type="button" onclick="app.sandbox.completeActive(false)">只標完成</button><button type="button" onclick="app.sandbox.dismissDoneHint()">還沒</button></span>`
+                : `<span>這張卡已經標成完成，但還有沒勾的待辦。</span>
+                   <span class="sb-done-actions"><button type="button" class="primary" onclick="app.sandbox.reopenActive()">重新打開</button><button type="button" onclick="app.sandbox.dismissDoneHint()">維持完成</button></span>`;
+            box.className = `sb-done-hint ${st}`;
+        },
+
+        dismissDoneHint() {
+            const card = this.activeCard();
+            if (!card) return;
+            this._doneDismissed = this._doneDismissed || {};
+            this._doneDismissed[card.id] = `${card.id}|${this.doneState(card)}|${card.content}`;
+            this.renderDoneHint();
+        },
+
+        async completeActive(tidy) {
+            const card = this.activeCard();
+            if (!card) return;
+            app.worktime.markCompleted(card);
+            app.saveToLocal();
+            app.refreshCard(card.id, 'sandbox');
+            app.ui.toast(`✅「${String(card.title || '').trim().split('\n')[0] || '未命名'}」標記完成`);
+            if (tidy) await app.tidy.run(card.id, 'sandbox');
+        },
+
+        reopenActive() {
+            const card = this.activeCard();
+            if (!card) return;
+            app.worktime.reopenCompleted(card, 1);
+            app.saveToLocal();
+            app.refreshCard(card.id, 'sandbox');
+            app.ui.toast('已重新打開，回到進行中');
+        },
+
+        _renderTodoList() {
             const container = document.getElementById('sb-todoListContainer');
             if (!container) return;
             const esc = s => app.entries.escapeHtml(s);
@@ -3979,7 +4040,10 @@ const app = {
             const W = app.worktime;
             const card = this.activeCard();
             let focus = '';
-            if (!card) {
+            if (card && Number(card.status) === 2) {
+                const ae = String(card.actualEnd || '');
+                focus = `<div class="dl-focus done"><b>${esc(String(card.title || '').trim().split('\n')[0] || '未命名卡片')}</b><br><span class="dl-big">✅ 已完成${ae ? `（${esc(ae.slice(5).replace('-', '/'))}）` : ''}</span></div>`;
+            } else if (!card) {
                 focus = `<div class="dl-focus none">還沒有選卡片。從「📋 任務清單」選一張，這裡會顯示它的截止日。</div>`;
             } else {
                 const title = esc(String(card.title || '').trim().split('\n')[0] || '未命名卡片');
@@ -6854,6 +6918,7 @@ app.lists = {
             <div class="ls-group-head">
                 <button type="button" class="ls-card-link" onclick="app.actions.jumpToCard('${g.card.id}','${g.tabId}')" title="到時間軸看這張卡">${this.esc(this.cardTitle(g.card))}</button>
                 <span class="ls-meta">${g.card.project ? '#' + this.esc(g.card.project) + ' · ' : ''}${this.esc(g.tabName)}${Number(g.card.status) === 2 ? ' · 已完成' : ''}</span>
+                ${app.sandbox.doneState(g.card) === 'ask-complete' ? `<button type="button" class="ls-complete" onclick="app.lists.complete('${g.card.id}')" title="待辦都勾完了">✅ 標記卡片完成</button>` : ''}
                 <button type="button" class="ls-focus" onclick="app.sandbox.focusTaskForTimer('${g.card.id}')" title="進心流專注這張卡">🎯</button>
             </div>
             ${g.items.map(itemHtml).join('')}
@@ -6952,6 +7017,14 @@ app.lists = {
         card.content = lines.join('\n');
         this.afterChange(cardId);
         app.ui.toast('已寫回卡片筆記');
+    },
+
+    complete(cardId) {
+        const card = app.worktime.getCard(cardId);
+        if (!card) return;
+        app.worktime.markCompleted(card);
+        this.afterChange(cardId);
+        app.ui.toast(`✅「${this.cardTitle(card)}」標記完成。之後可以按 🧹 整理收進紀錄`);
     },
 
     add(value) {
