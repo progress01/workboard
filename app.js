@@ -1,5 +1,5 @@
 // =====================================================================
-// 白板 & 心流沙盒 v3.9
+// 白板 & 心流沙盒 v3.10
 // ---------------------------------------------------------------------
 // v3.0 重整重點（資料邏輯）：
 // 1. 所有修改只走一個入口 app.saveToLocal()（= store.markDirty）：
@@ -27,7 +27,7 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 const provider = new firebase.auth.GoogleAuthProvider();
 
-const APP_VERSION = '3.9';
+const APP_VERSION = '3.10';
 const SCHEMA_VERSION = 3;
 const CLOUD_DOC_SOFT_LIMIT = 750 * 1024;   // 超過時提醒
 const CLOUD_DOC_HARD_LIMIT = 1000 * 1000;  // Firestore 單一文件上限約 1 MiB，保守一點
@@ -3442,7 +3442,11 @@ const app = {
             return ta.value.length;
         },
 
-        insertPrefix(prefix) { this.insertBlock(prefix); },
+        insertPrefix(prefix) {
+            const ta = document.getElementById('sb-activeNoteArea');
+            if (ta && app.questions.markLines(ta, prefix)) return;
+            this.insertBlock(prefix);
+        },
 
         stampText() {
             const now = new Date();
@@ -4240,6 +4244,7 @@ const app = {
                             <button type="button" onclick="app.questions.insertInCard('${id}','todo')" onmousedown="event.preventDefault()" title="新增一行待辦">＋ ✅ 待辦</button>
                             <button type="button" onclick="app.questions.insertInCard('${id}','question')" onmousedown="event.preventDefault()" title="新增一個待確認的問題">＋ ❓ 問題</button>
                             <button type="button" onclick="app.questions.insertInCard('${id}','answer')" onmousedown="event.preventDefault()" title="在游標所在的問題下面寫答案">＋ 💬 回答</button>
+                            <button type="button" onclick="app.pasteSort.open('${id}')" onmousedown="event.preventDefault()" title="整段貼上，自動標出待辦／問題／回答再放進筆記">📥 貼上整理</button>
                         </div>
                         <div class="next-step-preview" id="next-preview-${id}" ${nextStep ? '' : 'style="display:none"'} onclick="app.actions.openPlanning('${id}')" title="點擊編輯下一步">➡ 下一步：<span>${esc(nextStep)}</span></div>
                         ${this.worktime.renderPlanningPanel(card, 'timeline')}
@@ -6040,7 +6045,25 @@ ${planned.length ? planned.map(({ card }) => this.cardLine(card)).join('\n') : '
             return this.insertLine(textarea, `${this.Q} `);
         },
 
+        // 選取了好幾行：每一行都加上（或換成）這個標記
+        markLines(textarea, prefix) {
+            const v = textarea.value;
+            const a = textarea.selectionStart, b = textarea.selectionEnd;
+            if (document.activeElement !== textarea || a === b || !v.slice(a, b).includes('\n')) return false;
+            const start = v.lastIndexOf('\n', a - 1) + 1;
+            const endIdx = v.indexOf('\n', b - (v[b - 1] === '\n' ? 1 : 0));
+            const end = endIdx === -1 ? v.length : endIdx;
+            const marker = /^(\s*)(?:[-*]\s+\[[ xX?aA]\]\s?|❓\uFE0F?\s*|💬\s*|[-*•・]\s+)?/;
+            const block = v.slice(start, end).split('\n').map(l => l.trim() ? l.replace(marker, (m, ind) => ind) .replace(/^(\s*)/, `$1${prefix}`) : l).join('\n');
+            textarea.value = v.slice(0, start) + block + v.slice(end);
+            textarea.focus();
+            textarea.selectionStart = start; textarea.selectionEnd = start + block.length;
+            textarea.dispatchEvent(new Event('input', { bubbles: true }));
+            return true;
+        },
+
         insertLine(textarea, prefix) {
+            if (this.markLines(textarea, prefix)) return;
             const v = textarea.value;
             const pos = textarea.id === 'sb-activeNoteArea' ? app.sandbox.caretPos(textarea) : (textarea.selectionStart ?? v.length);
             const lineStart = v.lastIndexOf('\n', pos - 1) + 1;
@@ -6766,6 +6789,129 @@ ${planned.length ? planned.map(({ card }) => this.cardLine(card)).join('\n') : '
             app.saveToLocal(); app.renderTsumegoStones();
         },
         async resetTsumego() { if (await app.ui.confirm('清空盤面', '<p>確定要清空詰棋盤面？</p>', '清空', true)) { app.state.tsumego.stones = []; app.saveToLocal(); app.renderTsumegoStones(); } }
+    }
+};
+
+// ==========================================
+// 📥 貼上整理：整段貼進來，自動猜每一行是待辦／問題／回答，點標籤可改，再放進筆記
+// ==========================================
+app.pasteSort = {
+    CYCLE: ['plain', 'todo', 'question', 'answer'],
+    LABEL: { plain: '一般', todo: '✅ 待辦', question: '❓ 問題', answer: '💬 回答', done: '☑ 完成' },
+    BULLET: /^\s*(?:[-*•・●▪◦]\s+|\d{1,2}[.)、．]\s*|[(（]\d{1,2}[)）]\s*|[一二三四五六七八九十]{1,2}[、.．]\s*)/,
+    state: { text: '', overrides: {}, cardId: null },
+
+    open(cardId) {
+        this.state = { text: '', overrides: {}, cardId: cardId || null };
+        const card = cardId ? app.worktime.getCard(cardId) : null;
+        const where = card ? `「${app.entries.escapeHtml(String(card.title || '').trim().split('\n')[0] || '未命名')}」的筆記` : '全域草稿';
+        app.ui.dialog({
+            title: '📥 貼上整理',
+            wide: true,
+            html: `<p class="pm-hint" style="margin-top:0;">把會議記錄、訊息、AI 的回覆整段貼上，每一行前面的標籤點一下就換：一般 → 待辦 → 問題 → 回答。不想標也可以直接放進去。會放進${where}。</p>
+                <textarea id="ps-input" class="ps-input" placeholder="貼在這裡…" oninput="app.pasteSort.onInput(this.value)"></textarea>
+                <div id="ps-summary" class="ps-summary"></div>
+                <div id="ps-preview" class="ps-preview"></div>`,
+            buttons: [
+                { label: '取消', value: null },
+                { label: '原樣放進去', value: 'raw' },
+                { label: '放進筆記', value: 'apply', primary: true }
+            ]
+        }).then(v => {
+            if (!v || !this.state.text.trim()) return;
+            const text = v === 'raw' ? this.state.text.replace(/\s+$/, '') : this.compose();
+            this.put(this.state.cardId, text);
+        });
+        setTimeout(() => document.getElementById('ps-input')?.focus(), 30);
+        this.render();
+    },
+
+    onInput(v) { this.state.text = v; this.state.overrides = {}; this.render(); },
+
+    // 每一行：{ raw, body, kind, auto }
+    analyze() {
+        const out = [];
+        let lastKind = null;
+        String(this.state.text || '').replace(/\r/g, '').split('\n').forEach((raw, i) => {
+            const t = raw.trim();
+            const row = { i, raw: raw.replace(/\s+$/, ''), body: t, kind: 'plain' };
+            if (!t) { row.kind = 'blank'; out.push(row); return; }
+            let m;
+            if ((m = t.match(/^[-*]\s+\[\s?\]\s*(.*)$/))) { row.kind = 'todo'; row.body = m[1]; }
+            else if ((m = t.match(/^[-*]\s+\[[xX]\]\s*(.*)$/))) { row.kind = 'done'; row.body = m[1]; }
+            else if ((m = t.match(/^[-*]\s+\[\?\]\s*(.*)$/) || t.match(/^❓️?\s*(.*)$/))) { row.kind = 'question'; row.body = m[1]; }
+            else if ((m = t.match(/^[-*]\s+\[[aA]\]\s*(.*)$/) || t.match(/^💬\s*(.*)$/))) { row.kind = 'answer'; row.body = m[1]; }
+            else if (/^\*\*\[\d{1,2}\/\d{1,2}\s+\d{2}:\d{2}\]\*\*/.test(t) || /^#{1,6}\s/.test(t) || /^【.*】$/.test(t) || t === '---') { row.kind = 'plain'; }
+            // 其他一律當「一般」，由自己點標籤決定
+            row.auto = row.kind;
+            const key = `${i}|${t}`;
+            if (this.state.overrides[key]) row.kind = this.state.overrides[key];
+            row.key = key;
+            if (row.kind === 'plain' && row.auto !== 'plain') row.body = t; // 改回一般：保留原文
+            if (row.auto === 'plain' && row.kind !== 'plain') row.body = t.replace(this.BULLET, '');
+            out.push(row);
+            lastKind = row.kind;
+        });
+        return out;
+    },
+
+    lineFor(r) {
+        if (r.kind === 'blank') return '';
+        if (r.kind === 'plain') return r.raw;
+        const body = String(r.body || '').trim().replace(this.BULLET, '');
+        return { todo: '- [ ] ', done: '- [x] ', question: '- [?] ', answer: '- [A] ' }[r.kind] + body;
+    },
+
+    compose() {
+        return this.analyze().map(r => this.lineFor(r)).join('\n').replace(/\n{3,}/g, '\n\n').replace(/^\n+|\s+$/g, '');
+    },
+
+    cycle(key) {
+        const row = this.analyze().find(r => r.key === key);
+        if (!row) return;
+        const cur = this.CYCLE.indexOf(row.kind);
+        this.state.overrides[key] = this.CYCLE[(cur + 1) % this.CYCLE.length];
+        this.render();
+    },
+
+    setAll(kind) {
+        this.analyze().forEach(r => { if (r.kind !== 'blank') this.state.overrides[r.key] = kind; });
+        this.render();
+    },
+
+    render() {
+        const prev = document.getElementById('ps-preview');
+        const sum = document.getElementById('ps-summary');
+        if (!prev || !sum) return;
+        const esc = x => app.entries.escapeHtml(x);
+        const rows = this.analyze();
+        const filled = rows.filter(r => r.kind !== 'blank');
+        if (!filled.length) { prev.innerHTML = ''; sum.innerHTML = ''; return; }
+        const count = k => filled.filter(r => r.kind === k).length;
+        const parts = [['todo', '待辦'], ['question', '問題'], ['answer', '回答'], ['done', '已完成']].filter(([k]) => count(k)).map(([k, n]) => `${count(k)} ${n}`);
+        sum.innerHTML = `<span>${parts.length ? parts.join('・') : '還沒標'}，共 ${filled.length} 行</span>
+            <span><button type="button" class="ps-mini" onclick="app.pasteSort.setAll('plain')">全部當一般</button></span>`;
+        prev.innerHTML = rows.map(r => r.kind === 'blank' ? '<div class="ps-row ps-blank"></div>' : `<div class="ps-row">
+                <button type="button" class="ps-chip ps-${r.kind}" onclick="app.pasteSort.cycle(${esc(JSON.stringify(r.key))})" title="點一下換類型">${this.LABEL[r.kind]}</button>
+                <span class="ps-text ${r.kind === 'plain' ? 'plain' : ''}">${esc(r.kind === 'plain' ? r.raw.trim() : String(r.body || '').replace(this.BULLET, ''))}</span>
+            </div>`).join('');
+    },
+
+    put(cardId, text) {
+        if (!text) return;
+        const sb = app.state.sandbox;
+        if (app.state.view === 'sandbox' && (sb.activeTaskId || null) === cardId) {
+            app.sandbox.insertBlock(text);
+        } else {
+            const card = cardId ? app.worktime.getCard(cardId) : null;
+            if (!card) return;
+            const cur = String(card.content || '').replace(/\s+$/, '');
+            card.content = cur ? `${cur}\n${text}` : text;
+            app.saveToLocal();
+            app.refreshCard(cardId);
+        }
+        const n = text.split('\n').filter(l => /^- \[[ x?A]\]/.test(l)).length;
+        app.ui.toast(n ? `已放進筆記（${n} 行有標記）` : '已放進筆記');
     }
 };
 

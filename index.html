@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>白板 & 心流沙盒 v3.9</title>
+    <title>白板 & 心流沙盒 v3.10</title>
     
     <!-- Firebase Compat -->
     <script src="https://www.gstatic.com/firebasejs/10.8.1/firebase-app-compat.js"></script>
@@ -582,6 +582,19 @@
         .app-dialog-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; padding:12px 18px 16px; border-top:1px solid #f1f5f9; }
         .app-dialog-btn { border:1px solid #cbd5e1; background:#fff; color:#334155; border-radius:8px; padding:8px 14px; cursor:pointer; font-size:.9rem; }
         .app-dialog-btn.primary { background:var(--primary); border-color:var(--primary); color:#fff; font-weight:bold; }
+        .ps-input { width:100%; min-height:120px; max-height:30vh; padding:8px; border:1px solid #cbd5e1; border-radius:8px; font-size:.9rem; line-height:1.5; resize:vertical; box-sizing:border-box; }
+        .ps-summary { display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; margin:8px 0 4px; font-size:.82rem; color:#475569; }
+        .ps-mini { border:1px solid #cbd5e1; background:#fff; border-radius:6px; padding:2px 8px; font-size:.78rem; margin-left:4px; cursor:pointer; color:#475569; }
+        .ps-preview { max-height:38vh; overflow-y:auto; border:1px solid #f1f5f9; border-radius:8px; }
+        .ps-row { display:flex; gap:8px; align-items:flex-start; padding:4px 8px; border-bottom:1px solid #f8fafc; }
+        .ps-row.ps-blank { height:6px; padding:0; border:none; }
+        .ps-chip { flex:0 0 auto; width:66px; border:1px solid #cbd5e1; background:#f8fafc; color:#64748b; border-radius:999px; padding:2px 0; font-size:.75rem; cursor:pointer; }
+        .ps-chip.ps-todo { background:#dcfce7; border-color:#86efac; color:#166534; }
+        .ps-chip.ps-question { background:#fef3c7; border-color:#fcd34d; color:#92400e; }
+        .ps-chip.ps-answer { background:#e0f2fe; border-color:#7dd3fc; color:#075985; }
+        .ps-chip.ps-done { background:#f1f5f9; color:#94a3b8; }
+        .ps-text { font-size:.86rem; color:#1e293b; overflow-wrap:anywhere; padding-top:1px; }
+        .ps-text.plain { color:#64748b; }
         .app-dialog-btn.danger { border-color:#fca5a5; color:#b91c1c; }
         .diff-block { border:1px solid #e2e8f0; border-radius:8px; padding:8px 10px; margin:8px 0; background:#f8fafc; }
         .diff-head { font-weight:bold; font-size:.85rem; color:#0f172a; }
@@ -770,7 +783,7 @@
     <!-- 登入畫面 -->
     <div id="login-screen">
         <h1 style="font-size: 2.5rem; margin-bottom: 10px;">白板系統</h1>
-        <p style="color: #94a3b8; margin-bottom: 30px;">v3.9</p>
+        <p style="color: #94a3b8; margin-bottom: 30px;">v3.10</p>
         <button onclick="app.login()" style="padding: 14px 28px; font-size: 1.1rem; border-radius: 30px; border: none; background: #3b82f6; color: white; font-weight: bold; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.3);">
             使用 Google 登入
         </button>
@@ -1017,6 +1030,7 @@
                             <button class="sb-btn-outline" onmousedown="event.preventDefault()" onclick="app.questions.insert(document.getElementById('sb-activeNoteArea'),'question')" title="新增一個待確認的問題">❓ 問題</button>
                             <button class="sb-btn-outline" onmousedown="event.preventDefault()" onclick="app.questions.insert(document.getElementById('sb-activeNoteArea'),'answer')" title="在游標所在的問題下面寫答案">💬 回答</button>
                             <button class="sb-btn-outline" onmousedown="event.preventDefault()" onclick="app.sandbox.insertStamp()" title="新增一行，前面加上現在的日期時間（會出現在工作日誌）">🕒 時間</button>
+                            <button class="sb-btn-outline" onmousedown="event.preventDefault()" onclick="app.pasteSort.open(app.state.sandbox.activeTaskId)" title="整段貼上，自動標出待辦／問題／回答再放進筆記">📥 貼上</button>
                             <button class="sb-btn-outline" onmousedown="event.preventDefault()" onclick="app.state.sandbox.activeTaskId ? app.tidy.run(app.state.sandbox.activeTaskId, 'sandbox') : app.ui.toast('先選一張卡片')" title="把已勾選的待辦、已回答的問題移到工作紀錄">🧹 整理</button>
                             <span class="sb-bar-sep"></span>
                             <select class="sb-tpl-select" onchange="app.sandbox.insertTemplate(this.value); this.value=''" title="插入一段整理用的範本（插在游標那一行下面）">
