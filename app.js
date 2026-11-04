@@ -1,5 +1,5 @@
 // =====================================================================
-// 白板 & 心流沙盒 v3.10
+// 白板 & 心流沙盒 v3.11
 // ---------------------------------------------------------------------
 // v3.0 重整重點（資料邏輯）：
 // 1. 所有修改只走一個入口 app.saveToLocal()（= store.markDirty）：
@@ -27,7 +27,7 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 const provider = new firebase.auth.GoogleAuthProvider();
 
-const APP_VERSION = '3.10';
+const APP_VERSION = '3.11';
 const SCHEMA_VERSION = 3;
 const CLOUD_DOC_SOFT_LIMIT = 750 * 1024;   // 超過時提醒
 const CLOUD_DOC_HARD_LIMIT = 1000 * 1000;  // Firestore 單一文件上限約 1 MiB，保守一點
@@ -4086,6 +4086,7 @@ const app = {
         else if (this.state.view === 'gantt') this.renderGantt();
         else if (this.state.view === 'calendar') this.renderCalendar();
         else if (this.state.view === 'report') this.report.render();
+        else if (this.state.view === 'lists') this.lists.render();
         else if (this.state.view === 'sandbox') this.sandbox.renderTodo();
     },
 
@@ -6789,6 +6790,182 @@ ${planned.length ? planned.map(({ card }) => this.cardLine(card)).join('\n') : '
             app.saveToLocal(); app.renderTsumegoStones();
         },
         async resetTsumego() { if (await app.ui.confirm('清空盤面', '<p>確定要清空詰棋盤面？</p>', '清空', true)) { app.state.tsumego.stones = []; app.saveToLocal(); app.renderTsumegoStones(); } }
+    }
+};
+
+// ==========================================
+// ✅ 清單：所有卡片的待辦、問題、問答集中在一頁（資料仍在卡片筆記裡，改這裡＝改卡片）
+// ==========================================
+app.lists = {
+    ui: { tab: 'todo', project: '', search: '', showDone: false, showArchived: true, addCard: '' },
+
+    esc(s) { return app.entries.escapeHtml(s); },
+    cardTitle(card) { return String(card?.title || '').trim().split('\n')[0] || '未命名'; },
+
+    rows() {
+        const W = app.worktime, U = this.ui, q = U.search.trim().toLowerCase();
+        return W.allCards().filter(({ card }) => {
+            if (U.project && String(card.project || '').trim() !== U.project) return false;
+            return true;
+        }).map(r => ({ ...r, q }));
+    },
+    match(q, ...texts) { return !q || texts.some(t => String(t || '').toLowerCase().includes(q)); },
+
+    collect() {
+        const out = { todoOpen: [], todoDone: [], todoArchived: [], qOpen: [], qAnswered: [], qArchived: [] };
+        this.rows().forEach(({ card, tabId, tabName, q }) => {
+            const base = { card, tabId, tabName };
+            const title = this.cardTitle(card);
+            app.sandbox.parseSubtasks(card.content).forEach(st => {
+                if (!this.match(q, st.text, title)) return;
+                (st.completed ? out.todoDone : out.todoOpen).push({ ...base, ...st });
+            });
+            app.questions.parse(card.content).forEach(x => {
+                if (!this.match(q, x.text, ...x.answers, title)) return;
+                (x.answers.some(Boolean) ? out.qAnswered : out.qOpen).push({ ...base, ...x });
+            });
+            (card.entries || []).forEach(en => {
+                const date = String(en.createdAt ? app.worktime.localDateString(new Date(en.createdAt)) : '').slice(0, 10);
+                String(en.content || '').split('\n').forEach(l => {
+                    const m = l.trim().match(/^✅\s*(.+)$/);
+                    if (m && this.match(q, m[1], title)) out.todoArchived.push({ ...base, text: m[1], date });
+                });
+                app.questions.parse(en.content).forEach(x => {
+                    if (this.match(q, x.text, ...x.answers, title)) out.qArchived.push({ ...base, ...x, date });
+                });
+            });
+        });
+        out.todoArchived.sort((a, b) => String(b.date).localeCompare(String(a.date)));
+        out.qArchived.sort((a, b) => String(b.date).localeCompare(String(a.date)));
+        return out;
+    },
+
+    set(key, val) { this.ui[key] = val; this.render(); },
+
+    projects() {
+        return [...new Set(app.worktime.allCards().map(({ card }) => String(card.project || '').trim()).filter(Boolean))].sort();
+    },
+
+    // 依卡片分組
+    grouped(list, itemHtml) {
+        const groups = new Map();
+        list.forEach(x => { if (!groups.has(x.card.id)) groups.set(x.card.id, { ...x, items: [] }); groups.get(x.card.id).items.push(x); });
+        return [...groups.values()].map(g => `<div class="ls-group">
+            <div class="ls-group-head">
+                <button type="button" class="ls-card-link" onclick="app.actions.jumpToCard('${g.card.id}','${g.tabId}')" title="到時間軸看這張卡">${this.esc(this.cardTitle(g.card))}</button>
+                <span class="ls-meta">${g.card.project ? '#' + this.esc(g.card.project) + ' · ' : ''}${this.esc(g.tabName)}${Number(g.card.status) === 2 ? ' · 已完成' : ''}</span>
+                <button type="button" class="ls-focus" onclick="app.sandbox.focusTaskForTimer('${g.card.id}')" title="進心流專注這張卡">🎯</button>
+            </div>
+            ${g.items.map(itemHtml).join('')}
+        </div>`).join('');
+    },
+
+    section(title, count, body, { open = true, key = '' } = {}) {
+        if (!count) return '';
+        const k = `open_${this.ui.tab}_${key}`;
+        if (key && this.ui[k] !== undefined) open = this.ui[k];
+        return `<details class="ls-section" ${open ? 'open' : ''} ${key ? `ontoggle="app.lists.ui['${k}']=this.open"` : ''}><summary>${title} <span class="ls-count">${count}</span></summary>${body}</details>`;
+    },
+
+    todoItem(x) {
+        return `<label class="ls-item ${x.completed ? 'done' : ''}"><input type="checkbox" ${x.completed ? 'checked' : ''} onchange="app.lists.toggleTodo('${x.card.id}', ${x.lineIndex}, ${this.esc(JSON.stringify(x.text))})"><span>${this.esc(x.text)}</span></label>`;
+    },
+
+    qItem(x, editable) {
+        const ans = x.answers.filter(Boolean).map(a => `<div class="ls-answer">💬 ${this.esc(a)}</div>`).join('');
+        const input = editable ? `<input type="text" class="ls-answer-input" placeholder="${x.answers.some(Boolean) ? '補充答案…' : '寫答案，按 Enter'}" onkeydown="if(event.key==='Enter' && !event.isComposing){ app.lists.answer('${x.card.id}', ${x.line}, ${this.esc(JSON.stringify(x.text))}, this.value); }">` : '';
+        return `<div class="ls-q"><div class="ls-q-text">❓ ${this.esc(x.text)}${x.date ? ` <span class="ls-meta">${this.esc(x.date)} 整理</span>` : ''}</div>${ans}${input}</div>`;
+    },
+
+    render() {
+        const target = document.getElementById('lists-render-target');
+        if (!target) return;
+        const U = this.ui, d = this.collect();
+        const active = document.activeElement;
+        const keepSearch = active && active.id === 'ls-search' ? active.selectionStart : null;
+        const tabs = [['todo', `✅ 待辦 <b>${d.todoOpen.length}</b>`], ['question', `❓ 問題 <b>${d.qOpen.length}</b>`], ['review', `💬 問答回顧 <b>${d.qAnswered.length + d.qArchived.length}</b>`]];
+        const cards = app.worktime.allCards().filter(({ card }) => Number(card.status) !== 2 && (!U.project || String(card.project || '').trim() === U.project));
+        const defCard = U.addCard && cards.some(r => r.card.id === U.addCard) ? U.addCard : (app.state.sandbox.activeTaskId && cards.some(r => r.card.id === app.state.sandbox.activeTaskId) ? app.state.sandbox.activeTaskId : (cards[0]?.card.id || ''));
+        let body = '';
+        if (U.tab === 'todo') {
+            body = `<div class="ls-add">
+                    <input type="text" id="ls-add-text" placeholder="新增待辦，按 Enter" onkeydown="if(event.key==='Enter' && !event.isComposing) app.lists.add(this.value)">
+                    <select id="ls-add-card" onchange="app.lists.ui.addCard=this.value" title="加到哪張卡">${cards.map(r => `<option value="${r.card.id}" ${r.card.id === defCard ? 'selected' : ''}>${this.esc(this.cardTitle(r.card))}</option>`).join('')}</select>
+                </div>
+                ${d.todoOpen.length ? this.grouped(d.todoOpen, x => this.todoItem(x)) : '<div class="data-empty">沒有未完成的待辦 🎉</div>'}
+                ${this.section('已勾選（還在筆記裡，按 🧹 整理會收進紀錄）', d.todoDone.length, this.grouped(d.todoDone, x => this.todoItem(x)), { open: false, key: 'done' })}
+                ${this.section('已整理收進工作紀錄', d.todoArchived.length, this.grouped(d.todoArchived, x => `<div class="ls-item done archived"><span>✅ ${this.esc(x.text)}</span><span class="ls-meta">${this.esc(x.date)}</span></div>`), { open: false, key: 'arch' })}`;
+        } else if (U.tab === 'question') {
+            body = d.qOpen.length ? this.grouped(d.qOpen, x => this.qItem(x, true)) : '<div class="data-empty">沒有待確認的問題。在卡片筆記按「❓ 問題」記下來。</div>';
+        } else {
+            body = `${d.qAnswered.length ? this.section('已回答（還在筆記裡）', d.qAnswered.length, this.grouped(d.qAnswered, x => this.qItem(x, true)), { key: 'ans' }) : ''}
+                ${this.section('已整理收進工作紀錄', d.qArchived.length, this.grouped(d.qArchived, x => this.qItem(x, false)), { key: 'arch' })}
+                ${!d.qAnswered.length && !d.qArchived.length ? '<div class="data-empty">還沒有回答過的問題。</div>' : ''}`;
+        }
+        target.innerHTML = `<div class="ls-wrap">
+            <div class="ls-tabs">${tabs.map(([k, l]) => `<button type="button" class="ls-tab ${U.tab === k ? 'active' : ''}" onclick="app.lists.set('tab','${k}')">${l}</button>`).join('')}</div>
+            <div class="ls-filters">
+                <select onchange="app.lists.set('project', this.value)"><option value="">全部專案</option>${this.projects().map(p => `<option ${p === U.project ? 'selected' : ''}>${this.esc(p)}</option>`).join('')}</select>
+                <input type="search" id="ls-search" placeholder="搜尋…" value="${this.esc(U.search)}" oninput="app.lists.ui.search=this.value; clearTimeout(app.lists._t); app.lists._t=setTimeout(()=>app.lists.render(),200)">
+            </div>
+            ${body}
+        </div>`;
+        if (keepSearch !== null) { const el = document.getElementById('ls-search'); el.focus(); el.selectionStart = el.selectionEnd = keepSearch; }
+    },
+
+    // 用行號＋文字確認是同一行（卡片在別處被改過時改用文字找）
+    findLine(lines, lineIndex, test) {
+        if (test(lines[lineIndex] ?? '')) return lineIndex;
+        return lines.findIndex(test);
+    },
+
+    afterChange(cardId) {
+        app.saveToLocal();
+        app.refreshCard(cardId);
+        const sb = app.state.sandbox;
+        if (sb.activeTaskId === cardId) { const ta = document.getElementById('sb-activeNoteArea'); if (ta) ta.value = app.worktime.getCard(cardId).content; }
+        this.render();
+    },
+
+    toggleTodo(cardId, lineIndex, text) {
+        const card = app.worktime.getCard(cardId);
+        if (!card) return;
+        const lines = String(card.content || '').split('\n');
+        const re = /^\s*[-*]\s+\[([ xX])\]\s+(.*)$/;
+        const i = this.findLine(lines, lineIndex, l => { const m = l.match(re); return !!m && m[2] === text; });
+        if (i < 0) { app.ui.toast('這張卡的筆記剛被改過，已重新整理清單', 'warn'); return this.render(); }
+        app.sandbox.toggleSubtask(cardId, i);
+        this.afterChange(cardId);
+    },
+
+    answer(cardId, line, qText, value) {
+        const text = String(value || '').trim();
+        if (!text) return;
+        const card = app.worktime.getCard(cardId);
+        if (!card) return;
+        const lines = String(card.content || '').split('\n');
+        const q = app.questions.parse(card.content).find(x => x.line === line && x.text === qText) || app.questions.parse(card.content).find(x => x.text === qText);
+        if (!q) { app.ui.toast('找不到這個問題，可能剛被改過', 'warn'); return this.render(); }
+        const empty = q.answerLines.find((li, k) => !q.answers[k]);
+        if (empty !== undefined) lines[empty] = `${app.questions.A} ${text}`;
+        else lines.splice(Math.max(q.line, ...q.answerLines) + 1, 0, `${app.questions.A} ${text}`);
+        card.content = lines.join('\n');
+        this.afterChange(cardId);
+        app.ui.toast('已寫回卡片筆記');
+    },
+
+    add(value) {
+        const text = String(value || '').trim();
+        const cardId = document.getElementById('ls-add-card')?.value;
+        const card = cardId ? app.worktime.getCard(cardId) : null;
+        if (!text) return;
+        if (!card) { app.ui.toast('先選要加到哪張卡', 'warn'); return; }
+        const cur = String(card.content || '').replace(/\s+$/, '');
+        card.content = `${cur}${cur ? '\n' : ''}- [ ] ${text}`;
+        if (Number(card.status) === 2) app.worktime.reopenCompleted(card, 1);
+        this.ui.addCard = cardId;
+        this.afterChange(cardId);
+        setTimeout(() => document.getElementById('ls-add-text')?.focus(), 0);
     }
 };
 

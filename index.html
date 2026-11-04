@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>白板 & 心流沙盒 v3.10</title>
+    <title>白板 & 心流沙盒 v3.11</title>
     
     <!-- Firebase Compat -->
     <script src="https://www.gstatic.com/firebasejs/10.8.1/firebase-app-compat.js"></script>
@@ -582,6 +582,34 @@
         .app-dialog-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; padding:12px 18px 16px; border-top:1px solid #f1f5f9; }
         .app-dialog-btn { border:1px solid #cbd5e1; background:#fff; color:#334155; border-radius:8px; padding:8px 14px; cursor:pointer; font-size:.9rem; }
         .app-dialog-btn.primary { background:var(--primary); border-color:var(--primary); color:#fff; font-weight:bold; }
+        .ls-wrap { max-width:820px; margin:0 auto; }
+        .ls-tabs { display:flex; gap:6px; margin-bottom:10px; flex-wrap:wrap; }
+        .ls-tab { border:1px solid #cbd5e1; background:#fff; border-radius:999px; padding:6px 14px; cursor:pointer; font-size:.9rem; color:#334155; }
+        .ls-tab.active { background:var(--primary); border-color:var(--primary); color:#fff; }
+        .ls-filters { display:flex; gap:8px; margin-bottom:12px; }
+        .ls-filters select, .ls-filters input, .ls-add input, .ls-add select { padding:7px 9px; border:1px solid #cbd5e1; border-radius:8px; font-size:.88rem; background:#fff; }
+        .ls-filters input { flex:1; min-width:0; }
+        .ls-add { display:flex; gap:8px; margin-bottom:12px; }
+        .ls-add input { flex:1; min-width:0; }
+        .ls-add select { max-width:40%; }
+        .ls-group { background:#fff; border:1px solid #e2e8f0; border-radius:10px; padding:8px 12px; margin-bottom:8px; }
+        .ls-group-head { display:flex; align-items:center; gap:8px; margin-bottom:4px; flex-wrap:wrap; }
+        .ls-card-link { border:none; background:none; padding:0; font-weight:bold; color:#1e293b; cursor:pointer; text-align:left; font-size:.92rem; }
+        .ls-card-link:hover { color:var(--primary); text-decoration:underline; }
+        .ls-meta { color:#94a3b8; font-size:.78rem; font-weight:normal; }
+        .ls-focus { margin-left:auto; border:1px solid #e2e8f0; background:#f8fafc; border-radius:6px; cursor:pointer; padding:1px 6px; }
+        .ls-item { display:flex; align-items:flex-start; gap:8px; padding:5px 2px; font-size:.9rem; color:#1e293b; cursor:pointer; border-top:1px solid #f8fafc; overflow-wrap:anywhere; }
+        .ls-item input { margin-top:3px; }
+        .ls-item.done span:first-of-type { color:#94a3b8; text-decoration:line-through; }
+        .ls-item.archived { cursor:default; justify-content:space-between; }
+        .ls-q { padding:6px 2px; border-top:1px solid #f8fafc; }
+        .ls-q-text { font-size:.9rem; color:#1e293b; overflow-wrap:anywhere; }
+        .ls-answer { margin:3px 0 0 20px; font-size:.86rem; color:#075985; overflow-wrap:anywhere; }
+        .ls-answer-input { margin:5px 0 0 20px; width:calc(100% - 20px); padding:5px 8px; border:1px dashed #cbd5e1; border-radius:6px; font-size:.85rem; box-sizing:border-box; }
+        .ls-answer-input:focus { border-style:solid; border-color:var(--primary); outline:none; }
+        .ls-section { margin:12px 0; }
+        .ls-section > summary { cursor:pointer; color:#475569; font-size:.88rem; margin-bottom:8px; }
+        .ls-count { background:#e2e8f0; border-radius:999px; padding:0 7px; font-size:.75rem; }
         .ps-input { width:100%; min-height:120px; max-height:30vh; padding:8px; border:1px solid #cbd5e1; border-radius:8px; font-size:.9rem; line-height:1.5; resize:vertical; box-sizing:border-box; }
         .ps-summary { display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; margin:8px 0 4px; font-size:.82rem; color:#475569; }
         .ps-mini { border:1px solid #cbd5e1; background:#fff; border-radius:6px; padding:2px 8px; font-size:.78rem; margin-left:4px; cursor:pointer; color:#475569; }
@@ -783,7 +811,7 @@
     <!-- 登入畫面 -->
     <div id="login-screen">
         <h1 style="font-size: 2.5rem; margin-bottom: 10px;">白板系統</h1>
-        <p style="color: #94a3b8; margin-bottom: 30px;">v3.10</p>
+        <p style="color: #94a3b8; margin-bottom: 30px;">v3.11</p>
         <button onclick="app.login()" style="padding: 14px 28px; font-size: 1.1rem; border-radius: 30px; border: none; background: #3b82f6; color: white; font-weight: bold; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.3);">
             使用 Google 登入
         </button>
@@ -801,6 +829,7 @@
                 <button class="btn" onclick="app.switchView('chronicle')" id="btn-view-chronicle">⚡ <span class="nav-btn-label">大事記</span></button>
                 <button class="btn" onclick="app.switchView('gantt')" id="btn-view-gantt">📊 <span class="nav-btn-label">甘特圖</span></button>
                 <button class="btn" onclick="app.switchView('calendar')" id="btn-view-calendar">📅 <span class="nav-btn-label">日曆</span></button>
+                <button class="btn" onclick="app.switchView('lists')" id="btn-view-lists" title="所有卡片的待辦、問題、問答集中在一起（改這裡就是改卡片）">✅ <span class="nav-btn-label keep">清單</span></button>
                 <button class="btn" onclick="app.switchView('report')" id="btn-view-report" title="週報與工作日誌（可匯出 Excel 填工時）">📋 <span class="nav-btn-label keep">週報／日誌</span></button>
                 
                 <!-- SPA 沙盒入口 -->
@@ -926,6 +955,13 @@
                     <span class="gantt-legend-item">⚠ 數字＝與其他正式排程重疊的工項數</span>
                 </div>
                 <div id="gantt-render-target"></div>
+            </div>
+
+            <!-- 清單 -->
+            <div id="view-lists" class="view-container">
+                <h3 style="text-align: center; color: #475569; margin-top: 0; margin-bottom:6px;">✅ 清單</h3>
+                <p style="text-align:center; color:#64748b; font-size:.88rem; margin:0 0 16px;">所有卡片筆記裡的待辦和問題。在這裡勾選、回答，會直接寫回那張卡。</p>
+                <div id="lists-render-target"></div>
             </div>
 
             <!-- 週報 -->
