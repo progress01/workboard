@@ -1,5 +1,5 @@
 // =====================================================================
-// 白板 & 心流沙盒 v3.15
+// 白板 & 心流沙盒 v3.16
 // ---------------------------------------------------------------------
 // v3.0 重整重點（資料邏輯）：
 // 1. 所有修改只走一個入口 app.saveToLocal()（= store.markDirty）：
@@ -27,7 +27,7 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 const provider = new firebase.auth.GoogleAuthProvider();
 
-const APP_VERSION = '3.15';
+const APP_VERSION = '3.16';
 const SCHEMA_VERSION = 3;
 const CLOUD_DOC_SOFT_LIMIT = 750 * 1024;   // 超過時提醒
 const CLOUD_DOC_HARD_LIMIT = 1000 * 1000;  // Firestore 單一文件上限約 1 MiB，保守一點
@@ -5880,6 +5880,81 @@ ${planned.length ? planned.map(({ card }) => this.cardLine(card)).join('\n') : '
         editing: {},
 
         list(card) { return Array.isArray(card?.refs) ? card.refs : []; },
+        isCardRef(r) { return r?.type === 'card' && r.cardId; },
+        // 連到的卡（即時讀名稱；卡被刪了回傳 null）
+        target(r) {
+            const row = app.worktime.allCards().find(x => x.card.id === r.cardId);
+            return row || null;
+        },
+        cardName(c) { return String(c?.title || '').trim().split('\n')[0] || '未命名'; },
+        // 被誰連到：即時算出來，不另外存
+        backlinks(card) {
+            if (!card) return [];
+            return app.worktime.allCards().filter(({ card: c }) => c.id !== card.id && this.list(c).some(r => this.isCardRef(r) && r.cardId === card.id));
+        },
+        cardChip(r) {
+            const esc = s => app.entries.escapeHtml(s);
+            const t = this.target(r);
+            if (!t) return `<span class="ref-chip ref-card gone" title="這張卡已經刪除或合併">🗂 ${esc(r.title || '卡片')}（已刪除）</span>`;
+            return `<button type="button" class="ref-chip ref-card" onclick="event.stopPropagation(); app.taskNav.goToCard('${t.card.id}','${t.tabId}')" title="打開這張卡（${esc(t.tabName)}）">🗂 ${esc(this.cardName(t.card))}</button>`;
+        },
+        backlinkHtml(card) {
+            const esc = s => app.entries.escapeHtml(s);
+            const bl = this.backlinks(card);
+            if (!bl.length) return '';
+            return `<div class="ref-backlinks"><span class="ref-backlinks-label">被這些卡參考：</span>${bl.map(({ card: c, tabId, tabName }) => `<button type="button" class="ref-chip ref-card back" onclick="event.stopPropagation(); app.taskNav.goToCard('${c.id}','${tabId}')" title="${esc(tabName)}">↩ ${esc(this.cardName(c))}</button>`).join('')}</div>`;
+        },
+
+        pickCard(cardId, source = 'timeline') {
+            const card = app.worktime.getCard(cardId);
+            if (!card) return;
+            this._pick = { cardId, source, q: '' };
+            app.ui.dialog({
+                title: '🗂 連到另一張卡',
+                wide: true,
+                html: `<input id="refpick-q" class="ps-input" style="min-height:0;height:auto;" placeholder="搜尋卡片名稱或專案…" oninput="app.refs._pick.q=this.value; app.refs.renderPick()">
+                    <div id="refpick-list" class="refpick-list"></div>
+                    <p class="pm-hint">連過去之後，那張卡的參考資料會自動顯示「被這些卡參考」。</p>`,
+                buttons: [{ label: '取消', value: null }]
+            });
+            this.renderPick();
+            setTimeout(() => document.getElementById('refpick-q')?.focus(), 30);
+        },
+        renderPick() {
+            const el = document.getElementById('refpick-list');
+            const P = this._pick;
+            if (!el || !P) return;
+            const esc = s => app.entries.escapeHtml(s);
+            const card = app.worktime.getCard(P.cardId);
+            const linked = new Set(this.list(card).filter(r => this.isCardRef(r)).map(r => r.cardId));
+            const q = P.q.trim().toLowerCase();
+            const proj = String(card?.project || '').trim();
+            const ts = c => Number(String(c.id).match(/(\d{10,})/)?.[1] || 0);
+            const rows = app.worktime.allCards()
+                .filter(({ card: c }) => c.id !== P.cardId && !linked.has(c.id))
+                .filter(({ card: c, tabName }) => !q || [c.title, c.project, tabName].some(t => String(t || '').toLowerCase().includes(q)))
+                .sort((a, b) => ((String(b.card.project || '').trim() === proj) - (String(a.card.project || '').trim() === proj)) || (Number(a.card.status) === 2) - (Number(b.card.status) === 2) || ts(b.card) - ts(a.card))
+                .slice(0, 40);
+            el.innerHTML = rows.length ? rows.map(({ card: c, tabName }) => `<button type="button" class="refpick-item" onclick="app.refs.linkCard('${P.cardId}','${c.id}','${P.source}')">
+                    <span class="refpick-title">${esc(this.cardName(c))}</span>
+                    <span class="ls-meta">${c.project ? '#' + esc(c.project) + ' · ' : ''}${esc(tabName)}${Number(c.status) === 2 ? ' · 已完成' : ''}</span>
+                </button>`).join('') : '<div class="data-empty">找不到符合的卡片。</div>';
+        },
+        linkCard(cardId, targetId, source = 'timeline') {
+            const card = app.worktime.getCard(cardId);
+            const target = app.worktime.getCard(targetId);
+            if (!card || !target) return;
+            if (!Array.isArray(card.refs)) card.refs = [];
+            if (!card.refs.some(r => this.isCardRef(r) && r.cardId === targetId)) {
+                card.refs.push({ id: app.makeId('ref'), type: 'card', cardId: targetId, title: this.cardName(target), url: '', createdAt: new Date().toISOString() });
+            }
+            app.saveToLocal();
+            document.querySelector('.app-dialog-overlay .app-dialog-btn')?.click();
+            app.setPanelOpen(source, cardId, 'refs', true);
+            this.refresh(cardId, source);
+            app.refreshCard(targetId); // 對方的「被參考」
+            app.ui.toast(`已連到「${this.cardName(target)}」`);
+        },
 
         isUrl(s) { return /^(https?:\/\/|\\\\|file:\/\/|[a-zA-Z]:\\)/.test(String(s || '').trim()); },
 
@@ -5905,21 +5980,31 @@ ${planned.length ? planned.map(({ card }) => this.cardLine(card)).join('\n') : '
             const id = card.id;
             const refs = this.list(card);
             const open = app.panelOpen(source, id, 'refs');
-            const known = new Set(refs.map(r => r.url));
+            const known = new Set(refs.filter(r => !this.isCardRef(r)).map(r => r.url));
+            const chip = r => this.isCardRef(r) ? this.cardChip(r) : `<a class="ref-chip" href="${esc(this.href(r.url))}" target="_blank" rel="noopener" onclick="event.stopPropagation()" title="${esc(r.url)}">${esc(r.title || this.shortLabel(r.url))}</a>`;
+            const backN = this.backlinks(card).length;
             const urlsInContent = this.findInContent(card).filter(f => !known.has(this.normalizeUrl(f.url))).length;
             if (!open) {
                 return `<div class="refs-panel refs-collapsed" id="refs-panel-${source}-${id}">
                     <button type="button" class="worktime-collapsed-btn" onclick="app.refs.toggle('${id}','${source}')">
                         <span style="font-weight:bold;color:#475569;">📎 參考資料</span>
                         <span class="worklog-count">${refs.length}</span>
-                        <span class="refs-chips">${refs.slice(0, 4).map(r => `<a class="ref-chip" href="${esc(this.href(r.url))}" target="_blank" rel="noopener" onclick="event.stopPropagation()" title="${esc(r.url)}">${esc(r.title || this.shortLabel(r.url))}</a>`).join('')}${refs.length > 4 ? `<span class="ref-more">+${refs.length - 4}</span>` : ''}</span>
+                        <span class="refs-chips">${refs.slice(0, 4).map(chip).join('')}${refs.length > 4 ? `<span class="ref-more">+${refs.length - 4}</span>` : ''}${backN ? `<span class="ref-more" title="被其他卡參考">↩ ${backN}</span>` : ''}</span>
                         ${urlsInContent ? `<span class="ref-hint">筆記裡有 ${urlsInContent} 個連結可以搬進來</span>` : ''}
                         <span class="worktime-open">展開 ▾</span>
                     </button>
                 </div>`;
             }
             const editingId = this.editing[`${source}:${id}`];
-            const rows = refs.length ? refs.map(r => r.id === editingId ? `
+            const rows = refs.length ? refs.map(r => this.isCardRef(r) ? (() => {
+                const t = this.target(r);
+                return `<div class="ref-row">
+                    ${this.cardChip(r)}
+                    <span class="ref-url">${t ? `卡片 · ${esc(t.tabName)}${Number(t.card.status) === 2 ? ' · 已完成' : ''}` : '已刪除'}</span>
+                    ${t ? `<button class="worktime-edit" title="進心流專注這張卡" onclick="app.sandbox.focusTaskForTimer('${t.card.id}')">🎯</button>` : ''}
+                    <button class="worktime-delete" title="移除這個連結（不會刪掉那張卡）" onclick="app.refs.remove('${id}','${r.id}','${source}')">×</button>
+                </div>`;
+            })() : r.id === editingId ? `
                 <div class="ref-row ref-edit">
                     <input id="refedit-title-${source}-${id}" class="worktime-input" value="${esc(r.title || '')}" placeholder="名稱">
                     <input id="refedit-url-${source}-${id}" class="worktime-input" value="${esc(r.url || '')}" placeholder="網址或路徑" onkeydown="if(event.key==='Enter') app.refs.saveEdit('${id}','${r.id}','${source}')">
@@ -5945,8 +6030,10 @@ ${planned.length ? planned.map(({ card }) => this.cardLine(card)).join('\n') : '
                     <input id="ref-title-${source}-${id}" class="worktime-input" placeholder="名稱，例如：管控表 115 上半年">
                     <input id="ref-url-${source}-${id}" class="worktime-input" placeholder="貼上網址或網路磁碟路徑" onkeydown="if(event.key==='Enter') app.refs.add('${id}','${source}')">
                     <button class="worklog-add-btn" onclick="app.refs.add('${id}','${source}')">＋ 加入</button>
+                    <button class="worklog-action-btn" onclick="app.refs.pickCard('${id}','${source}')" title="參考另一張卡">🗂 連到卡片</button>
                 </div>
                 <div class="ref-list">${rows}</div>
+                ${this.backlinkHtml(card)}
             </div>`;
         },
 
@@ -6005,10 +6092,12 @@ ${planned.length ? planned.map(({ card }) => this.cardLine(card)).join('\n') : '
             const card = app.worktime.getCard(cardId);
             const r = this.list(card).find(x => x.id === refId);
             if (!r) return;
-            if (!await app.ui.confirm('刪除參考資料', `<p>刪除「${app.entries.escapeHtml(r.title || r.url)}」？</p>`, '刪除', true)) return;
+            const isCard = this.isCardRef(r);
+            if (!await app.ui.confirm(isCard ? '移除卡片連結' : '刪除參考資料', isCard ? `<p>移除連到「${app.entries.escapeHtml(this.target(r) ? this.cardName(this.target(r).card) : r.title)}」的連結？那張卡本身不會被刪。</p>` : `<p>刪除「${app.entries.escapeHtml(r.title || r.url)}」？</p>`, isCard ? '移除' : '刪除', true)) return;
             card.refs = card.refs.filter(x => x.id !== refId);
             app.saveToLocal();
             this.refresh(cardId, source);
+            if (isCard) app.refreshCard(r.cardId);
         },
 
         // 找出筆記裡的連結：網址那一行，名稱取前一行（像「公司網站審查表」）或同一行網址前的文字
@@ -6052,7 +6141,7 @@ ${planned.length ? planned.map(({ card }) => this.cardLine(card)).join('\n') : '
         async extractFromContent(cardId, source = 'timeline') {
             const card = app.worktime.getCard(cardId);
             if (!card) return;
-            const known0 = new Set(this.list(card).map(r => r.url));
+            const known0 = new Set(this.list(card).filter(r => !this.isCardRef(r)).map(r => r.url));
             const found = this.findInContent(card).filter(f => !known0.has(this.normalizeUrl(f.url)));
             if (!found.length) { app.ui.toast('筆記裡沒有新的連結'); return; }
             const esc = s => app.entries.escapeHtml(s);
@@ -6067,7 +6156,7 @@ ${planned.length ? planned.map(({ card }) => this.cardLine(card)).join('\n') : '
             if (!ok) return;
             if (!Array.isArray(card.refs)) card.refs = [];
             const now = new Date().toISOString();
-            const have = new Set(card.refs.map(r => r.url));
+            const have = new Set(card.refs.filter(r => !this.isCardRef(r)).map(r => r.url));
             const remove = new Set();
             found.forEach(f => {
                 const url = this.normalizeUrl(f.url);
@@ -6352,7 +6441,7 @@ ${planned.length ? planned.map(({ card }) => this.cardLine(card)).join('\n') : '
             const todos = app.sandbox.parseSubtasks(card.content).filter(t => !t.completed).slice(0, 8);
             if (todos.length) lines.push('', '待辦：', ...todos.map(t => `・${t.text}`));
             const refs = app.refs.list(card).slice(0, 5);
-            if (refs.length) lines.push('', '參考資料：', ...refs.map(r => `・${r.title}：${r.url}`));
+            if (refs.length) lines.push('', '參考資料：', ...refs.map(r => app.refs.isCardRef(r) ? `・（白板卡片）${app.refs.target(r) ? app.refs.cardName(app.refs.target(r).card) : r.title}` : `・${r.title}：${r.url}`));
             lines.push('', `白板：${location.origin}${location.pathname}`);
             return lines.join('\n');
         },
@@ -6881,6 +6970,71 @@ ${planned.length ? planned.map(({ card }) => this.cardLine(card)).join('\n') : '
 };
 
 // ==========================================
+// 專案選擇：點下去列出所有專案；打了沒有的名字＝「＋ 新增專案」
+// ==========================================
+app.projectPicker = {
+    el: null, input: null, idx: -1, items: [],
+    open(input) {
+        this.input = input;
+        this.showAll = true;
+        if (!this.el) {
+            this.el = document.createElement('div');
+            this.el.className = 'pp-menu';
+            this.el.addEventListener('mousedown', e => e.preventDefault());
+            document.body.appendChild(this.el);
+            window.addEventListener('scroll', () => this.place(), true);
+            window.addEventListener('resize', () => this.place());
+        }
+        if (!input._ppBound) {
+            input._ppBound = true;
+            input.addEventListener('input', () => { this.showAll = false; this.render(); });
+            input.addEventListener('keydown', e => this.key(e));
+            input.addEventListener('blur', () => setTimeout(() => { if (this.input === input && document.activeElement !== input) this.close(); }, 120));
+        }
+        this.render();
+    },
+    close() { if (this.el) this.el.style.display = 'none'; this.idx = -1; },
+    place() {
+        if (!this.el || this.el.style.display === 'none' || !this.input?.isConnected) return this.close();
+        const r = this.input.getBoundingClientRect();
+        this.el.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - 248))}px`;
+        this.el.style.top = `${r.bottom + 2}px`;
+        this.el.style.minWidth = `${Math.max(r.width, 200)}px`;
+    },
+    render() {
+        const esc = x => app.entries.escapeHtml(x);
+        const v = String(this.input?.value || '').trim();
+        const all = app.lists.projects();
+        const q = v.toLowerCase();
+        const list = this.showAll || !v ? all : all.filter(p => p.toLowerCase().includes(q));
+        this.items = list.map(p => ({ value: p, label: p }));
+        if (v && !all.some(p => p === v)) this.items.unshift({ value: v, label: `＋ 新增專案「${v}」`, isNew: true });
+        if (v) this.items.push({ value: '', label: '清除（不設專案）', clear: true });
+        this.el.innerHTML = this.items.length ? this.items.map((it, i) => `<div class="pp-item ${it.isNew ? 'new' : ''} ${it.clear ? 'clear' : ''} ${it.value === v && !it.isNew && !it.clear ? 'cur' : ''} ${i === this.idx ? 'hi' : ''}" onclick="app.projectPicker.choose(${i})">${esc(it.label)}</div>`).join('')
+            : '<div class="pp-empty">還沒有專案，直接打名字就是新專案</div>';
+        this.el.style.display = 'block';
+        this.place();
+    },
+    choose(i) {
+        const it = this.items[i];
+        const input = this.input;
+        if (!it || !input) return;
+        input.value = it.value;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        this.close();
+        if (it.isNew) app.ui.toast(`新專案「${it.value}」`);
+    },
+    key(e) {
+        if (!this.el || this.el.style.display === 'none') return;
+        if (e.key === 'ArrowDown') { e.preventDefault(); this.idx = Math.min(this.items.length - 1, this.idx + 1); this.render(); }
+        else if (e.key === 'ArrowUp') { e.preventDefault(); this.idx = Math.max(-1, this.idx - 1); this.render(); }
+        else if (e.key === 'Enter' && !e.isComposing && this.idx >= 0) { e.preventDefault(); e.stopPropagation(); this.choose(this.idx); }
+        else if (e.key === 'Escape') { e.stopPropagation(); this.close(); }
+    }
+};
+
+// ==========================================
 // ＋ 卡片：在原地快速新增（不跳去時間軸）。一行一張卡。
 // ==========================================
 app.quickAdd = {
@@ -6916,7 +7070,7 @@ app.quickAdd = {
             html: `<textarea id="qa-text" class="ps-input" style="min-height:70px;" placeholder="卡片標題，按 Enter 建立&#10;一次貼好幾行＝每行一張卡（Shift+Enter 換行）" oninput="app.quickAdd.form.text=this.value; app.quickAdd.hint()" onkeydown="if(event.key==='Enter' && !event.shiftKey && !event.isComposing){ event.preventDefault(); this.closest('.app-dialog').querySelector('.app-dialog-btn.primary').click(); }"></textarea>
                 <div class="qa-fields">
                     <label>工作區<select onchange="app.quickAdd.form.tabId=this.value">${tabs.map(t => `<option value="${t.id}" ${t.id === f.tabId ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select></label>
-                    <label>專案<input list="qa-projects" value="${esc(f.project)}" placeholder="可不填" oninput="app.quickAdd.form.project=this.value"><datalist id="qa-projects">${app.lists.projects().map(p => `<option value="${esc(p)}">`).join('')}</datalist></label>
+                    <label>專案<input class="qa-project" value="${esc(f.project)}" placeholder="可不填，點一下選或打新的" autocomplete="off" onfocus="app.projectPicker.open(this)" oninput="app.quickAdd.form.project=this.value"></label>
                     <label>預計完成<input type="date" value="${esc(f.date)}" oninput="app.quickAdd.form.date=this.value"></label>
                 </div>
                 <div id="qa-hint" class="pm-hint">沒填日期＝自由卡片；填了＝排程工項。建好後留在原本的畫面。</div>`,
@@ -7124,7 +7278,7 @@ app.lists = {
                 <span class="ct-handle" draggable="true" ondragstart="app.lists.dragStart(event, '${card.id}')" ondragend="app.lists.dragEnd()" title="拖曳排序（只影響清單，不動時間軸）">⋮⋮</span>
                 <input class="ct-title" value="${esc(String(card.title || '').split('\n')[0])}" placeholder="未命名" onchange="app.lists.setField('${card.id}','title',this.value)" onkeydown="if(event.key==='Enter' && !event.isComposing) this.blur()" title="${esc(card.title || '')}">
                 <select class="ct-ws" onchange="app.actions.moveCard('${card.id}', this.value)" title="工作區">${tabs.map(t => `<option value="${t.id}" ${t.id === tabId ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select>
-                <input class="ct-proj" list="ct-projects" value="${esc(card.project || '')}" placeholder="專案" onchange="app.lists.setField('${card.id}','project',this.value)">
+                <input class="ct-proj" value="${esc(card.project || '')}" placeholder="專案" autocomplete="off" onfocus="app.projectPicker.open(this)" onchange="app.lists.setField('${card.id}','project',this.value)" onkeydown="if(event.key==='Enter' && !event.isComposing) this.blur()">
                 <select class="ct-status st-${st}" onchange="app.lists.setStatus('${card.id}', this.value)">${statusOpts.map(v => `<option value="${v}" ${v === st ? 'selected' : ''}>${esc(W.statusLabel(v))}</option>`).join('')}</select>
                 <input class="ct-date ${dueCls}" type="date" value="${esc(end)}" onchange="app.lists.setDate('${card.id}', this.value)" title="${end ? '預計完成日（清空＝改回自由卡片）' : '選日期＝變成排程工項'}">
                 <span class="ct-info">${subs.length ? `<span title="待辦完成／全部">☑ ${doneN}/${subs.length}</span>` : ''}${openQ ? `<span title="未答問題">❓ ${openQ}</span>` : ''}${mins ? `<span title="已記工時">⏱ ${esc(W.formatMinutes(mins))}</span>` : ''}</span>
@@ -7138,7 +7292,6 @@ app.lists = {
                 <select onchange="app.lists.set('ctSort', this.value)">${[['due', '依完成日'], ['recent', '最近新增'], ['ws', '依工作區'], ['manual', '自訂順序（拖曳）']].map(([v, l]) => `<option value="${v}" ${v === U.ctSort ? 'selected' : ''}>${l}</option>`).join('')}</select>
                 <select onchange="app.lists.set('ctGroup', this.value)">${[['none', '不分組'], ['project', '依專案分組'], ['ws', '依工作區分組']].map(([v, l]) => `<option value="${v}" ${v === U.ctGroup ? 'selected' : ''}>${l}</option>`).join('')}</select>
             </div>
-            <datalist id="ct-projects">${projects.map(p => `<option value="${esc(p)}">`).join('')}</datalist>
             <div class="ct-table">
                 <div class="ct-row ct-head"><span></span><span>標題</span><span>工作區</span><span>專案</span><span>狀態</span><span>預計完成</span><span>進度</span><span></span></div>
                 ${!rows.length ? '<div class="data-empty">沒有符合的卡片。</div>' : (U.ctGroup === 'none' ? rows.map(row).join('') : this.groups(rows).map(g => {
@@ -7248,6 +7401,7 @@ app.lists = {
         } else card[field] = v;
         app.saveToLocal();
         app.refreshCard(cardId);
+        if (field === 'project' && this.ui.ctGroup === 'project') this.render();
     },
 
     setStatus(cardId, value) {
