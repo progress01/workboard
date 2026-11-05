@@ -1,5 +1,5 @@
 // =====================================================================
-// 白板 & 心流沙盒 v3.14
+// 白板 & 心流沙盒 v3.15
 // ---------------------------------------------------------------------
 // v3.0 重整重點（資料邏輯）：
 // 1. 所有修改只走一個入口 app.saveToLocal()（= store.markDirty）：
@@ -27,7 +27,7 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 const provider = new firebase.auth.GoogleAuthProvider();
 
-const APP_VERSION = '3.14';
+const APP_VERSION = '3.15';
 const SCHEMA_VERSION = 3;
 const CLOUD_DOC_SOFT_LIMIT = 750 * 1024;   // 超過時提醒
 const CLOUD_DOC_HARD_LIMIT = 1000 * 1000;  // Firestore 單一文件上限約 1 MiB，保守一點
@@ -46,6 +46,11 @@ const COMPANY_PROJECTS = [
     '氣候變遷署「114-115年度全球資訊網系統維運案」',
     '公司/部門事務'
 ];
+// 公司專案清單：可在「週報／日誌 → 給 AI 的設定」自己改；沒改過就用預設
+function companyProjects() {
+    const list = (typeof app !== 'undefined' && Array.isArray(app.prefs?.companyProjects)) ? app.prefs.companyProjects.map(x => String(x || '').trim()).filter(Boolean) : [];
+    return list.length ? list : COMPANY_PROJECTS;
+}
 function workCategoryOptions(selected, emptyLabel = '（不指定）') {
     const esc = v => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     const list = selected && !WORK_CATEGORIES.includes(selected) ? [...WORK_CATEGORIES, selected] : WORK_CATEGORIES;
@@ -5297,8 +5302,11 @@ const app = {
                     </div>
                     ${data.rows.length ? `<div class="journal-days">${days}</div>` : '<div class="data-empty" style="padding:12px;">這段期間沒有工時或工作紀錄。用卡片上的 ⏱️ 計時，或在「工時」補登，就會出現在這裡。</div>'}
                     <details class="journal-ai-settings" ${f.showAiSettings ? 'open' : ''} ontoggle="app.journal.filters.showAiSettings=this.open">
-                        <summary>給 AI 的專案名稱對照（選填）</summary>
-                        <div class="data-note">公司的四個專案（環境部、化學署、氣候變遷署、公司/部門事務）已經內建，AI 會依工作區和專案名稱自動判斷。只有判斷容易錯的，才需要在這裡寫：白板上的專案名稱 = 公司案名。</div>
+                        <summary>給 AI 的設定：公司專案清單、專案名稱對照</summary>
+                        <div class="data-note"><b>公司專案清單</b>（一行一個，照公司工時表上的全名）。AI 填工時表的「專案」欄只會從這裡選。公司接了新標案、或舊案結束，就在這裡改。</div>
+                        <textarea class="task-meta-textarea" rows="5" oninput="app.journal.saveCompanyProjects(this.value)">${esc(companyProjects().join('\n'))}</textarea>
+                        <div style="display:flex; justify-content:flex-end; margin:-4px 0 8px;"><button type="button" class="ps-mini" onclick="app.journal.resetCompanyProjects()" title="回到內建的四個專案">恢復預設</button></div>
+                        <div class="data-note"><b>專案名稱對照</b>（選填）。AI 會依工作區和專案名稱自動判斷；只有判斷容易錯的，才需要寫：白板上的專案名稱 = 公司案名。</div>
                         <textarea class="task-meta-textarea" rows="4" placeholder="化學署官網會議 = 化學物質管理署「114-116年度中英文全球資訊網與業務網站整合、維運暨功能擴增案」&#10;環境部 = 環境部「115-116年度內外網系統維運暨功能擴增案」&#10;日常 = 公司/部門事務" oninput="app.journal.saveProjectMap(this.value)">${esc(app.prefs.companyProjectMap || '')}</textarea>
                     </details>
                     <div class="data-note" style="padding:0 12px 10px;">時間欄：計時的紀錄會自動有起訖時間；補登時可以選填「開始」時間。只有日期的補登，時間欄會留白。</div>
@@ -5308,6 +5316,17 @@ const app = {
         copy() { app.worktime.copyText(this.text(), '已複製工作日誌'); },
 
         saveProjectMap(v) { app.prefs.companyProjectMap = v; app.store.savePrefs(); },
+        saveCompanyProjects(v) {
+            app.prefs.companyProjects = String(v || '').split('\n').map(x => x.trim()).filter(Boolean);
+            app.store.savePrefs();
+        },
+        async resetCompanyProjects() {
+            if (!await app.ui.confirm('恢復預設的公司專案清單？', `<p>會回到內建的四個：</p><p>${COMPANY_PROJECTS.map(c => app.entries.escapeHtml(c)).join('<br>')}</p>`, '恢復預設')) return;
+            delete app.prefs.companyProjects;
+            app.store.savePrefs();
+            this.filters.showAiSettings = true;
+            app.report.render();
+        },
 
         aiPrompt(data = this.collect()) {
             const W = app.worktime;
@@ -5333,7 +5352,7 @@ const app = {
                 '2. 同一天、同一個專案、同一類別的工作合併成一列，工時加總。',
                 '3. 工作項目用 4～12 個字的簡短名稱（像「網站檢核規劃」「雙周會報告製作」），從卡片名稱與內容歸納，不要照抄流水帳。',
                 '4. 專案欄只能從下面的公司專案清單選一個（照抄全名）：',
-                COMPANY_PROJECTS.map(c => `   - ${c}`).join('\n'),
+                companyProjects().map(c => `   - ${c}`).join('\n'),
                 '   判斷順序：先看【專案名稱對照】；沒有的話，依「工作區」與專案名稱判斷（例如工作區「環境部」→ 環境部的案子、「化學署」→ 化學物質管理署的案子、「氣候」→ 氣候變遷署的案子）；公司內部會議、部門事務、行政、訓練等歸到「公司/部門事務」。真的判斷不出來的，在表格後面列出來問我。',
                 '5. 標成「筆記，不算工時」的只用來幫你理解當天在做什麼，不要算進工時。',
                 '6. 如果我有自己選類別，以我選的為主；你覺得明顯不對時，在表格後面另外提醒我。',
