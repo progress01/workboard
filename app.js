@@ -1,5 +1,5 @@
 // =====================================================================
-// 白板 & 心流沙盒 v3.12
+// 白板 & 心流沙盒 v3.13
 // ---------------------------------------------------------------------
 // v3.0 重整重點（資料邏輯）：
 // 1. 所有修改只走一個入口 app.saveToLocal()（= store.markDirty）：
@@ -27,7 +27,7 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 const provider = new firebase.auth.GoogleAuthProvider();
 
-const APP_VERSION = '3.12';
+const APP_VERSION = '3.13';
 const SCHEMA_VERSION = 3;
 const CLOUD_DOC_SOFT_LIMIT = 750 * 1024;   // 超過時提醒
 const CLOUD_DOC_HARD_LIMIT = 1000 * 1000;  // Firestore 單一文件上限約 1 MiB，保守一點
@@ -102,6 +102,10 @@ const app = {
     entryUi: {},
 
     init() {
+        // Alt+N：任何畫面都能快速新增卡片
+        document.addEventListener('keydown', e => {
+            if (e.altKey && !e.ctrlKey && !e.metaKey && e.code === 'KeyN' && !document.querySelector('.app-dialog-overlay')) { e.preventDefault(); app.quickAdd.open(); }
+        });
         this.ui.installGlobalHandlers();
         auth.onAuthStateChanged((user) => {
             if (user) {
@@ -6858,10 +6862,72 @@ ${planned.length ? planned.map(({ card }) => this.cardLine(card)).join('\n') : '
 };
 
 // ==========================================
+// ＋ 卡片：在原地快速新增（不跳去時間軸）。一行一張卡。
+// ==========================================
+app.quickAdd = {
+    form: { text: '', tabId: '', project: '', date: '' },
+
+    // 共用：建立一張卡（卡片表最下面那列也用這個）
+    create({ title, tabId, project = '', date = '' }) {
+        const W = app.worktime;
+        const today = W.localDateString();
+        const tab = app.state.tabs.some(t => t.id === tabId) ? tabId : app.state.activeTabId;
+        const scheduled = !!W.parseLocalDate(date);
+        const card = {
+            id: app.makeId('card'), title: String(title || '').trim(), content: '', project: String(project || '').trim(),
+            category: '', progress: '', deliverable: '', acceptance: '', workLogs: [],
+            dateMode: scheduled ? 'range' : 'single', dateSingle: '',
+            dateStart: scheduled ? (date < today ? date : today) : '', dateEnd: scheduled ? date : '',
+            color: 'blue', status: 0, isMemo: !scheduled
+        };
+        if (!app.state.workspaces[tab]) app.state.workspaces[tab] = [];
+        app.state.workspaces[tab].push(card);
+        return card;
+    },
+
+    open() {
+        const esc = x => app.entries.escapeHtml(x);
+        const f = this.form;
+        f.text = '';
+        f.tabId = (app.state.view === 'lists' && app.lists.ui.ctTab) || app.state.activeTabId;
+        if (app.state.view === 'lists' && app.lists.ui.project && !f.project) f.project = app.lists.ui.project;
+        const tabs = app.state.tabs;
+        app.ui.dialog({
+            title: '＋ 新增卡片',
+            html: `<textarea id="qa-text" class="ps-input" style="min-height:70px;" placeholder="卡片標題，按 Enter 建立&#10;一次貼好幾行＝每行一張卡（Shift+Enter 換行）" oninput="app.quickAdd.form.text=this.value; app.quickAdd.hint()" onkeydown="if(event.key==='Enter' && !event.shiftKey && !event.isComposing){ event.preventDefault(); this.closest('.app-dialog').querySelector('.app-dialog-btn.primary').click(); }"></textarea>
+                <div class="qa-fields">
+                    <label>工作區<select onchange="app.quickAdd.form.tabId=this.value">${tabs.map(t => `<option value="${t.id}" ${t.id === f.tabId ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select></label>
+                    <label>專案<input list="qa-projects" value="${esc(f.project)}" placeholder="可不填" oninput="app.quickAdd.form.project=this.value"><datalist id="qa-projects">${app.lists.projects().map(p => `<option value="${esc(p)}">`).join('')}</datalist></label>
+                    <label>預計完成<input type="date" value="${esc(f.date)}" oninput="app.quickAdd.form.date=this.value"></label>
+                </div>
+                <div id="qa-hint" class="pm-hint">沒填日期＝自由卡片；填了＝排程工項。建好後留在原本的畫面。</div>`,
+            buttons: [{ label: '取消', value: null }, { label: '建立', value: 'ok', primary: true }]
+        }).then(v => {
+            if (v !== 'ok') return;
+            const titles = String(f.text || '').split('\n').map(t => t.replace(/^\s*(?:[-*•・]\s+(?:\[[ xX]\]\s*)?|\d{1,2}[.)、．]\s*)/, '').trim()).filter(Boolean);
+            if (!titles.length) return;
+            const made = titles.map(title => this.create({ title, tabId: f.tabId, project: f.project, date: f.date }));
+            app.saveToLocal();
+            app.ui.defer(() => app.renderAll());
+            const tabName = app.state.tabs.find(t => t.id === f.tabId)?.name || '';
+            app.ui.toast(made.length > 1 ? `已新增 ${made.length} 張卡到「${tabName}」` : `已新增「${made[0].title}」到「${tabName}」`);
+            f.date = '';
+        });
+        setTimeout(() => document.getElementById('qa-text')?.focus(), 30);
+    },
+
+    hint() {
+        const el = document.getElementById('qa-hint');
+        const n = String(this.form.text || '').split('\n').filter(l => l.trim()).length;
+        if (el) el.textContent = n > 1 ? `會建立 ${n} 張卡（一行一張）。` : '沒填日期＝自由卡片；填了＝排程工項。建好後留在原本的畫面。';
+    }
+};
+
+// ==========================================
 // ✅ 清單：所有卡片的待辦、問題、問答集中在一頁（資料仍在卡片筆記裡，改這裡＝改卡片）
 // ==========================================
 app.lists = {
-    ui: { tab: 'todo', project: '', search: '', showDone: false, showArchived: true, addCard: '' },
+    ui: { tab: 'todo', project: '', search: '', showDone: false, showArchived: true, addCard: '', ctTab: '', ctStatus: 'open', ctSort: 'due' },
 
     esc(s) { return app.entries.escapeHtml(s); },
     cardTitle(card) { return String(card?.title || '').trim().split('\n')[0] || '未命名'; },
@@ -6948,7 +7014,8 @@ app.lists = {
         const U = this.ui, d = this.collect();
         const active = document.activeElement;
         const keepSearch = active && active.id === 'ls-search' ? active.selectionStart : null;
-        const tabs = [['todo', `✅ 待辦 <b>${d.todoOpen.length}</b>`], ['question', `❓ 問題 <b>${d.qOpen.length}</b>`], ['review', `💬 問答回顧 <b>${d.qAnswered.length + d.qArchived.length}</b>`]];
+        const openCards = app.worktime.allCards().filter(({ card }) => Number(card.status) !== 2 && (!U.project || String(card.project || '').trim() === U.project)).length;
+        const tabs = [['todo', `✅ 待辦 <b>${d.todoOpen.length}</b>`], ['question', `❓ 問題 <b>${d.qOpen.length}</b>`], ['review', `💬 問答回顧 <b>${d.qAnswered.length + d.qArchived.length}</b>`], ['cards', `🗂 卡片 <b>${openCards}</b>`]];
         const cards = app.worktime.allCards().filter(({ card }) => Number(card.status) !== 2 && (!U.project || String(card.project || '').trim() === U.project));
         const defCard = U.addCard && cards.some(r => r.card.id === U.addCard) ? U.addCard : (app.state.sandbox.activeTaskId && cards.some(r => r.card.id === app.state.sandbox.activeTaskId) ? app.state.sandbox.activeTaskId : (cards[0]?.card.id || ''));
         let body = '';
@@ -6960,6 +7027,8 @@ app.lists = {
                 ${d.todoOpen.length ? this.grouped(d.todoOpen, x => this.todoItem(x)) : '<div class="data-empty">沒有未完成的待辦 🎉</div>'}
                 ${this.section('已勾選（還在筆記裡，按 🧹 整理會收進紀錄）', d.todoDone.length, this.grouped(d.todoDone, x => this.todoItem(x)), { open: false, key: 'done' })}
                 ${this.section('已整理收進工作紀錄', d.todoArchived.length, this.grouped(d.todoArchived, x => `<div class="ls-item done archived"><span>✅ ${this.esc(x.text)}</span><span class="ls-meta">${this.esc(x.date)}</span></div>`), { open: false, key: 'arch' })}`;
+        } else if (U.tab === 'cards') {
+            body = this.cardsTable();
         } else if (U.tab === 'question') {
             body = d.qOpen.length ? this.grouped(d.qOpen, x => this.qItem(x, true)) : '<div class="data-empty">沒有待確認的問題。在卡片筆記按「❓ 問題」記下來。</div>';
         } else {
@@ -6976,6 +7045,118 @@ app.lists = {
             ${body}
         </div>`;
         if (keepSearch !== null) { const el = document.getElementById('ls-search'); el.focus(); el.selectionStart = el.selectionEnd = keepSearch; }
+    },
+
+    // ---------- 🗂 卡片表 ----------
+    cardRows() {
+        const U = this.ui, W = app.worktime, q = U.search.trim().toLowerCase();
+        const tabOrder = Object.fromEntries(app.state.tabs.map((t, i) => [t.id, i]));
+        const rows = W.allCards().filter(({ card, tabId }) => {
+            if (U.project && String(card.project || '').trim() !== U.project) return false;
+            if (U.ctTab && tabId !== U.ctTab) return false;
+            const st = Number(card.status) || 0;
+            if (U.ctStatus === 'open' && st === 2) return false;
+            if (/^\d$/.test(U.ctStatus) && st !== Number(U.ctStatus)) return false;
+            return this.match(q, card.title, card.project, card.content);
+        }).map(r => ({ ...r, end: r.card.isMemo ? '' : W.plannedEnd(r.card) }));
+        const ts = c => Number(String(c.id).match(/(\d{10,})/)?.[1] || 0);
+        rows.sort((a, b) => {
+            if (U.ctSort === 'recent') return ts(b.card) - ts(a.card);
+            if (U.ctSort === 'ws' && a.tabId !== b.tabId) return (tabOrder[a.tabId] ?? 99) - (tabOrder[b.tabId] ?? 99);
+            const da = Number(a.card.status) === 2, db = Number(b.card.status) === 2;
+            if (da !== db) return da ? 1 : -1;
+            if (!a.end !== !b.end) return a.end ? -1 : 1;
+            return String(a.end).localeCompare(String(b.end)) || ts(b.card) - ts(a.card);
+        });
+        return rows;
+    },
+
+    cardsTable() {
+        const U = this.ui, esc = x => this.esc(x), W = app.worktime;
+        const tabs = app.state.tabs;
+        const rows = this.cardRows();
+        const statusOpts = [0, 1, 3, 2];
+        const projects = this.projects();
+        const row = ({ card, tabId, end }) => {
+            const subs = app.sandbox.parseSubtasks(card.content);
+            const doneN = subs.filter(x => x.completed).length;
+            const openQ = app.questions.open(card).length;
+            const mins = W.totalMinutes(card);
+            const st = Number(card.status) || 0;
+            const n = end ? app.sandbox.daysLeft(end) : null;
+            const dueCls = st === 2 ? '' : (n === null ? '' : (n < 0 ? 'over' : (n <= 2 ? 'soon' : '')));
+            return `<div class="ct-row ${st === 2 ? 'done' : ''}">
+                <input class="ct-title" value="${esc(String(card.title || '').split('\n')[0])}" placeholder="未命名" onchange="app.lists.setField('${card.id}','title',this.value)" onkeydown="if(event.key==='Enter' && !event.isComposing) this.blur()" title="${esc(card.title || '')}">
+                <select class="ct-ws" onchange="app.actions.moveCard('${card.id}', this.value)" title="工作區">${tabs.map(t => `<option value="${t.id}" ${t.id === tabId ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select>
+                <input class="ct-proj" list="ct-projects" value="${esc(card.project || '')}" placeholder="專案" onchange="app.lists.setField('${card.id}','project',this.value)">
+                <select class="ct-status st-${st}" onchange="app.lists.setStatus('${card.id}', this.value)">${statusOpts.map(v => `<option value="${v}" ${v === st ? 'selected' : ''}>${esc(W.statusLabel(v))}</option>`).join('')}</select>
+                <input class="ct-date ${dueCls}" type="date" value="${esc(end)}" onchange="app.lists.setDate('${card.id}', this.value)" title="${end ? '預計完成日（清空＝改回自由卡片）' : '選日期＝變成排程工項'}">
+                <span class="ct-info">${subs.length ? `<span title="待辦完成／全部">☑ ${doneN}/${subs.length}</span>` : ''}${openQ ? `<span title="未答問題">❓ ${openQ}</span>` : ''}${mins ? `<span title="已記工時">⏱ ${esc(W.formatMinutes(mins))}</span>` : ''}</span>
+                <span class="ct-actions"><button type="button" onclick="app.sandbox.focusTaskForTimer('${card.id}')" title="進心流專注這張卡">🎯</button><button type="button" onclick="app.actions.jumpToCard('${card.id}','${tabId}')" title="到時間軸看這張卡">↗</button></span>
+            </div>`;
+        };
+        const newTab = U.ctTab || app.state.activeTabId;
+        return `<div class="ct-filters">
+                <select onchange="app.lists.set('ctTab', this.value)"><option value="">全部工作區</option>${tabs.map(t => `<option value="${t.id}" ${t.id === U.ctTab ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select>
+                <select onchange="app.lists.set('ctStatus', this.value)">${[['open', '未完成'], ['all', '全部狀態'], ['0', '未開始'], ['1', '進行中'], ['3', '卡住／等待'], ['2', '完成']].map(([v, l]) => `<option value="${v}" ${v === U.ctStatus ? 'selected' : ''}>${l}</option>`).join('')}</select>
+                <select onchange="app.lists.set('ctSort', this.value)">${[['due', '依完成日'], ['recent', '最近新增'], ['ws', '依工作區']].map(([v, l]) => `<option value="${v}" ${v === U.ctSort ? 'selected' : ''}>${l}</option>`).join('')}</select>
+            </div>
+            <datalist id="ct-projects">${projects.map(p => `<option value="${esc(p)}">`).join('')}</datalist>
+            <div class="ct-table">
+                <div class="ct-row ct-head"><span>標題</span><span>工作區</span><span>專案</span><span>狀態</span><span>預計完成</span><span>進度</span><span></span></div>
+                ${rows.length ? rows.map(row).join('') : '<div class="data-empty">沒有符合的卡片。</div>'}
+                <div class="ct-row ct-new">
+                    <input id="ct-new-title" class="ct-title" placeholder="＋ 新增卡片，打標題按 Enter" onkeydown="if(event.key==='Enter' && !event.isComposing) app.lists.addCardRow(this.value)">
+                    <span class="ct-new-meta">加到「${esc(tabs.find(t => t.id === newTab)?.name || '')}」${U.project ? `・#${esc(U.project)}` : ''}</span>
+                </div>
+            </div>`;
+    },
+
+    setField(cardId, field, value) {
+        const card = app.worktime.getCard(cardId);
+        if (!card || !['title', 'project'].includes(field)) return;
+        const v = String(value || '').trim();
+        if (field === 'title' && String(card.title || '').includes('\n')) {
+            const rest = String(card.title).split('\n').slice(1).join('\n');
+            card.title = rest ? `${v}\n${rest}` : v;
+        } else card[field] = v;
+        app.saveToLocal();
+        app.refreshCard(cardId);
+    },
+
+    setStatus(cardId, value) {
+        const card = app.worktime.getCard(cardId);
+        if (!card) return;
+        const cur = Number(card.status) || 0, next = Number(value);
+        if (next === 2) app.worktime.markCompleted(card);
+        else {
+            if (cur === 2) app.worktime.reopenCompleted(card, next);
+            else card.status = next;
+            if (next === 1) app.worktime.ensureStarted(card);
+        }
+        this.afterChange(cardId);
+    },
+
+    setDate(cardId, value) {
+        const card = app.worktime.getCard(cardId);
+        if (!card) return;
+        if (!value) { card.isMemo = true; card.dateStart = ''; card.dateEnd = ''; card.dateMode = 'single'; }
+        else {
+            const start = card.isMemo ? '' : app.worktime.plannedStart(card);
+            card.isMemo = false; card.dateMode = 'range'; card.dateEnd = value;
+            card.dateStart = start && start <= value ? start : (value < app.worktime.localDateString() ? value : app.worktime.localDateString());
+        }
+        this.afterChange(cardId);
+    },
+
+    addCardRow(value) {
+        const title = String(value || '').trim();
+        if (!title) return;
+        const card = app.quickAdd.create({ title, tabId: this.ui.ctTab || app.state.activeTabId, project: this.ui.project });
+        app.saveToLocal();
+        this.render();
+        app.ui.toast(`已新增「${title}」`);
+        setTimeout(() => document.getElementById('ct-new-title')?.focus(), 0);
     },
 
     // 用行號＋文字確認是同一行（卡片在別處被改過時改用文字找）
