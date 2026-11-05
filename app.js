@@ -1,5 +1,5 @@
 // =====================================================================
-// 白板 & 心流沙盒 v3.13
+// 白板 & 心流沙盒 v3.14
 // ---------------------------------------------------------------------
 // v3.0 重整重點（資料邏輯）：
 // 1. 所有修改只走一個入口 app.saveToLocal()（= store.markDirty）：
@@ -27,7 +27,7 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 const provider = new firebase.auth.GoogleAuthProvider();
 
-const APP_VERSION = '3.13';
+const APP_VERSION = '3.14';
 const SCHEMA_VERSION = 3;
 const CLOUD_DOC_SOFT_LIMIT = 750 * 1024;   // 超過時提醒
 const CLOUD_DOC_HARD_LIMIT = 1000 * 1000;  // Firestore 單一文件上限約 1 MiB，保守一點
@@ -560,7 +560,7 @@ const app = {
     // ==========================================
     sync: {
         TEXT_FIELDS: { title: '標題', content: '內容', project: '專案', nextStep: '下一步', nextAction: '下一步（舊）', deliverable: '要交出什麼', acceptance: '怎樣算完成', chronicleSummary: '大事記摘要', category: '任務分類', waitingWho: '在等誰', waitingWhat: '在等什麼' },
-        FIELD_LABELS: { followUpDate: '追蹤日', status: '狀態', color: '標記', dateSingle: '日期', dateStart: '開始日', dateEnd: '結束日', dateMode: '日期模式', isMemo: '卡片用途', progress: '進度', plannedMinutes: '預估工時', actualStart: '實際開始', actualEnd: '實際完成', chroniclePinned: '大事記', chronicleDate: '大事記日期', excludeFromGantt: '甘特顯示' },
+        FIELD_LABELS: { followUpDate: '追蹤日', status: '狀態', color: '標記', dateSingle: '日期', dateStart: '開始日', dateEnd: '結束日', dateMode: '日期模式', isMemo: '卡片用途', progress: '進度', plannedMinutes: '預估工時', actualStart: '實際開始', actualEnd: '實際完成', chroniclePinned: '大事記', chronicleDate: '大事記日期', excludeFromGantt: '甘特顯示', listOrder: '清單排序' },
         BLOCK_TEXT: ['content', 'deliverable', 'acceptance', 'chronicleSummary'],
         LIST_FIELDS: ['workLogs', 'entries', 'refs'],
 
@@ -6927,7 +6927,7 @@ app.quickAdd = {
 // ✅ 清單：所有卡片的待辦、問題、問答集中在一頁（資料仍在卡片筆記裡，改這裡＝改卡片）
 // ==========================================
 app.lists = {
-    ui: { tab: 'todo', project: '', search: '', showDone: false, showArchived: true, addCard: '', ctTab: '', ctStatus: 'open', ctSort: 'due' },
+    ui: { tab: 'todo', project: '', search: '', showDone: false, showArchived: true, addCard: '', ctTab: '', ctStatus: 'open', ctSort: 'due', ctGroup: 'none', ctCollapsed: {} },
 
     esc(s) { return app.entries.escapeHtml(s); },
     cardTitle(card) { return String(card?.title || '').trim().split('\n')[0] || '未命名'; },
@@ -6970,7 +6970,18 @@ app.lists = {
         return out;
     },
 
-    set(key, val) { this.ui[key] = val; this.render(); },
+    set(key, val) { this.ui[key] = val; this.savePrefs(); this.render(); },
+
+    // 記住分頁、篩選、排序、分組（只存在這台電腦的瀏覽器）
+    PREF_KEYS: ['tab', 'project', 'ctTab', 'ctStatus', 'ctSort', 'ctGroup', 'ctCollapsed'],
+    savePrefs() {
+        try { localStorage.setItem('whiteboard_lists_ui', JSON.stringify(Object.fromEntries(this.PREF_KEYS.map(k => [k, this.ui[k]])))); } catch (_) {}
+    },
+    loadPrefs() {
+        if (this._prefsLoaded) return;
+        this._prefsLoaded = true;
+        try { const v = JSON.parse(localStorage.getItem('whiteboard_lists_ui') || '{}'); this.PREF_KEYS.forEach(k => { if (v[k] !== undefined) this.ui[k] = v[k]; }); } catch (_) {}
+    },
 
     projects() {
         return [...new Set(app.worktime.allCards().map(({ card }) => String(card.project || '').trim()).filter(Boolean))].sort();
@@ -7011,6 +7022,7 @@ app.lists = {
     render() {
         const target = document.getElementById('lists-render-target');
         if (!target) return;
+        this.loadPrefs();
         const U = this.ui, d = this.collect();
         const active = document.activeElement;
         const keepSearch = active && active.id === 'ls-search' ? active.selectionStart : null;
@@ -7061,6 +7073,10 @@ app.lists = {
         }).map(r => ({ ...r, end: r.card.isMemo ? '' : W.plannedEnd(r.card) }));
         const ts = c => Number(String(c.id).match(/(\d{10,})/)?.[1] || 0);
         rows.sort((a, b) => {
+            if (U.ctSort === 'manual') {
+                const oa = Number.isFinite(a.card.listOrder) ? a.card.listOrder : Infinity, ob = Number.isFinite(b.card.listOrder) ? b.card.listOrder : Infinity;
+                if (oa !== ob) return oa - ob;
+            }
             if (U.ctSort === 'recent') return ts(b.card) - ts(a.card);
             if (U.ctSort === 'ws' && a.tabId !== b.tabId) return (tabOrder[a.tabId] ?? 99) - (tabOrder[b.tabId] ?? 99);
             const da = Number(a.card.status) === 2, db = Number(b.card.status) === 2;
@@ -7085,31 +7101,122 @@ app.lists = {
             const st = Number(card.status) || 0;
             const n = end ? app.sandbox.daysLeft(end) : null;
             const dueCls = st === 2 ? '' : (n === null ? '' : (n < 0 ? 'over' : (n <= 2 ? 'soon' : '')));
-            return `<div class="ct-row ${st === 2 ? 'done' : ''}">
+            return `<div class="ct-row ${st === 2 ? 'done' : ''}" data-id="${card.id}" ondragover="app.lists.dragOver(event, this)" ondragleave="this.classList.remove('drop-before','drop-after')" ondrop="app.lists.drop(event, this)">
+                <span class="ct-handle" draggable="true" ondragstart="app.lists.dragStart(event, '${card.id}')" ondragend="app.lists.dragEnd()" title="拖曳排序（只影響清單，不動時間軸）">⋮⋮</span>
                 <input class="ct-title" value="${esc(String(card.title || '').split('\n')[0])}" placeholder="未命名" onchange="app.lists.setField('${card.id}','title',this.value)" onkeydown="if(event.key==='Enter' && !event.isComposing) this.blur()" title="${esc(card.title || '')}">
                 <select class="ct-ws" onchange="app.actions.moveCard('${card.id}', this.value)" title="工作區">${tabs.map(t => `<option value="${t.id}" ${t.id === tabId ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select>
                 <input class="ct-proj" list="ct-projects" value="${esc(card.project || '')}" placeholder="專案" onchange="app.lists.setField('${card.id}','project',this.value)">
                 <select class="ct-status st-${st}" onchange="app.lists.setStatus('${card.id}', this.value)">${statusOpts.map(v => `<option value="${v}" ${v === st ? 'selected' : ''}>${esc(W.statusLabel(v))}</option>`).join('')}</select>
                 <input class="ct-date ${dueCls}" type="date" value="${esc(end)}" onchange="app.lists.setDate('${card.id}', this.value)" title="${end ? '預計完成日（清空＝改回自由卡片）' : '選日期＝變成排程工項'}">
                 <span class="ct-info">${subs.length ? `<span title="待辦完成／全部">☑ ${doneN}/${subs.length}</span>` : ''}${openQ ? `<span title="未答問題">❓ ${openQ}</span>` : ''}${mins ? `<span title="已記工時">⏱ ${esc(W.formatMinutes(mins))}</span>` : ''}</span>
-                <span class="ct-actions"><button type="button" onclick="app.sandbox.focusTaskForTimer('${card.id}')" title="進心流專注這張卡">🎯</button><button type="button" onclick="app.actions.jumpToCard('${card.id}','${tabId}')" title="到時間軸看這張卡">↗</button></span>
+                <span class="ct-actions"><button type="button" class="ct-move" onclick="app.lists.moveBy('${card.id}',-1)" title="往上">▲</button><button type="button" class="ct-move" onclick="app.lists.moveBy('${card.id}',1)" title="往下">▼</button><button type="button" onclick="app.sandbox.focusTaskForTimer('${card.id}')" title="進心流專注這張卡">🎯</button><button type="button" onclick="app.actions.jumpToCard('${card.id}','${tabId}')" title="到時間軸看這張卡">↗</button></span>
             </div>`;
         };
         const newTab = U.ctTab || app.state.activeTabId;
         return `<div class="ct-filters">
                 <select onchange="app.lists.set('ctTab', this.value)"><option value="">全部工作區</option>${tabs.map(t => `<option value="${t.id}" ${t.id === U.ctTab ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select>
                 <select onchange="app.lists.set('ctStatus', this.value)">${[['open', '未完成'], ['all', '全部狀態'], ['0', '未開始'], ['1', '進行中'], ['3', '卡住／等待'], ['2', '完成']].map(([v, l]) => `<option value="${v}" ${v === U.ctStatus ? 'selected' : ''}>${l}</option>`).join('')}</select>
-                <select onchange="app.lists.set('ctSort', this.value)">${[['due', '依完成日'], ['recent', '最近新增'], ['ws', '依工作區']].map(([v, l]) => `<option value="${v}" ${v === U.ctSort ? 'selected' : ''}>${l}</option>`).join('')}</select>
+                <select onchange="app.lists.set('ctSort', this.value)">${[['due', '依完成日'], ['recent', '最近新增'], ['ws', '依工作區'], ['manual', '自訂順序（拖曳）']].map(([v, l]) => `<option value="${v}" ${v === U.ctSort ? 'selected' : ''}>${l}</option>`).join('')}</select>
+                <select onchange="app.lists.set('ctGroup', this.value)">${[['none', '不分組'], ['project', '依專案分組'], ['ws', '依工作區分組']].map(([v, l]) => `<option value="${v}" ${v === U.ctGroup ? 'selected' : ''}>${l}</option>`).join('')}</select>
             </div>
             <datalist id="ct-projects">${projects.map(p => `<option value="${esc(p)}">`).join('')}</datalist>
             <div class="ct-table">
-                <div class="ct-row ct-head"><span>標題</span><span>工作區</span><span>專案</span><span>狀態</span><span>預計完成</span><span>進度</span><span></span></div>
-                ${rows.length ? rows.map(row).join('') : '<div class="data-empty">沒有符合的卡片。</div>'}
+                <div class="ct-row ct-head"><span></span><span>標題</span><span>工作區</span><span>專案</span><span>狀態</span><span>預計完成</span><span>進度</span><span></span></div>
+                ${!rows.length ? '<div class="data-empty">沒有符合的卡片。</div>' : (U.ctGroup === 'none' ? rows.map(row).join('') : this.groups(rows).map(g => {
+                    const collapsed = !!U.ctCollapsed[`${U.ctGroup}:${g.key}`];
+                    return `<div class="ct-group" data-group="${esc(g.key)}">
+                        <button type="button" class="ct-group-head" onclick="app.lists.toggleGroup(${esc(JSON.stringify(g.key))})">${collapsed ? '▸' : '▾'} ${esc(g.label)} <span class="ls-count">${g.rows.length}</span></button>
+                        ${collapsed ? '' : g.rows.map(row).join('') + `<div class="ct-row ct-new ct-group-new"><input class="ct-title" placeholder="＋ 新增到「${esc(g.label)}」" onkeydown="if(event.key==='Enter' && !event.isComposing) app.lists.addCardRow(this.value, ${esc(JSON.stringify(g.key))})"></div>`}
+                    </div>`;
+                }).join(''))}
                 <div class="ct-row ct-new">
                     <input id="ct-new-title" class="ct-title" placeholder="＋ 新增卡片，打標題按 Enter" onkeydown="if(event.key==='Enter' && !event.isComposing) app.lists.addCardRow(this.value)">
                     <span class="ct-new-meta">加到「${esc(tabs.find(t => t.id === newTab)?.name || '')}」${U.project ? `・#${esc(U.project)}` : ''}</span>
                 </div>
             </div>`;
+    },
+
+    NO_PROJECT: '__none__',
+    groupKey(r) { return this.ui.ctGroup === 'ws' ? r.tabId : (String(r.card.project || '').trim() || this.NO_PROJECT); },
+    groups(rows) {
+        const U = this.ui, map = new Map();
+        rows.forEach(r => { const k = this.groupKey(r); if (!map.has(k)) map.set(k, []); map.get(k).push(r); });
+        const tabOrder = Object.fromEntries(app.state.tabs.map((t, i) => [t.id, i]));
+        return [...map.entries()].map(([key, rs]) => ({
+            key, rows: rs,
+            label: U.ctGroup === 'ws' ? (app.state.tabs.find(t => t.id === key)?.name || '未知') : (key === this.NO_PROJECT ? '（沒有專案）' : key)
+        })).sort((a, b) => U.ctGroup === 'ws' ? (tabOrder[a.key] ?? 99) - (tabOrder[b.key] ?? 99)
+            : (a.key === this.NO_PROJECT) - (b.key === this.NO_PROJECT) || a.label.localeCompare(b.label, 'zh-Hant'));
+    },
+    toggleGroup(key) {
+        const k = `${this.ui.ctGroup}:${key}`;
+        this.ui.ctCollapsed[k] = !this.ui.ctCollapsed[k];
+        this.savePrefs();
+        this.render();
+    },
+
+    // 畫面上目前的順序（分組時依組排）
+    visibleOrder() {
+        const rows = this.cardRows();
+        return this.ui.ctGroup === 'none' ? rows : this.groups(rows).flatMap(g => g.rows);
+    },
+    applyOrder(ids) {
+        ids.forEach((id, i) => { const c = app.worktime.getCard(id); if (c) c.listOrder = (i + 1) * 10; });
+        const switched = this.ui.ctSort !== 'manual';
+        this.ui.ctSort = 'manual';
+        this.savePrefs();
+        app.saveToLocal();
+        this.render();
+        if (switched) app.ui.toast('已改成「自訂順序」。只影響清單，時間軸的順序不變');
+    },
+    // 拖到別組：依專案分組＝改專案；依工作區分組＝移工作區
+    regroup(cardId, groupKey) {
+        const r = this.cardRows().find(x => x.card.id === cardId);
+        if (!r || this.ui.ctGroup === 'none' || this.groupKey(r) === groupKey) return;
+        if (this.ui.ctGroup === 'ws') { app.actions.moveCard(cardId, groupKey); return; }
+        r.card.project = groupKey === this.NO_PROJECT ? '' : groupKey;
+        app.refreshCard(cardId);
+        app.ui.toast(`專案改成「${r.card.project || '（沒有專案）'}」`);
+    },
+    dragStart(e, id) {
+        this._drag = id;
+        e.dataTransfer.effectAllowed = 'move';
+        try { e.dataTransfer.setData('text/plain', id); } catch (_) {}
+        e.target.closest('.ct-row')?.classList.add('dragging');
+    },
+    dragEnd() { this._drag = null; document.querySelectorAll('.ct-row.dragging, .drop-before, .drop-after').forEach(el => el.classList.remove('dragging', 'drop-before', 'drop-after')); },
+    dragOver(e, el) {
+        if (!this._drag) return;
+        e.preventDefault();
+        const r = el.getBoundingClientRect();
+        const after = e.clientY > r.top + r.height / 2;
+        el.classList.toggle('drop-after', after);
+        el.classList.toggle('drop-before', !after);
+    },
+    drop(e, el) {
+        e.preventDefault();
+        const from = this._drag, to = el.dataset.id;
+        const after = el.classList.contains('drop-after');
+        this.dragEnd();
+        if (!from || !to || from === to) return;
+        const group = el.closest('.ct-group')?.dataset.group;
+        if (group !== undefined) this.regroup(from, group);
+        const ids = this.visibleOrder().map(r => r.card.id).filter(id => id !== from);
+        let i = ids.indexOf(to);
+        if (i < 0) i = ids.length; else if (after) i += 1;
+        ids.splice(i, 0, from);
+        this.applyOrder(ids);
+    },
+    // 手機：▲▼（同一組內移動）
+    moveBy(cardId, dir) {
+        const order = this.visibleOrder();
+        const idx = order.findIndex(r => r.card.id === cardId);
+        const j = idx + dir;
+        if (idx < 0 || j < 0 || j >= order.length) return;
+        if (this.ui.ctGroup !== 'none' && this.groupKey(order[j]) !== this.groupKey(order[idx])) return;
+        const ids = order.map(r => r.card.id);
+        [ids[idx], ids[j]] = [ids[j], ids[idx]];
+        this.applyOrder(ids);
     },
 
     setField(cardId, field, value) {
@@ -7149,14 +7256,25 @@ app.lists = {
         this.afterChange(cardId);
     },
 
-    addCardRow(value) {
+    addCardRow(value, groupKey) {
         const title = String(value || '').trim();
         if (!title) return;
-        const card = app.quickAdd.create({ title, tabId: this.ui.ctTab || app.state.activeTabId, project: this.ui.project });
+        const U = this.ui;
+        let tabId = U.ctTab || app.state.activeTabId, project = U.project;
+        if (groupKey !== undefined && U.ctGroup === 'ws') tabId = groupKey;
+        if (groupKey !== undefined && U.ctGroup === 'project') project = groupKey === this.NO_PROJECT ? '' : groupKey;
+        const card = app.quickAdd.create({ title, tabId, project });
+        if (U.ctSort === 'manual') {
+            const max = Math.max(0, ...app.worktime.allCards().map(r => Number.isFinite(r.card.listOrder) ? r.card.listOrder : 0));
+            card.listOrder = max + 10;
+        }
         app.saveToLocal();
         this.render();
         app.ui.toast(`已新增「${title}」`);
-        setTimeout(() => document.getElementById('ct-new-title')?.focus(), 0);
+        setTimeout(() => {
+            const sel = groupKey !== undefined ? `.ct-group[data-group="${CSS.escape(groupKey)}"] .ct-group-new input` : '#ct-new-title';
+            document.querySelector(sel)?.focus();
+        }, 0);
     },
 
     // 用行號＋文字確認是同一行（卡片在別處被改過時改用文字找）

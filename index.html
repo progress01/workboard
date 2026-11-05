@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>白板 & 心流沙盒 v3.13</title>
+    <title>白板 & 心流沙盒 v3.14</title>
     
     <!-- Firebase Compat -->
     <script src="https://www.gstatic.com/firebasejs/10.8.1/firebase-app-compat.js"></script>
@@ -590,7 +590,7 @@
         .ct-filters { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px; }
         .ct-filters select { padding:6px 8px; border:1px solid #cbd5e1; border-radius:8px; font-size:.86rem; background:#fff; }
         .ct-table { background:#fff; border:1px solid #e2e8f0; border-radius:10px; overflow:hidden; }
-        .ct-row { display:grid; grid-template-columns:minmax(180px,2.4fr) minmax(90px,1fr) minmax(90px,1fr) 100px 130px minmax(110px,1.1fr) 64px; gap:6px; align-items:center; padding:5px 10px; border-top:1px solid #f1f5f9; }
+        .ct-row { display:grid; grid-template-columns:18px minmax(180px,2.4fr) minmax(90px,1fr) minmax(90px,1fr) 100px 130px minmax(110px,1.1fr) 64px; gap:6px; align-items:center; padding:5px 10px; border-top:1px solid #f1f5f9; }
         .ct-row:first-child { border-top:none; }
         .ct-head { background:#f8fafc; font-size:.78rem; color:#64748b; font-weight:bold; }
         .ct-row input, .ct-row select { width:100%; min-width:0; box-sizing:border-box; border:1px solid transparent; background:transparent; border-radius:6px; padding:5px 6px; font-size:.86rem; color:#1e293b; }
@@ -604,10 +604,23 @@
         .ct-actions { display:flex; gap:4px; justify-content:flex-end; }
         .ct-actions button { border:1px solid #e2e8f0; background:#f8fafc; border-radius:6px; cursor:pointer; padding:2px 6px; }
         .ct-new { grid-template-columns:minmax(0,1fr) auto; background:#fafafa; }
+        .ct-handle { cursor:grab; color:#cbd5e1; font-size:.8rem; letter-spacing:-2px; user-select:none; text-align:center; }
+        .ct-row:hover .ct-handle { color:#64748b; }
+        .ct-row.dragging { opacity:.4; }
+        .ct-row.drop-before { box-shadow:inset 0 2px 0 var(--primary); }
+        .ct-row.drop-after { box-shadow:inset 0 -2px 0 var(--primary); }
+        .ct-move { display:none; }
+        .ct-group { border-top:1px solid #e2e8f0; }
+        .ct-group-head { display:block; width:100%; text-align:left; border:none; background:#f1f5f9; padding:7px 12px; font-weight:bold; font-size:.88rem; color:#334155; cursor:pointer; }
+        .ct-group-new { background:#fff; }
+        .ct-group-new input { border-color:transparent; color:#94a3b8; }
+        .ct-group-new input:focus { color:#1e293b; }
         .ct-new input { border:1px dashed #cbd5e1; font-weight:normal; }
         .ct-new-meta { font-size:.78rem; color:#94a3b8; white-space:nowrap; }
         @media (max-width: 768px) {
             .ct-head { display:none; }
+            .ct-handle { display:none; }
+            .ct-move { display:inline-block; }
             .ct-row { grid-template-columns:1fr 1fr; padding:8px 10px; }
             .ct-row .ct-title { grid-column:1 / -1; }
             .ct-row .ct-info { grid-column:1 / 2; }
@@ -849,7 +862,7 @@
     <!-- 登入畫面 -->
     <div id="login-screen">
         <h1 style="font-size: 2.5rem; margin-bottom: 10px;">白板系統</h1>
-        <p style="color: #94a3b8; margin-bottom: 30px;">v3.13</p>
+        <p style="color: #94a3b8; margin-bottom: 30px;">v3.14</p>
         <button onclick="app.login()" style="padding: 14px 28px; font-size: 1.1rem; border-radius: 30px; border: none; background: #3b82f6; color: white; font-weight: bold; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.3);">
             使用 Google 登入
         </button>
