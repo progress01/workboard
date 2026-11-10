@@ -1,5 +1,5 @@
 // =====================================================================
-// 白板 & 心流沙盒 v3.16
+// 白板 & 心流沙盒 v4.0
 // ---------------------------------------------------------------------
 // v3.0 重整重點（資料邏輯）：
 // 1. 所有修改只走一個入口 app.saveToLocal()（= store.markDirty）：
@@ -27,7 +27,7 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 const provider = new firebase.auth.GoogleAuthProvider();
 
-const APP_VERSION = '3.16';
+const APP_VERSION = '4.0';
 const SCHEMA_VERSION = 3;
 const CLOUD_DOC_SOFT_LIMIT = 750 * 1024;   // 超過時提醒
 const CLOUD_DOC_HARD_LIMIT = 1000 * 1000;  // Firestore 單一文件上限約 1 MiB，保守一點
@@ -3533,7 +3533,7 @@ const app = {
 
         renderTodo() {
             try { this._renderTodoList(); } finally {
-                try { this.renderDoneHint(); this.renderCountdown(); } catch (err) { app.ui.reportError(err, '完成提示'); }
+                try { this.renderDoneHint(); this.renderCountdown(); app.today?.renderSandbox(); } catch (err) { app.ui.reportError(err, '完成提示'); }
             }
         },
 
@@ -4160,6 +4160,7 @@ const app = {
         else if (this.state.view === 'calendar') this.renderCalendar();
         else if (this.state.view === 'report') this.report.render();
         else if (this.state.view === 'lists') this.lists.render();
+        else if (this.state.view === 'today') this.today.render();
         else if (this.state.view === 'sandbox') this.sandbox.renderTodo();
     },
 
@@ -4344,7 +4345,7 @@ const app = {
         const esc = s => this.entries.escapeHtml(s);
         const openQ = this.questions.open(card);
         const qBadge = openQ.length ? `<span class="question-badge" title="${esc(openQ.map(q => '❓ ' + q.text).join('\n'))}">❓ ${openQ.length}</span>` : '';
-        return qBadge + this.waitingBadgeHtml(card);
+        return (this.today ? this.today.badgeHtml(card) : '') + qBadge + this.waitingBadgeHtml(card);
     },
 
     waitingBadgeHtml(card) {
@@ -6970,6 +6971,546 @@ ${planned.length ? planned.map(({ card }) => this.cardLine(card)).join('\n') : '
 };
 
 // ==========================================
+// 📅 今日：分類（必做／備選／今天不做）→ 排程板（時段）→ 專注。資料存在卡片上（card.plans[日期]、card.taskType、card.fixed）
+// ==========================================
+app.today = {
+    TYPES: {
+        analysis: { icon: '🧮', name: '分析', slot: 'am', est: 60, q: '規則清楚，但要很專心、不能出錯？' },
+        research: { icon: '🔬', name: '研究', slot: 'am', est: 60, q: '還不知道答案，要摸索、查資料、試試看？' },
+        creative: { icon: '🎨', name: '創造', slot: 'pm', est: 60, q: '要從無到有，產出新的東西？' },
+        comm: { icon: '💬', name: '溝通', slot: 'low', est: 30, q: '主要是在跟人對話、確認、協調？' },
+        chores: { icon: '🧹', name: '雜物', slot: 'low', est: 15, q: '不太需要動腦，但總得做完？' }
+    },
+    TYPE_ORDER: ['analysis', 'research', 'creative', 'comm', 'chores'],
+    DEEP: ['analysis', 'research', 'creative'],
+    SLOT_ORDER: ['am', 'low', 'pm'],
+    DEFAULT_SLOTS: {
+        am: { name: '上午高峰', from: '09:30', to: '11:30' },
+        low: { name: '午後低谷', from: '13:30', to: '15:00' },
+        pm: { name: '下午後段', from: '15:30', to: '17:30' }
+    },
+    EST_OPTIONS: [15, 30, 45, 60, 90, 120, 180, 240],
+    LIMIT_MUST: 4, LIMIT_OPT: 3,
+    ui: { which: null, search: '', showSkipped: false, showSettings: false },
+
+    esc(s) { return app.entries.escapeHtml(s); },
+    W() { return app.worktime; },
+    name(card) { return String(card?.title || '').trim().split('\n')[0] || '未命名'; },
+    addDays(dateStr, n) { const d = this.W().parseLocalDate(dateStr); d.setDate(d.getDate() + n); return this.W().localDateString(d); },
+    todayStr() { return this.W().localDateString(); },
+    // 預設：下午五點後打開＝排明天
+    which() { if (!this.ui.which) this.ui.which = new Date().getHours() >= 17 ? 'tomorrow' : 'today'; return this.ui.which; },
+    date() { return this.which() === 'tomorrow' ? this.addDays(this.todayStr(), 1) : this.todayStr(); },
+    dateLabel(d) { const x = this.W().parseLocalDate(d); return `${x.getMonth() + 1}/${x.getDate()}（${'日一二三四五六'[x.getDay()]}）`; },
+    weekKey(dateStr) {
+        const d = this.W().parseLocalDate(dateStr);
+        const t = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+        const day = t.getUTCDay() || 7; t.setUTCDate(t.getUTCDate() + 4 - day);
+        const y = t.getUTCFullYear(), wk = Math.ceil(((t - Date.UTC(y, 0, 1)) / 864e5 + 1) / 7);
+        return `${y}-W${String(wk).padStart(2, '0')}`;
+    },
+
+    // ---------- 設定（時段、預算）：記在這台電腦 ----------
+    slots() {
+        const p = app.prefs.todaySlots || {};
+        const out = {};
+        this.SLOT_ORDER.forEach(k => { out[k] = { ...this.DEFAULT_SLOTS[k], ...(p[k] || {}) }; });
+        return out;
+    },
+    mins(hhmm) { const m = String(hhmm || '').match(/^(\d{1,2}):(\d{2})$/); return m ? Number(m[1]) * 60 + Number(m[2]) : 0; },
+    cap(k) { const s = this.slots()[k]; return Math.max(0, this.mins(s.to) - this.mins(s.from)); },
+    budget() { return Number(app.prefs.todayBudget) > 0 ? Number(app.prefs.todayBudget) : 300; },
+    setSlotPref(k, field, v) {
+        if (!app.prefs.todaySlots) app.prefs.todaySlots = {};
+        app.prefs.todaySlots[k] = { ...(app.prefs.todaySlots[k] || {}), [field]: v };
+        app.store.savePrefs(); this.render();
+    },
+    setBudget(h) { const v = Math.round(Number(h) * 60); if (v > 0) { app.prefs.todayBudget = v; app.store.savePrefs(); this.render(); } },
+
+    // ---------- 卡片上的資料 ----------
+    planOf(card, date = this.date()) { return card?.plans && typeof card.plans === 'object' ? card.plans[date] || null : null; },
+    setPlan(card, date, patch) {
+        if (!card.plans || typeof card.plans !== 'object') card.plans = {};
+        const cur = card.plans[date] || {};
+        card.plans[date] = { ...cur, ...patch };
+        // 只留最近 21 天，資料量不會長大
+        const keep = this.addDays(this.todayStr(), -21);
+        Object.keys(card.plans).forEach(d => { if (d < keep) delete card.plans[d]; });
+    },
+    typeOf(card) { return this.TYPES[card?.taskType] ? card.taskType : ''; },
+    defaultEst(card) {
+        const t = this.typeOf(card);
+        const pm = Number(card.plannedMinutes) || 0;
+        if (pm > 0 && pm <= 120) return pm;
+        return t ? this.TYPES[t].est : 60;
+    },
+    isDone(card, plan) { return !!plan?.done || Number(card.status) === 2; },
+
+    rows() { return this.W().allCards().filter(({ tabId }) => !/^♻/.test(app.state.tabs.find(t => t.id === tabId)?.name || '')); },
+    fixedRows() { return this.rows().filter(({ card }) => card.fixed && Number(card.status) !== 2); },
+    plannedRows(date = this.date()) {
+        return this.rows().filter(({ card }) => !card.fixed && ['must', 'opt'].includes(this.planOf(card, date)?.pri));
+    },
+
+    // 候選：之前沒做完、快到期、進行中、有下一步、有未完成待辦、本週重點、剛新增
+    reasons(card, date) {
+        const W = this.W(), r = [];
+        const prev = Object.entries(card.plans || {}).filter(([d, p]) => d < date && ['must', 'opt'].includes(p?.pri) && !p.done).sort().pop();
+        if (prev) r.push({ k: 'carry', t: `${prev[0].slice(5).replace('-', '/')} 沒做完`, w: 100 });
+        const end = card.isMemo ? '' : W.plannedEnd(card);
+        if (end) {
+            const n = Math.round((W.parseLocalDate(end) - W.parseLocalDate(date)) / 864e5);
+            if (n < 0 && n >= -30) r.push({ k: 'due', t: `過期 ${-n} 天`, w: 90 });
+            else if (n === 0) r.push({ k: 'due', t: '當天截止', w: 95 });
+            else if (n > 0 && n <= 7) r.push({ k: 'due', t: `${n} 天後截止`, w: 80 - n });
+        }
+        if (card.weekFocus === this.weekKey(date)) r.push({ k: 'star', t: '⭐ 本週重點', w: 85 });
+        if (Number(card.status) === 1) r.push({ k: 'doing', t: '進行中', w: 40 });
+        if (Number(card.status) === 3) r.push({ k: 'wait', t: '卡住／等待', w: 20 });
+        if (String(card.nextStep || '').trim()) r.push({ k: 'next', t: '有下一步', w: 30 });
+        const open = app.sandbox.parseSubtasks(card.content).filter(s => !s.completed).length;
+        if (open) r.push({ k: 'todo', t: `待辦 ${open}`, w: 25 });
+        const ts = Number(String(card.id).match(/(\d{10,})/)?.[1] || 0);
+        if (ts && Date.now() - ts < 2 * 864e5) r.push({ k: 'new', t: '剛新增', w: 50 });
+        return r;
+    },
+    candidates(date = this.date()) {
+        const q = this.ui.search.trim().toLowerCase();
+        return this.rows().filter(({ card }) => !card.fixed && Number(card.status) !== 2 && !this.planOf(card, date))
+            .map(r => ({ ...r, why: this.reasons(r.card, date) }))
+            .filter(r => q ? [r.card.title, r.card.project, r.tabName].some(x => String(x || '').toLowerCase().includes(q)) : r.why.length)
+            .sort((a, b) => Math.max(0, ...b.why.map(x => x.w)) - Math.max(0, ...a.why.map(x => x.w)))
+            .slice(0, q ? 30 : 40);
+    },
+    skippedRows(date = this.date()) { return this.rows().filter(({ card }) => !card.fixed && this.planOf(card, date)?.pri === 'skip'); },
+
+    // ---------- 動作 ----------
+    save(cardId) { app.saveToLocal(); if (cardId) app.refreshCard(cardId); this.render(); app.sandbox.renderTodo?.(); },
+    classify(cardId, pri, date = this.date()) {
+        const card = this.W().getCard(cardId);
+        if (!card) return;
+        const cur = this.planOf(card, date) || {};
+        const t = this.typeOf(card);
+        this.setPlan(card, date, {
+            pri,
+            slot: pri === 'skip' ? null : (cur.slot || (t ? this.TYPES[t].slot : null)),
+            est: cur.est || this.defaultEst(card),
+            done: !!cur.done
+        });
+        this.save(cardId);
+    },
+    unplan(cardId, date = this.date()) {
+        const card = this.W().getCard(cardId);
+        if (!card?.plans?.[date]) return;
+        delete card.plans[date];
+        this.save(cardId);
+    },
+    setType(cardId, type) {
+        const card = this.W().getCard(cardId);
+        if (!card) return;
+        if (type && !this.TYPES[type]) return;
+        if (type) card.taskType = type; else delete card.taskType;
+        const p = this.planOf(card);
+        if (type && p && ['must', 'opt'].includes(p.pri) && !p.slot) this.setPlan(card, this.date(), { slot: this.TYPES[type].slot });
+        this.save(cardId);
+    },
+    setSlot(cardId, slot) {
+        const card = this.W().getCard(cardId);
+        if (!card) return;
+        if (card.fixed) { card.fixed = { ...card.fixed, slot: slot || null }; return this.save(cardId); }
+        this.setPlan(card, this.date(), { slot: this.SLOT_ORDER.includes(slot) ? slot : null });
+        this.save(cardId);
+    },
+    setEst(cardId, v) {
+        const card = this.W().getCard(cardId);
+        const m = Math.max(0, Math.round(Number(v) || 0));
+        if (!card || !m) return;
+        if (card.fixed) card.fixed = { ...card.fixed, est: m };
+        else this.setPlan(card, this.date(), { est: m });
+        this.save(cardId);
+    },
+    toggleDone(cardId) {
+        const card = this.W().getCard(cardId);
+        if (!card) return;
+        const date = this.date();
+        if (card.fixed) {
+            const list = Array.isArray(card.fixedDone) ? card.fixedDone.filter(d => d >= this.addDays(this.todayStr(), -120)) : [];
+            card.fixedDone = list.includes(date) ? list.filter(d => d !== date) : [...list, date].sort();
+        } else {
+            const p = this.planOf(card, date);
+            if (!p) return;
+            this.setPlan(card, date, { done: !p.done });
+        }
+        this.save(cardId);
+    },
+    fixedDoneOn(card, date = this.date()) { return Array.isArray(card.fixedDone) && card.fixedDone.includes(date); },
+    toggleStar(cardId) {
+        const card = this.W().getCard(cardId);
+        if (!card) return;
+        const wk = this.weekKey(this.date());
+        if (card.weekFocus === wk) delete card.weekFocus; else card.weekFocus = wk;
+        this.save(cardId);
+    },
+    focus(cardId) { app.sandbox.focusTaskForTimer(cardId); },
+
+    brainDump() {
+        const el = document.getElementById('td-dump');
+        const lines = String(el?.value || '').split('\n').map(t => t.replace(/^\s*(?:[-*•・]\s+(?:\[[ xX]\]\s*)?|\d{1,2}[.)、．]\s*)/, '').trim()).filter(Boolean);
+        if (!lines.length) return;
+        lines.forEach(title => app.quickAdd.create({ title, tabId: app.state.activeTabId }));
+        app.saveToLocal();
+        this.ui.dump = '';
+        this.render();
+        app.ui.toast(`已新增 ${lines.length} 張卡，在下面分類`);
+    },
+
+    async addFixed() {
+        const f = { title: '', slot: 'am', est: 30 };
+        this._fixedForm = f;
+        const v = await app.ui.dialog({
+            title: '＋ 固定項',
+            html: `<p class="pm-hint" style="margin-top:0;">每天固定要做的事（晨會、週會、閱讀…）。會自動出現在排程板、先扣掉時間，每天可以打勾。</p>
+                <div class="qa-fields">
+                    <label style="flex:2;">名稱<input id="td-fixed-title" placeholder="例如：晨會" oninput="app.today._fixedForm.title=this.value"></label>
+                    <label>時段<select onchange="app.today._fixedForm.slot=this.value">${this.SLOT_ORDER.map(k => `<option value="${k}" ${k === 'am' ? 'selected' : ''}>${this.esc(this.slots()[k].name)}</option>`).join('')}</select></label>
+                    <label>分鐘<input type="number" min="5" step="5" value="30" oninput="app.today._fixedForm.est=this.value"></label>
+                </div>`,
+            buttons: [{ label: '取消', value: null }, { label: '加入', value: 'ok', primary: true }]
+        });
+        if (v !== 'ok' || !f.title.trim()) return;
+        const card = app.quickAdd.create({ title: f.title.trim(), tabId: app.state.activeTabId, project: '固定' });
+        card.fixed = { slot: f.slot, est: Math.max(5, Math.round(Number(f.est) || 30)) };
+        app.saveToLocal();
+        this.render();
+        app.ui.toast(`已加入固定項「${card.title}」`);
+    },
+    async removeFixed(cardId) {
+        const card = this.W().getCard(cardId);
+        if (!card) return;
+        if (!await app.ui.confirm('取消固定', `<p>「${this.esc(this.name(card))}」不再每天出現？卡片本身不會刪除。</p>`, '取消固定')) return;
+        delete card.fixed;
+        this.save(cardId);
+    },
+
+    // ---------- 統計與提醒 ----------
+    summary(date = this.date()) {
+        const planned = this.plannedRows(date).map(r => ({ ...r, p: this.planOf(r.card, date) }));
+        const fixed = this.fixedRows();
+        const must = planned.filter(r => r.p.pri === 'must'), opt = planned.filter(r => r.p.pri === 'opt');
+        const total = planned.reduce((s, r) => s + (Number(r.p.est) || 0), 0) + fixed.reduce((s, r) => s + (Number(r.card.fixed.est) || 0), 0);
+        const bySlot = {};
+        this.SLOT_ORDER.forEach(k => { bySlot[k] = 0; });
+        planned.forEach(r => { if (bySlot[r.p.slot] !== undefined) bySlot[r.p.slot] += Number(r.p.est) || 0; });
+        fixed.forEach(r => { if (bySlot[r.card.fixed.slot] !== undefined) bySlot[r.card.fixed.slot] += Number(r.card.fixed.est) || 0; });
+        const done = planned.filter(r => this.isDone(r.card, r.p)).length + fixed.filter(r => this.fixedDoneOn(r.card, date)).length;
+        return { planned, fixed, must, opt, total, bySlot, done, count: planned.length + fixed.length };
+    },
+    warnings(date = this.date()) {
+        const S = this.summary(date), out = [], slots = this.slots(), W = this.W();
+        const h = m => `${Math.round(m / 6) / 10} 小時`;
+        if (S.total > this.budget()) out.push(`預估 ${h(S.total)}，超過 ${h(this.budget())}。考慮把一件必做改成備選或明天。`);
+        if (S.must.length > this.LIMIT_MUST) out.push(`必做 ${S.must.length} 件，超過 ${this.LIMIT_MUST} 件。`);
+        if (S.opt.length > this.LIMIT_OPT) out.push(`備選 ${S.opt.length} 件，超過 ${this.LIMIT_OPT} 件。`);
+        this.SLOT_ORDER.forEach(k => { const c = this.cap(k); if (c && S.bySlot[k] > c) out.push(`「${slots[k].name}」排了 ${S.bySlot[k]} 分鐘，容量 ${c} 分鐘。`); });
+        S.planned.filter(r => r.p.slot === 'low' && this.DEEP.includes(this.typeOf(r.card)) && !this.isDone(r.card, r.p)).forEach(r =>
+            out.push(`「${this.name(r.card)}」是${this.TYPES[this.typeOf(r.card)].name}型，放在「${slots.low.name}」容易卡住。`));
+        const deepAm = S.planned.filter(r => r.p.slot === 'am' && this.DEEP.includes(this.typeOf(r.card)));
+        const amCap = this.cap('am');
+        if (deepAm.length >= 2 && amCap && deepAm.reduce((s, r) => s + (Number(r.p.est) || 0), 0) > amCap) out.push(`「${slots.am.name}」排了 ${deepAm.length} 件需要專心的事，放不下，建議移一件到「${slots.pm.name}」。`);
+        const tomorrow = this.addDays(date, 1);
+        this.rows().filter(({ card }) => !card.fixed && Number(card.status) !== 2 && !card.isMemo && W.plannedEnd(card) && W.plannedEnd(card) <= tomorrow && W.plannedEnd(card) >= this.addDays(date, -30) && this.planOf(card, date)?.pri !== 'must')
+            .slice(0, 3).forEach(({ card }) => out.push(`「${this.name(card)}」${W.plannedEnd(card).slice(5).replace('-', '/')} 截止，還沒排進必做。`));
+        return out;
+    },
+
+    // ---------- 畫面 ----------
+    typeSelect(card) {
+        const t = this.typeOf(card);
+        return `<select class="td-type ${t ? 'set' : ''}" onchange="app.today.setType('${card.id}', this.value)" title="任務類型：決定放哪個時段">
+            <option value="">類型？</option>${this.TYPE_ORDER.map(k => `<option value="${k}" ${k === t ? 'selected' : ''}>${this.TYPES[k].icon} ${this.TYPES[k].name}</option>`).join('')}</select>`;
+    },
+    estSelect(cardId, est) {
+        const opts = [...new Set([...this.EST_OPTIONS, Number(est) || 0])].filter(Boolean).sort((a, b) => a - b);
+        const lbl = m => m >= 60 ? `${Math.round(m / 6) / 10}h` : `${m}m`;
+        return `<select class="td-est" onchange="app.today.setEst('${cardId}', this.value)" title="預估時間">${opts.map(m => `<option value="${m}" ${m === Number(est) ? 'selected' : ''}>${lbl(m)}</option>`).join('')}</select>`;
+    },
+    slotSelect(cardId, slot) {
+        const s = this.slots();
+        return `<select class="td-slot-sel" onchange="app.today.setSlot('${cardId}', this.value)" title="時段"><option value="">未排時段</option>${this.SLOT_ORDER.map(k => `<option value="${k}" ${k === slot ? 'selected' : ''}>${this.esc(s[k].name)}</option>`).join('')}</select>`;
+    },
+
+    candidateRow({ card, tabName, why }) {
+        const esc = x => this.esc(x);
+        const wk = this.weekKey(this.date());
+        return `<div class="td-cand">
+            <div class="td-cand-main">
+                <button type="button" class="td-star ${card.weekFocus === wk ? 'on' : ''}" onclick="app.today.toggleStar('${card.id}')" title="本週重點">${card.weekFocus === wk ? '★' : '☆'}</button>
+                <div class="td-cand-text">
+                    <div class="td-title">${esc(this.name(card))}</div>
+                    <div class="td-meta">${card.project ? `#${esc(card.project)} · ` : ''}${esc(tabName)}${why.length ? ' · ' + why.filter(x => x.k !== 'star').map(x => `<span class="td-why ${x.k}">${esc(x.t)}</span>`).join(' ') : ''}</div>
+                </div>
+                ${this.typeSelect(card)}
+            </div>
+            <div class="td-pri">
+                <button type="button" class="must" onclick="app.today.classify('${card.id}','must')">必做</button>
+                <button type="button" class="opt" onclick="app.today.classify('${card.id}','opt')">備選</button>
+                <button type="button" class="skip" onclick="app.today.classify('${card.id}','skip')">今天不做</button>
+            </div>
+        </div>`;
+    },
+
+    item(r, kind) {
+        const esc = x => this.esc(x);
+        const card = r.card;
+        const fixed = kind === 'fixed';
+        const p = fixed ? null : r.p;
+        const done = fixed ? this.fixedDoneOn(card) : this.isDone(card, p);
+        const t = this.typeOf(card);
+        const est = fixed ? card.fixed.est : p.est;
+        const slot = fixed ? card.fixed.slot : p.slot;
+        return `<div class="td-item ${kind} ${done ? 'done' : ''}" draggable="${fixed ? 'false' : 'true'}" ondragstart="app.today.dragStart(event,'${card.id}')" data-id="${card.id}">
+            <input type="checkbox" ${done ? 'checked' : ''} onchange="app.today.toggleDone('${card.id}')" title="${fixed ? '今天做了' : '今天這部分做完了'}">
+            <div class="td-item-body">
+                <button type="button" class="td-item-title" onclick="app.today.focus('${card.id}')" title="進入專注模式（計時、筆記）">${t ? this.TYPES[t].icon + ' ' : ''}${esc(this.name(card))}</button>
+                <div class="td-item-meta">
+                    <span class="td-tag ${kind}">${fixed ? '固定' : (p.pri === 'must' ? '必做' : '備選')}</span>
+                    ${this.estSelect(card.id, est)}
+                    ${this.slotSelect(card.id, slot)}
+                    ${fixed ? `<button type="button" class="td-x" onclick="app.today.removeFixed('${card.id}')" title="取消固定">×</button>` : `<button type="button" class="td-x" onclick="app.today.unplan('${card.id}')" title="移回候選">↩</button>`}
+                </div>
+            </div>
+        </div>`;
+    },
+
+    board(S) {
+        const esc = x => this.esc(x);
+        const slots = this.slots();
+        const rank = r => (r.p.pri === 'must' ? 0 : 1);
+        const col = (k) => {
+            const fixed = S.fixed.filter(r => r.card.fixed.slot === k);
+            const items = S.planned.filter(r => r.p.slot === k).sort((a, b) => rank(a) - rank(b));
+            const cap = this.cap(k), used = S.bySlot[k];
+            return `<div class="td-col" data-slot="${k}" ondragover="app.today.dragOver(event,this)" ondragleave="this.classList.remove('over')" ondrop="app.today.drop(event,'${k}',this)">
+                <div class="td-col-head ${cap && used > cap ? 'over-cap' : ''}">
+                    <b>${esc(slots[k].name)}</b> <span class="td-time">${esc(slots[k].from)}–${esc(slots[k].to)}</span>
+                    <span class="td-cap">${used}/${cap} 分</span>
+                </div>
+                ${fixed.map(r => this.item(r, 'fixed')).join('')}${items.map(r => this.item(r, r.p.pri)).join('')}
+                ${!fixed.length && !items.length ? '<div class="td-empty">拖到這裡，或用下拉選時段</div>' : ''}
+            </div>`;
+        };
+        const unslotted = S.planned.filter(r => !this.SLOT_ORDER.includes(r.p.slot)).sort((a, b) => rank(a) - rank(b));
+        const fixedNo = S.fixed.filter(r => !this.SLOT_ORDER.includes(r.card.fixed.slot));
+        return `<div class="td-board">${this.SLOT_ORDER.map(col).join('')}</div>
+            ${unslotted.length || fixedNo.length ? `<div class="td-col td-tray" data-slot="" ondragover="app.today.dragOver(event,this)" ondragleave="this.classList.remove('over')" ondrop="app.today.drop(event,'',this)">
+                <div class="td-col-head"><b>還沒放時段</b><span class="td-cap">設好類型會自動放；也可以拖或用下拉</span></div>
+                ${fixedNo.map(r => this.item(r, 'fixed')).join('')}${unslotted.map(r => this.item(r, r.p.pri)).join('')}</div>` : ''}`;
+    },
+
+    render() {
+        const target = document.getElementById('today-render-target');
+        if (!target) return;
+        const esc = x => this.esc(x);
+        const date = this.date(), S = this.summary(date), warns = this.warnings(date);
+        const cands = this.candidates(date), skipped = this.skippedRows(date);
+        const h = m => Math.round(m / 6) / 10;
+        const keepSearch = document.activeElement?.id === 'td-search' ? document.activeElement.selectionStart : null;
+        const slots = this.slots();
+        target.innerHTML = `<div class="td-wrap">
+            <div class="td-top">
+                <div class="td-days">
+                    <button type="button" class="${this.which() === 'today' ? 'active' : ''}" onclick="app.today.ui.which='today'; app.today.render()">今天 ${esc(this.dateLabel(this.todayStr()))}</button>
+                    <button type="button" class="${this.which() === 'tomorrow' ? 'active' : ''}" onclick="app.today.ui.which='tomorrow'; app.today.render()">明天 ${esc(this.dateLabel(this.addDays(this.todayStr(), 1)))}</button>
+                </div>
+                <div class="td-sum">
+                    <span class="${S.must.length > this.LIMIT_MUST ? 'bad' : ''}">必做 <b>${S.must.length}</b>/${this.LIMIT_MUST}</span>
+                    <span class="${S.opt.length > this.LIMIT_OPT ? 'bad' : ''}">備選 <b>${S.opt.length}</b>/${this.LIMIT_OPT}</span>
+                    <span class="${S.total > this.budget() ? 'bad' : ''}">預估 <b>${h(S.total)}</b>/${h(this.budget())} 小時</span>
+                    ${S.count ? `<span>完成 <b>${S.done}</b>/${S.count}</span>` : ''}
+                </div>
+            </div>
+            <div class="td-ai">
+                <button type="button" class="primary" onclick="app.today.aiSend()">🤖 請 AI 幫我分類／排時段</button>
+                <button type="button" onclick="app.today.aiPaste()">📥 貼上 AI 的結果</button>
+                <button type="button" onclick="app.today.ui.showSettings=!app.today.ui.showSettings; app.today.render()">⚙ 時段設定</button>
+            </div>
+            ${this.ui.showSettings ? `<div class="td-settings">
+                ${this.SLOT_ORDER.map(k => `<div class="td-set-row"><input value="${esc(slots[k].name)}" onchange="app.today.setSlotPref('${k}','name',this.value)"><input type="time" value="${esc(slots[k].from)}" onchange="app.today.setSlotPref('${k}','from',this.value)"><span>–</span><input type="time" value="${esc(slots[k].to)}" onchange="app.today.setSlotPref('${k}','to',this.value)"><span class="td-meta">${this.cap(k)} 分</span></div>`).join('')}
+                <div class="td-set-row"><span>每天可專心的時間</span><input type="number" min="1" max="12" step="0.5" value="${h(this.budget())}" onchange="app.today.setBudget(this.value)"><span>小時（書上建議 ≤ 5）</span></div>
+                <div class="td-meta">預設是中間型的節奏。這些設定記在這台電腦。</div>
+            </div>` : ''}
+            ${warns.length ? `<div class="td-warns">${warns.map(w => `<div>⚠ ${esc(w)}</div>`).join('')}</div>` : ''}
+
+            <section class="td-sec">
+                <h4>① 分類 <span class="td-meta">點「必做／備選／今天不做」。最重要的先點。</span></h4>
+                <div class="td-dump">
+                    <textarea id="td-dump" rows="2" placeholder="腦中想到什麼先打下來，一行一件（清空大腦，可跳過）">${esc(this.ui.dump || '')}</textarea>
+                    <button type="button" onclick="app.today.brainDump()">加入</button>
+                </div>
+                <input type="search" id="td-search" class="td-search" placeholder="從所有卡片找…" value="${esc(this.ui.search)}" oninput="app.today.ui.search=this.value; clearTimeout(app.today._t); app.today._t=setTimeout(()=>app.today.render(),200)">
+                ${cands.length ? cands.map(r => this.candidateRow(r)).join('') : `<div class="data-empty">${this.ui.search ? '找不到符合的卡片。' : '候選都分好了。想加別的卡，用上面的搜尋。'}</div>`}
+                ${skipped.length ? `<details class="td-skipped" ${this.ui.showSkipped ? 'open' : ''} ontoggle="app.today.ui.showSkipped=this.open"><summary>今天不做 ${skipped.length}</summary>${skipped.map(({ card }) => `<div class="td-skip-row"><span>${esc(this.name(card))}</span><button type="button" onclick="app.today.unplan('${card.id}')">↩ 放回候選</button></div>`).join('')}</details>` : ''}
+                <div class="td-meta" style="margin-top:6px;">兩分鐘內能做完的事不用記，直接做。</div>
+            </section>
+
+            <section class="td-sec">
+                <h4>② 排程板 <span class="td-meta">依類型自動放進時段，拖動或用下拉調整。點標題進入專注。</span></h4>
+                ${this.board(S)}
+                <button type="button" class="td-add-fixed" onclick="app.today.addFixed()">＋ 固定項（晨會、週會…）</button>
+            </section>
+        </div>`;
+        const dump = document.getElementById('td-dump');
+        if (dump) dump.oninput = () => { this.ui.dump = dump.value; };
+        if (keepSearch !== null) { const el = document.getElementById('td-search'); el.focus(); el.selectionStart = el.selectionEnd = keepSearch; }
+    },
+
+    // 拖曳換時段（電腦）
+    dragStart(e, id) { this._drag = id; try { e.dataTransfer.setData('text/plain', id); e.dataTransfer.effectAllowed = 'move'; } catch (_) {} },
+    dragOver(e, el) { if (!this._drag) return; e.preventDefault(); el.classList.add('over'); },
+    drop(e, slot, el) { e.preventDefault(); el.classList.remove('over'); const id = this._drag; this._drag = null; if (id) this.setSlot(id, slot); },
+
+    // ---------- 心流裡的今日計畫 ----------
+    sandboxHtml() {
+        const esc = x => this.esc(x);
+        const date = this.todayStr();
+        const S = this.summary(date);
+        if (!S.count) return `<div class="sb-today empty">📅 今天還沒排計畫 <button type="button" onclick="app.switchView('today')">去排</button></div>`;
+        const slots = this.slots();
+        const list = [
+            ...S.fixed.map(r => ({ card: r.card, slot: r.card.fixed.slot, tag: '固定', done: this.fixedDoneOn(r.card, date), pr: 0 })),
+            ...S.planned.map(r => ({ card: r.card, slot: r.p.slot, tag: r.p.pri === 'must' ? '必做' : '備選', done: this.isDone(r.card, r.p), pr: r.p.pri === 'must' ? 1 : 2 }))
+        ].sort((a, b) => (this.SLOT_ORDER.indexOf(a.slot) + 1 || 9) - (this.SLOT_ORDER.indexOf(b.slot) + 1 || 9) || a.pr - b.pr);
+        const sb = app.state.sandbox;
+        return `<div class="sb-today">
+            <div class="sb-today-head"><b>📅 今日計畫</b><span>${S.done}/${S.count} 完成</span><button type="button" onclick="app.switchView('today')">排程板</button></div>
+            ${list.map(x => `<div class="sb-today-row ${x.done ? 'done' : ''} ${sb.activeTaskId === x.card.id ? 'active' : ''}">
+                <input type="checkbox" ${x.done ? 'checked' : ''} onchange="app.today.ui.which='today'; app.today.toggleDone('${x.card.id}')">
+                <span class="sb-today-slot">${esc(slots[x.slot]?.name || '未排')}</span>
+                <button type="button" onclick="app.sandbox.setActiveTask('${x.card.id}')">${this.typeOf(x.card) ? this.TYPES[this.typeOf(x.card)].icon + ' ' : ''}${esc(this.name(x.card))}</button>
+                <span class="td-tag ${x.tag === '必做' ? 'must' : x.tag === '備選' ? 'opt' : 'fixed'}">${x.tag}</span>
+            </div>`).join('')}
+        </div>`;
+    },
+    renderSandbox() { const el = document.getElementById('sb-today-plan'); if (el) el.innerHTML = this.sandboxHtml(); },
+
+    // 時間軸卡片上的小標記
+    badgeHtml(card) {
+        const t = this.typeOf(card);
+        const p = this.planOf(card, this.todayStr());
+        const tb = t ? `<span class="type-badge" title="任務類型：${this.TYPES[t].name}型">${this.TYPES[t].icon}</span>` : '';
+        const pb = p && ['must', 'opt'].includes(p.pri) ? `<span class="plan-badge ${p.pri} ${p.done ? 'done' : ''}" title="今日計畫">今日・${p.pri === 'must' ? '必做' : '備選'}${p.done ? ' ✓' : ''}</span>` : '';
+        const fb = card.fixed ? '<span class="plan-badge fixed" title="每天的固定項">固定</span>' : '';
+        return tb + pb + fb;
+    },
+
+    // ---------- AI：分類＋排時段（會反問） ----------
+    AI_KEY: 'whiteboard_today_ai',
+    aiPrompt() {
+        const date = this.date(), W = this.W(), slots = this.slots();
+        const S = this.summary(date);
+        const list = [...S.planned.map(r => r), ...this.candidates(date)];
+        const seen = new Set();
+        const items = list.filter(r => !seen.has(r.card.id) && seen.add(r.card.id)).slice(0, 40);
+        const map = items.map(r => r.card.id);
+        try { localStorage.setItem(this.AI_KEY, JSON.stringify({ date, map })); } catch (_) {}
+        const line = (r, i) => {
+            const c = r.card, p = this.planOf(c, date), t = this.typeOf(c), end = c.isMemo ? '' : W.plannedEnd(c);
+            const why = (r.why || this.reasons(c, date)).map(x => x.t).join('、');
+            const open = app.sandbox.parseSubtasks(c.content).filter(s => !s.completed).map(s => s.text).slice(0, 4);
+            return `[${i + 1}] ${this.name(c)}｜專案：${c.project || '—'}｜${end ? `截止 ${end}` : '沒有截止日'}｜狀態：${W.statusLabel(c.status)}｜類型：${t ? this.TYPES[t].name : '未設定'}${p ? `｜目前排：${p.pri === 'must' ? '必做' : p.pri === 'opt' ? '備選' : '不做'}` : ''}${why ? `｜${why}` : ''}${String(c.nextStep || '').trim() ? `｜下一步：${String(c.nextStep).trim()}` : ''}${open.length ? `｜未完成待辦：${open.join('；')}` : ''}`;
+        };
+        return [
+            `請當我的時間管理教練，幫我排 ${this.dateLabel(date)} 的今日計畫。`,
+            '',
+            '【方法】（出自《幫你的時間記帳》）把事情分成固定項、必做項（最多 4 件）、備選項（最多 3 件）；三類合計預估不超過 ' + Math.round(this.budget() / 6) / 10 + ' 小時。最重要的事放在最前面、放在我精神最好的時段。',
+            '',
+            '【任務類型】（決定放哪個時段）',
+            ...this.TYPE_ORDER.map(k => `- ${this.TYPES[k].name}：${this.TYPES[k].q}`),
+            '看起來像兩種時，選最花腦力的那一段。',
+            '',
+            '【我的時段】我是中間型（不是早起型也不是夜貓型）。',
+            ...this.SLOT_ORDER.map(k => `- ${slots[k].name} ${slots[k].from}–${slots[k].to}（${this.cap(k)} 分鐘）`),
+            '原則：分析、研究放精神最好的時段；溝通、雜物放低谷；創造放下午後段。',
+            '',
+            '【固定項】（已經佔掉的時間）',
+            ...(S.fixed.length ? S.fixed.map(r => `- ${this.name(r.card)}：${slots[r.card.fixed.slot]?.name || '未定'} ${r.card.fixed.est} 分鐘`) : ['（沒有）']),
+            '',
+            '【候選】',
+            ...items.map(line),
+            '',
+            '【請你這樣做】',
+            '1. 先看候選。類型或重要性判斷不了的，先問我，一次最多 3 個問題，等我回答再繼續。不要自己猜。',
+            '2. 討論完，把最後結果放在一個程式碼區塊裡，每件一行，格式：',
+            '[編號] 必做|備選|不做 類型 時段 分鐘',
+            '例如：[3] 必做 分析 上午 60',
+            `類型只能是：分析、研究、創造、溝通、雜物；時段只能是：上午、低谷、下午（分別對應 ${slots.am.name}、${slots.low.name}、${slots.pm.name}）。`,
+            '3. 程式碼區塊後面，用 2～3 句告訴我：為什麼這樣排、哪裡可能太滿、有什麼要注意的。'
+        ].join('\n');
+    },
+    async aiSend() {
+        const text = this.aiPrompt();
+        if (navigator.share && /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent)) {
+            try { await navigator.share({ text }); return; } catch (err) { if (err?.name === 'AbortError') return; }
+        }
+        this.W().copyText(text, '已複製，貼到 AI（Claude、ChatGPT…）。討論完把結果貼回「📥 貼上 AI 的結果」');
+    },
+    parseAi(text) {
+        let map = [];
+        try { const s = JSON.parse(localStorage.getItem(this.AI_KEY) || '{}'); map = Array.isArray(s.map) ? s.map : []; } catch (_) {}
+        const typeBy = Object.fromEntries(this.TYPE_ORDER.map(k => [this.TYPES[k].name, k]));
+        const slotBy = { '上午': 'am', '低谷': 'low', '下午': 'pm' };
+        const priBy = { '必做': 'must', '備選': 'opt', '不做': 'skip' };
+        const out = [];
+        String(text || '').split('\n').forEach(l => {
+            const m = l.match(/\[(\d+)\]\s*(必做|備選|不做)(?:\s*[|｜]?\s*(分析|研究|創造|溝通|雜物))?(?:\s*[|｜]?\s*(上午|低谷|下午))?(?:\s*[|｜]?\s*(\d+))?/);
+            if (!m) return;
+            const id = map[Number(m[1]) - 1];
+            const card = id ? this.W().getCard(id) : null;
+            if (!card) return;
+            out.push({ card, pri: priBy[m[2]], type: typeBy[m[3]] || '', slot: slotBy[m[4]] || '', est: Number(m[5]) || 0 });
+        });
+        return out;
+    },
+    async aiPaste() {
+        this._aiText = '';
+        const v = await app.ui.dialog({
+            title: '📥 貼上 AI 的結果',
+            wide: true,
+            html: `<p class="pm-hint" style="margin-top:0;">把 AI 最後給的那段（像「[3] 必做 分析 上午 60」）整段貼上，可以連說明一起貼。</p>
+                <textarea class="ps-input" id="td-ai-text" placeholder="貼在這裡…" oninput="app.today._aiText=this.value; app.today.aiPreview()"></textarea>
+                <div id="td-ai-preview"></div>`,
+            buttons: [{ label: '取消', value: null }, { label: '套用', value: 'ok', primary: true }]
+        });
+        if (v !== 'ok') return;
+        const rows = this.parseAi(this._aiText);
+        if (!rows.length) { app.ui.toast('沒有讀到結果。請確認貼的是 AI 最後那段「[編號] 必做…」', 'warn'); return; }
+        const date = this.date();
+        rows.forEach(r => {
+            if (r.type) r.card.taskType = r.type;
+            const cur = this.planOf(r.card, date) || {};
+            this.setPlan(r.card, date, {
+                pri: r.pri,
+                slot: r.pri === 'skip' ? null : (r.slot || cur.slot || (r.type ? this.TYPES[r.type].slot : null)),
+                est: r.est || cur.est || this.defaultEst(r.card),
+                done: !!cur.done
+            });
+        });
+        app.saveToLocal();
+        this.render();
+        app.ui.toast(`已套用 ${rows.length} 件`);
+    },
+    aiPreview() {
+        const el = document.getElementById('td-ai-preview');
+        if (!el) return;
+        const rows = this.parseAi(this._aiText);
+        const slots = this.slots();
+        const pri = { must: '必做', opt: '備選', skip: '不做' };
+        el.innerHTML = rows.length ? `<div class="td-ai-prev">${rows.map(r => `<div><span class="td-tag ${r.pri}">${pri[r.pri]}</span> ${r.type ? this.TYPES[r.type].icon : ''} ${this.esc(this.name(r.card))} <span class="td-meta">${r.slot ? this.esc(slots[r.slot].name) : ''}${r.est ? ` · ${r.est} 分` : ''}</span></div>`).join('')}</div>`
+            : (this._aiText.trim() ? '<div class="td-meta">還沒讀到「[編號] 必做…」這種行。</div>' : '');
+    }
+};
+
+// ==========================================
 // 專案選擇：點下去列出所有專案；打了沒有的名字＝「＋ 新增專案」
 // ==========================================
 app.projectPicker = {
@@ -7279,6 +7820,7 @@ app.lists = {
                 <input class="ct-title" value="${esc(String(card.title || '').split('\n')[0])}" placeholder="未命名" onchange="app.lists.setField('${card.id}','title',this.value)" onkeydown="if(event.key==='Enter' && !event.isComposing) this.blur()" title="${esc(card.title || '')}">
                 <select class="ct-ws" onchange="app.actions.moveCard('${card.id}', this.value)" title="工作區">${tabs.map(t => `<option value="${t.id}" ${t.id === tabId ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select>
                 <input class="ct-proj" value="${esc(card.project || '')}" placeholder="專案" autocomplete="off" onfocus="app.projectPicker.open(this)" onchange="app.lists.setField('${card.id}','project',this.value)" onkeydown="if(event.key==='Enter' && !event.isComposing) this.blur()">
+                <select class="ct-type" onchange="app.today.setType('${card.id}', this.value)" title="任務類型"><option value="">—</option>${app.today.TYPE_ORDER.map(k => `<option value="${k}" ${k === card.taskType ? 'selected' : ''}>${app.today.TYPES[k].icon} ${app.today.TYPES[k].name}</option>`).join('')}</select>
                 <select class="ct-status st-${st}" onchange="app.lists.setStatus('${card.id}', this.value)">${statusOpts.map(v => `<option value="${v}" ${v === st ? 'selected' : ''}>${esc(W.statusLabel(v))}</option>`).join('')}</select>
                 <input class="ct-date ${dueCls}" type="date" value="${esc(end)}" onchange="app.lists.setDate('${card.id}', this.value)" title="${end ? '預計完成日（清空＝改回自由卡片）' : '選日期＝變成排程工項'}">
                 <span class="ct-info">${subs.length ? `<span title="待辦完成／全部">☑ ${doneN}/${subs.length}</span>` : ''}${openQ ? `<span title="未答問題">❓ ${openQ}</span>` : ''}${mins ? `<span title="已記工時">⏱ ${esc(W.formatMinutes(mins))}</span>` : ''}</span>
@@ -7293,7 +7835,7 @@ app.lists = {
                 <select onchange="app.lists.set('ctGroup', this.value)">${[['none', '不分組'], ['project', '依專案分組'], ['ws', '依工作區分組']].map(([v, l]) => `<option value="${v}" ${v === U.ctGroup ? 'selected' : ''}>${l}</option>`).join('')}</select>
             </div>
             <div class="ct-table">
-                <div class="ct-row ct-head"><span></span><span>標題</span><span>工作區</span><span>專案</span><span>狀態</span><span>預計完成</span><span>進度</span><span></span></div>
+                <div class="ct-row ct-head"><span></span><span>標題</span><span>工作區</span><span>專案</span><span>類型</span><span>狀態</span><span>預計完成</span><span>進度</span><span></span></div>
                 ${!rows.length ? '<div class="data-empty">沒有符合的卡片。</div>' : (U.ctGroup === 'none' ? rows.map(row).join('') : this.groups(rows).map(g => {
                     const collapsed = !!U.ctCollapsed[`${U.ctGroup}:${g.key}`];
                     return `<div class="ct-group" data-group="${esc(g.key)}">
