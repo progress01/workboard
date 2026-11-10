@@ -1,5 +1,5 @@
 // =====================================================================
-// 白板 & 心流沙盒 v4.5
+// 白板 & 心流沙盒 v5.0
 // ---------------------------------------------------------------------
 // v3.0 重整重點（資料邏輯）：
 // 1. 所有修改只走一個入口 app.saveToLocal()（= store.markDirty）：
@@ -27,7 +27,7 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 const provider = new firebase.auth.GoogleAuthProvider();
 
-const APP_VERSION = '4.5';
+const APP_VERSION = '5.0';
 const SCHEMA_VERSION = 3;
 const CLOUD_DOC_SOFT_LIMIT = 750 * 1024;   // 超過時提醒
 const CLOUD_DOC_HARD_LIMIT = 1000 * 1000;  // Firestore 單一文件上限約 1 MiB，保守一點
@@ -169,8 +169,8 @@ const app = {
     applyPrefs() {
         const p = this.prefs;
         const s = this.state;
-        s.view = ['timeline','matrix','chronicle','gantt','calendar','report','sandbox'].includes(p.view) ? p.view : 'timeline';
-        if (s.view === 'sandbox') s.view = 'timeline';
+        // 首頁＝今日：每次打開都從今日開始
+        s.view = 'today';
         s.activeTabId = s.tabs.some(t => t.id === p.activeTabId) ? p.activeTabId : s.tabs[0].id;
         s.ganttFilters.scale = ['day','week','month'].includes(p.ganttScale) ? p.ganttScale : 'week';
         s.ganttFilters.mode = p.ganttMode === 'time' ? 'time' : 'schedule';
@@ -4135,7 +4135,16 @@ const app = {
             }
         }
         document.querySelectorAll('.view-container').forEach(el => el.classList.remove('active'));
-        document.querySelectorAll('.toolbar .btn').forEach(el => el.classList.remove('active'));
+        document.querySelectorAll('.toolbar .btn, #area-subnav .btn, .more-menu button').forEach(el => el.classList.remove('active'));
+        const area = this.areaOf(viewName);
+        const sub = document.getElementById('area-subnav');
+        if (sub) sub.dataset.area = area;
+        document.body.dataset.area = area;
+        document.body.classList.toggle('has-subnav', area === 'schedule' || area === 'review');
+        document.getElementById(`area-${area}`)?.classList.add('active');
+        if (area === 'more') document.getElementById('btn-more')?.classList.add('active');
+        if (area === 'schedule') this.prefs.scheduleView = viewName;
+        if (area === 'review') this.prefs.reviewView = viewName;
         if (document.getElementById('view-' + viewName)) document.getElementById('view-' + viewName).classList.add('active');
         if (document.getElementById('btn-view-' + viewName)) document.getElementById('btn-view-' + viewName).classList.add('active');
         if (this.state.showProjectBar) document.getElementById('btn-project-bar')?.classList.add('active');
@@ -4152,6 +4161,32 @@ const app = {
             this.renderAll();
         }
     },
+
+    // 四個區塊：今日／卡片／時程／回顧；其他收在「更多」
+    areaOf(view) {
+        return ({ today: 'today', lists: 'cards', timeline: 'schedule', gantt: 'schedule', calendar: 'schedule', report: 'review', chronicle: 'review' })[view] || 'more';
+    },
+    goArea(area) {
+        const v = area === 'cards' ? 'lists'
+            : area === 'schedule' ? (['timeline', 'gantt', 'calendar'].includes(this.prefs.scheduleView) ? this.prefs.scheduleView : 'timeline')
+            : area === 'review' ? (['report', 'chronicle'].includes(this.prefs.reviewView) ? this.prefs.reviewView : 'report')
+            : 'today';
+        this.switchView(v);
+    },
+    toggleMore(e) {
+        e?.stopPropagation();
+        const m = document.getElementById('more-menu');
+        if (!m) return;
+        m.classList.toggle('open');
+        // 工具列可以左右滑（overflow），選單改用固定定位才不會被切掉
+        const r = document.getElementById('btn-more')?.getBoundingClientRect();
+        if (r) { m.style.top = `${r.bottom + 6}px`; m.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - 210))}px`; }
+        if (m.classList.contains('open') && !this._moreBound) {
+            this._moreBound = true;
+            document.addEventListener('click', ev => { if (!ev.target.closest('.more-wrap')) this.closeMore(); });
+        }
+    },
+    closeMore() { document.getElementById('more-menu')?.classList.remove('open'); },
 
     renderAll() {
         this.renderTabs(); if (this.state.showProjectBar) this.renderProjectBar();
@@ -7387,6 +7422,7 @@ app.today = {
                 <button type="button" class="primary" onclick="app.today.aiSend()">🤖 請 AI 幫我分類／排時段</button>
                 <button type="button" onclick="app.today.aiPaste()">📥 貼上 AI 的結果</button>
                 <button type="button" onclick="app.today.ui.showSettings=!app.today.ui.showSettings; app.today.render()" title="時段設定">⚙</button>
+                    <button type="button" class="td-cloud-m" onclick="app.cloud.save()" title="排好後存到雲端，電腦才看得到">☁️ 存雲端</button>
                 </div>
             </div>
             ${this.ui.showSettings ? `<div class="td-settings">
