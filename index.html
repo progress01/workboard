@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>白板 & 心流沙盒 v5.2</title>
+    <title>白板 & 心流沙盒 v5.3</title>
     
     <!-- Firebase Compat -->
     <script src="https://www.gstatic.com/firebasejs/10.8.1/firebase-app-compat.js"></script>
@@ -639,6 +639,8 @@
         .td-cand .td-meta { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
         .td-why { background:#f1f5f9; color:#475569; border-radius:4px; padding:0 5px; }
         .td-why.carry, .td-why.due { background:#fee2e2; color:#991b1b; }
+        .td-why.dup { background:#fef3c7; color:#92400e; }
+        .td-cand.quiet .td-title { font-weight:normal; color:#475569; }
         .td-star { border:none; background:none; cursor:pointer; font-size:1.1rem; color:#cbd5e1; padding:0 2px; line-height:1.2; }
         .td-star.on { color:#f59e0b; }
         .td-type { padding:4px 6px; border:1px dashed #cbd5e1; border-radius:6px; font-size:.8rem; background:#fff; color:#94a3b8; }
@@ -1016,7 +1018,7 @@
     <!-- 登入畫面 -->
     <div id="login-screen">
         <h1 style="font-size: 2.5rem; margin-bottom: 10px;">白板系統</h1>
-        <p style="color: #94a3b8; margin-bottom: 30px;">v5.2</p>
+        <p style="color: #94a3b8; margin-bottom: 30px;">v5.3</p>
         <button onclick="app.login()" style="padding: 14px 28px; font-size: 1.1rem; border-radius: 30px; border: none; background: #3b82f6; color: white; font-weight: bold; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.3);">
             使用 Google 登入
         </button>
@@ -1386,6 +1388,6 @@
     </div>
 
     <!-- 引用大腦檔案 -->
-    <script src="app.js?v=5.2"></script>
+    <script src="app.js?v=5.3"></script>
 </body>
 </html>

@@ -1,5 +1,5 @@
 // =====================================================================
-// 白板 & 心流沙盒 v5.2
+// 白板 & 心流沙盒 v5.3
 // ---------------------------------------------------------------------
 // v3.0 重整重點（資料邏輯）：
 // 1. 所有修改只走一個入口 app.saveToLocal()（= store.markDirty）：
@@ -27,7 +27,7 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 const provider = new firebase.auth.GoogleAuthProvider();
 
-const APP_VERSION = '5.2';
+const APP_VERSION = '5.3';
 const SCHEMA_VERSION = 3;
 const CLOUD_DOC_SOFT_LIMIT = 750 * 1024;   // 超過時提醒
 const CLOUD_DOC_HARD_LIMIT = 1000 * 1000;  // Firestore 單一文件上限約 1 MiB，保守一點
@@ -7121,6 +7121,9 @@ app.today = {
     },
     candidates(date = this.date()) {
         const q = this.ui.search.trim().toLowerCase();
+        const cnt = {};
+        this.rows().forEach(({ card }) => { if (Number(card.status) !== 2) { const n = app.quickAdd.norm(card.title); if (n) cnt[n] = (cnt[n] || 0) + 1; } });
+        this._dupCount = cnt;
         return this.rows().filter(({ card }) => !card.fixed && Number(card.status) !== 2 && !this.planOf(card, date))
             .map(r => ({ ...r, why: this.reasons(r.card, date) }))
             .filter(r => !q || [r.card.title, r.card.project, r.tabName].some(x => String(x || '').toLowerCase().includes(q)))
@@ -7212,10 +7215,13 @@ app.today = {
     },
     focus(cardId) { app.sandbox.focusTaskForTimer(cardId); },
 
-    brainDump() {
+    async brainDump() {
         const el = document.getElementById('td-dump');
-        const lines = String(el?.value || '').split('\n').map(t => t.replace(/^\s*(?:[-*•・]\s+(?:\[[ xX]\]\s*)?|\d{1,2}[.)、．]\s*)/, '').trim()).filter(Boolean);
-        if (!lines.length) return;
+        const all = String(el?.value || '').split('\n').map(t => t.replace(/^\s*(?:[-*•・]\s+(?:\[[ xX]\]\s*)?|\d{1,2}[.)、．]\s*)/, '').trim()).filter(Boolean);
+        if (!all.length) return;
+        const lines = await app.quickAdd.confirmNew(all);
+        if (!lines) return;
+        if (!lines.length) { this.ui.dump = ''; this.render(); return; }
         lines.forEach(title => app.quickAdd.create({ title, tabId: app.state.activeTabId }));
         app.saveToLocal();
         this.ui.dump = '';
@@ -7304,7 +7310,9 @@ app.today = {
         const wk = this.weekKey(this.date());
         const meta = [showProject && card.project ? `#${esc(card.project)}` : '', showProject ? esc(tabName) : ''].filter(Boolean).join(' · ');
         const urgent = why.some(x => x.k === 'carry' || (x.k === 'due' && x.w >= 79));
-        return `<div class="td-cand ${urgent ? 'urgent' : ''}" draggable="true" ondragstart="if(event.target===this) app.today.dragStart(event,'${card.id}')" title="可以直接拖到右邊的時段">
+        const dup = (this._dupCount || {})[app.quickAdd.norm(card.title)] > 1;
+        why = dup ? [...why, { k: 'dup', t: '可能重複', w: 0 }] : why;
+        return `<div class="td-cand ${urgent ? 'urgent' : ''} ${why.some(x => x.k !== 'dup') ? '' : 'quiet'}" draggable="true" ondragstart="if(event.target===this) app.today.dragStart(event,'${card.id}')" title="可以直接拖到右邊的時段">
             <input type="checkbox" class="td-complete" onchange="app.today.completeCard('${card.id}')" title="這張卡已經做完了（標記完成）">
             <button type="button" class="td-star ${card.weekFocus === wk ? 'on' : ''}" onclick="app.today.toggleStar('${card.id}')" title="本週重點">${card.weekFocus === wk ? '★' : '☆'}</button>
             <div class="td-cand-text">
@@ -7325,13 +7333,14 @@ app.today = {
         if (this.ui.search.trim()) return all.map(r => this.candidateRow(r)).join('');
         // 有理由的（快到期、進行中、有待辦…）排前面；其他未完成的卡收在最下面，不會漏掉
         const cands = all.filter(r => r.why.length), quiet = all.filter(r => !r.why.length);
-        const quietHtml = quiet.length ? `<details class="td-quiet" ${this.ui.showQuiet ? 'open' : ''} ontoggle="app.today.ui.showQuiet=this.open">
+        const quietHtml = quiet.length ? `<details class="td-quiet" ${this.ui.showQuiet !== false ? 'open' : ''} ontoggle="app.today.ui.showQuiet=this.open">
                 <summary>其他未完成的卡 <span class="ls-count">${quiet.length}</span> <span class="td-meta">沒有截止日、還沒開始、沒有待辦</span></summary>
                 ${quiet.map(r => this.candidateRow(r)).join('')}
             </details>` : '';
         if (this.groupBy() === 'urgency') return cands.map(r => this.candidateRow(r)).join('') + quietHtml;
+        // 依專案：每個專案列出它所有未完成的卡（有理由的在前），不另外收起來
         const groups = new Map();
-        cands.forEach(r => { const k = String(r.card.project || '').trim() || '（沒有專案）'; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(r); });
+        all.forEach(r => { const k = String(r.card.project || '').trim() || '（沒有專案）'; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(r); });
         const top = rs => Math.max(0, ...rs.flatMap(r => r.why.map(x => x.w)));
         return [...groups.entries()].sort((a, b) => top(b[1]) - top(a[1]) || a[0].localeCompare(b[0], 'zh-Hant')).map(([k, rs]) => {
             const closed = !!this.ui.collapsed[k];
@@ -7342,7 +7351,7 @@ app.today = {
                 </div>
                 ${closed ? '' : rs.map(r => this.candidateRow(r, false)).join('')}
             </div>`;
-        }).join('') + quietHtml;
+        }).join('');
     },
 
     item(r, kind) {
@@ -7443,7 +7452,7 @@ app.today = {
 
             <div class="td-main" data-mtab="${mtab}">
             <section class="td-sec td-left">
-                <h4>① 分類 <span class="td-meta">最重要的先點。</span>
+                <h4>① 分類 <span class="td-meta">未完成 ${allCands.length} 張都在這裡，最重要的先點。</span>
                     <span class="td-groupby"><button type="button" class="${this.groupBy() === 'project' ? 'on' : ''}" onclick="app.today.setGroupBy('project')">依專案</button><button type="button" class="${this.groupBy() === 'urgency' ? 'on' : ''}" onclick="app.today.setGroupBy('urgency')">依急迫</button></span></h4>
                 <div class="td-dump">
                     <textarea id="td-dump" rows="1" placeholder="＋ 腦中想到什麼先打下來（Enter 加入；貼多行＝多張卡）" onkeydown="if(event.key==='Enter' && !event.shiftKey && !event.isComposing){ event.preventDefault(); app.today.brainDump(); }">${esc(this.ui.dump || '')}</textarea>
@@ -7698,6 +7707,38 @@ app.projectPicker = {
 app.quickAdd = {
     form: { text: '', tabId: '', project: '', date: '' },
 
+    // 比對用：去掉空白和標點、轉小寫
+    norm(t) { return String(t || '').split('\n')[0].toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, ''); },
+    // 找已經存在、還沒完成、名稱相同或互相包含（4 個字以上）的卡
+    findSimilar(title) {
+        const n = this.norm(title);
+        if (!n) return [];
+        return app.worktime.allCards().filter(({ card, tabName }) => {
+            if (Number(card.status) === 2 || /^♻/.test(tabName)) return false;
+            const m = this.norm(card.title);
+            if (!m) return false;
+            return m === n || (Math.min(m.length, n.length) >= 4 && (m.includes(n) || n.includes(m)));
+        });
+    },
+    // 新增前檢查重複：回傳要新增的標題（取消＝null）
+    async confirmNew(titles) {
+        const hits = titles.map(t => ({ t, rows: this.findSimilar(t) })).filter(h => h.rows.length);
+        if (!hits.length) return titles;
+        const esc = x => app.entries.escapeHtml(x);
+        const W = app.worktime;
+        const v = await app.ui.dialog({
+            title: '已經有類似的卡',
+            wide: true,
+            html: `<p style="margin-top:0;">下面的卡可能已經存在，不用重建。它們在今日頁的候選裡找得到（沒有急迫理由的排在各專案的後面）。</p>
+                <div class="diff-block">${hits.map(h => `<div style="padding:4px 0;"><b>${esc(h.t)}</b><br>${h.rows.slice(0, 3).map(({ card, tabName }) => `<span style="color:#475569;font-size:.85rem;">→ 已有：${esc(String(card.title || '').split('\n')[0])}（${esc(tabName)}${card.project ? '・#' + esc(card.project) : ''}・${esc(W.statusLabel(card.status))}）</span>`).join('<br>')}</div>`).join('')}</div>`,
+            buttons: [{ label: '取消', value: null }, { label: '全部照樣新增', value: 'all' }, { label: titles.length > hits.length ? '只新增沒重複的' : '不新增', value: 'new', primary: true }]
+        });
+        if (!v) return null;
+        if (v === 'all') return titles;
+        const dup = new Set(hits.map(h => h.t));
+        return titles.filter(t => !dup.has(t));
+    },
+
     // 共用：建立一張卡（卡片表最下面那列也用這個）
     create({ title, tabId, project = '', date = '' }) {
         const W = app.worktime;
@@ -7737,12 +7778,15 @@ app.quickAdd = {
             if (v !== 'ok') return;
             const titles = String(f.text || '').split('\n').map(t => t.replace(/^\s*(?:[-*•・]\s+(?:\[[ xX]\]\s*)?|\d{1,2}[.)、．]\s*)/, '').trim()).filter(Boolean);
             if (!titles.length) return;
-            const made = titles.map(title => this.create({ title, tabId: f.tabId, project: f.project, date: f.date }));
+            return this.confirmNew(titles).then(keep => {
+            if (!keep || !keep.length) return;
+            const made = keep.map(title => this.create({ title, tabId: f.tabId, project: f.project, date: f.date }));
             app.saveToLocal();
             app.ui.defer(() => app.renderAll());
             const tabName = app.state.tabs.find(t => t.id === f.tabId)?.name || '';
             app.ui.toast(made.length > 1 ? `已新增 ${made.length} 張卡到「${tabName}」` : `已新增「${made[0].title}」到「${tabName}」`);
             f.date = '';
+            });
         });
         setTimeout(() => document.getElementById('qa-text')?.focus(), 30);
     },
