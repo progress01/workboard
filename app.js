@@ -1,5 +1,5 @@
 // =====================================================================
-// 白板 & 心流沙盒 v4.3
+// 白板 & 心流沙盒 v4.4
 // ---------------------------------------------------------------------
 // v3.0 重整重點（資料邏輯）：
 // 1. 所有修改只走一個入口 app.saveToLocal()（= store.markDirty）：
@@ -27,7 +27,7 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 const provider = new firebase.auth.GoogleAuthProvider();
 
-const APP_VERSION = '4.3';
+const APP_VERSION = '4.4';
 const SCHEMA_VERSION = 3;
 const CLOUD_DOC_SOFT_LIMIT = 750 * 1024;   // 超過時提醒
 const CLOUD_DOC_HARD_LIMIT = 1000 * 1000;  // Firestore 單一文件上限約 1 MiB，保守一點
@@ -7150,6 +7150,23 @@ app.today = {
         this.save(cardId);
     },
     fixedDoneOn(card, date = this.date()) { return Array.isArray(card.fixedDone) && card.fixedDone.includes(date); },
+    // 候選裡直接把整張卡標成完成（可復原）
+    completeCard(cardId) {
+        const card = this.W().getCard(cardId);
+        if (!card) return;
+        const prev = { status: card.status, progress: card.progress, actualStart: card.actualStart, actualEnd: card.actualEnd };
+        this.W().markCompleted(card);
+        this.save(cardId);
+        app.ui.banner('info', `✅「${this.name(card)}」標記完成`, [{ label: '復原', action: () => {
+            const c = this.W().getCard(cardId);
+            if (!c) return;
+            ['status', 'progress', 'actualStart', 'actualEnd'].forEach(k => { if (prev[k] === undefined) delete c[k]; else c[k] = prev[k]; });
+            this.save(cardId);
+        } }], 'td-done');
+        clearTimeout(this._doneT);
+        this._doneT = setTimeout(() => app.ui.clearBanner('td-done'), 8000);
+    },
+
     toggleStar(cardId) {
         const card = this.W().getCard(cardId);
         if (!card) return;
@@ -7252,6 +7269,7 @@ app.today = {
         const meta = [showProject && card.project ? `#${esc(card.project)}` : '', showProject ? esc(tabName) : ''].filter(Boolean).join(' · ');
         const urgent = why.some(x => x.k === 'carry' || (x.k === 'due' && x.w >= 79));
         return `<div class="td-cand ${urgent ? 'urgent' : ''}" draggable="true" ondragstart="if(event.target===this) app.today.dragStart(event,'${card.id}')" title="可以直接拖到右邊的時段">
+            <input type="checkbox" class="td-complete" onchange="app.today.completeCard('${card.id}')" title="這張卡已經做完了（標記完成）">
             <button type="button" class="td-star ${card.weekFocus === wk ? 'on' : ''}" onclick="app.today.toggleStar('${card.id}')" title="本週重點">${card.weekFocus === wk ? '★' : '☆'}</button>
             <div class="td-cand-text">
                 <div class="td-title" title="${esc(card.title || '')}">${esc(this.name(card))}</div>
