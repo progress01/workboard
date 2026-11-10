@@ -1,5 +1,5 @@
 // =====================================================================
-// 白板 & 心流沙盒 v4.2
+// 白板 & 心流沙盒 v4.3
 // ---------------------------------------------------------------------
 // v3.0 重整重點（資料邏輯）：
 // 1. 所有修改只走一個入口 app.saveToLocal()（= store.markDirty）：
@@ -27,7 +27,7 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 const provider = new firebase.auth.GoogleAuthProvider();
 
-const APP_VERSION = '4.2';
+const APP_VERSION = '4.3';
 const SCHEMA_VERSION = 3;
 const CLOUD_DOC_SOFT_LIMIT = 750 * 1024;   // 超過時提醒
 const CLOUD_DOC_HARD_LIMIT = 1000 * 1000;  // Firestore 單一文件上限約 1 MiB，保守一點
@@ -7251,7 +7251,7 @@ app.today = {
         const wk = this.weekKey(this.date());
         const meta = [showProject && card.project ? `#${esc(card.project)}` : '', showProject ? esc(tabName) : ''].filter(Boolean).join(' · ');
         const urgent = why.some(x => x.k === 'carry' || (x.k === 'due' && x.w >= 79));
-        return `<div class="td-cand ${urgent ? 'urgent' : ''}">
+        return `<div class="td-cand ${urgent ? 'urgent' : ''}" draggable="true" ondragstart="if(event.target===this) app.today.dragStart(event,'${card.id}')" title="可以直接拖到右邊的時段">
             <button type="button" class="td-star ${card.weekFocus === wk ? 'on' : ''}" onclick="app.today.toggleStar('${card.id}')" title="本週重點">${card.weekFocus === wk ? '★' : '☆'}</button>
             <div class="td-cand-text">
                 <div class="td-title" title="${esc(card.title || '')}">${esc(this.name(card))}</div>
@@ -7405,7 +7405,21 @@ app.today = {
     // 拖曳換時段（電腦）
     dragStart(e, id) { this._drag = id; try { e.dataTransfer.setData('text/plain', id); e.dataTransfer.effectAllowed = 'move'; } catch (_) {} },
     dragOver(e, el) { if (!this._drag) return; e.preventDefault(); el.classList.add('over'); },
-    drop(e, slot, el) { e.preventDefault(); el.classList.remove('over'); const id = this._drag; this._drag = null; if (id) this.setSlot(id, slot); },
+    // 候選卡直接拖進時段＝排進今天（預設必做，必做滿 4 件就當備選），再點標籤可互換
+    drop(e, slot, el) {
+        e.preventDefault(); el.classList.remove('over');
+        const id = this._drag; this._drag = null;
+        if (!id) return;
+        const card = this.W().getCard(id), date = this.date();
+        if (card && !card.fixed && !['must', 'opt'].includes(this.planOf(card, date)?.pri)) {
+            const pri = this.summary(date).must.length >= this.LIMIT_MUST ? 'opt' : 'must';
+            this.setPlan(card, date, { pri, slot: this.SLOT_ORDER.includes(slot) ? slot : null, est: this.planOf(card, date)?.est || this.defaultEst(card), done: false });
+            this.save(id);
+            app.ui.toast(`「${this.name(card)}」排進${slot ? `「${this.slots()[slot].name}」` : '今天'}（${pri === 'must' ? '必做' : '備選'}）`);
+            return;
+        }
+        this.setSlot(id, slot);
+    },
 
     // ---------- 心流裡的今日計畫 ----------
     sandboxHtml() {
