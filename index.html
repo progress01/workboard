@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>白板 & 心流沙盒 v5.7</title>
+    <title>白板 & 心流沙盒 v5.8</title>
     
     <!-- Firebase Compat -->
     <script src="https://www.gstatic.com/firebasejs/10.8.1/firebase-app-compat.js"></script>
@@ -719,6 +719,7 @@
         .td-del { border:none; background:none; cursor:pointer; font-size:.85rem; opacity:.45; padding:0 2px; flex:0 0 auto; }
         .td-del:hover { opacity:1; }
         .td-add-fixed { margin-top:10px; border:1px dashed #cbd5e1; background:#fff; border-radius:8px; padding:7px 12px; cursor:pointer; color:#475569; font-size:.85rem; }
+        .td-ai-note { margin-top:6px; background:#f0fdf4; border:1px solid #bbf7d0; color:#166534; border-radius:6px; padding:5px 8px; font-size:.86rem; }
         .td-ai-prev { margin-top:8px; max-height:40vh; overflow-y:auto; display:flex; flex-direction:column; gap:4px; font-size:.86rem; }
         .sb-today { background:#eef2ff; border:1px solid #c7d2fe; border-radius:8px; padding:8px; margin-bottom:10px; }
         .sb-today.empty { display:flex; justify-content:space-between; align-items:center; font-size:.85rem; color:#475569; background:#f8fafc; border-color:#e2e8f0; }
@@ -1050,7 +1051,7 @@
     <!-- 登入畫面 -->
     <div id="login-screen">
         <h1 style="font-size: 2.5rem; margin-bottom: 10px;">白板系統</h1>
-        <p style="color: #94a3b8; margin-bottom: 30px;">v5.7</p>
+        <p style="color: #94a3b8; margin-bottom: 30px;">v5.8</p>
         <button onclick="app.login()" style="padding: 14px 28px; font-size: 1.1rem; border-radius: 30px; border: none; background: #3b82f6; color: white; font-weight: bold; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.3);">
             使用 Google 登入
         </button>
@@ -1420,6 +1421,6 @@
     </div>
 
     <!-- 引用大腦檔案 -->
-    <script src="app.js?v=5.7"></script>
+    <script src="app.js?v=5.8"></script>
 </body>
 </html>

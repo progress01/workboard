@@ -1,5 +1,5 @@
 // =====================================================================
-// 白板 & 心流沙盒 v5.7
+// 白板 & 心流沙盒 v5.8
 // ---------------------------------------------------------------------
 // v3.0 重整重點（資料邏輯）：
 // 1. 所有修改只走一個入口 app.saveToLocal()（= store.markDirty）：
@@ -27,7 +27,7 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 const provider = new firebase.auth.GoogleAuthProvider();
 
-const APP_VERSION = '5.7';
+const APP_VERSION = '5.8';
 const SCHEMA_VERSION = 3;
 const CLOUD_DOC_SOFT_LIMIT = 750 * 1024;   // 超過時提醒
 const CLOUD_DOC_HARD_LIMIT = 1000 * 1000;  // Firestore 單一文件上限約 1 MiB，保守一點
@@ -7531,7 +7531,9 @@ app.today = {
             target.querySelector('.td-mtabs')?.remove();
             const main = target.querySelector('.td-main');
             if (main) main.outerHTML = this.reviewHtml();
-            target.querySelectorAll('.td-sum, .td-ai').forEach(el => { el.style.display = 'none'; });
+            target.querySelector('.td-sum')?.remove();
+            const ai = target.querySelector('.td-ai');
+            if (ai) ai.innerHTML = `<button type="button" class="primary" onclick="app.today.aiCombinedSend()" title="把今天的帳單和明天的候選一起交給 AI">🤖 AI 檢討今天＋排明天</button><button type="button" onclick="app.today.aiPaste()">📥 貼上 AI 的結果</button>`;
             return;
         }
         if (dump) { const fit = () => { dump.style.height = 'auto'; dump.style.height = Math.min(120, dump.scrollHeight + 2) + 'px'; }; dump.oninput = () => { this.ui.dump = dump.value; fit(); }; fit(); if (keepDump) { dump.focus(); } }
@@ -7649,6 +7651,39 @@ app.today = {
             '3. 給我明天 1～2 個具體的調整建議（例如某類工作預估要乘以多少、某件事該放哪個時段）。不要給一般性的時間管理大道理。'
         ].filter(x => x !== '').join('\n');
     },
+    // 收工＋排明天一次交給 AI：先看今天的帳單，再排明天。貼回來時排進明天、反思填進今天。
+    aiCombinedPrompt() {
+        const R = this.reviewData(), tomorrow = this.addDays(R.date, 1);
+        const review = this.aiReviewPrompt().split('\n【請你這樣做】')[0].split('\n').slice(1);
+        const plan = this.aiPrompt(tomorrow, R.date).split('\n').slice(1);
+        const cut = plan.indexOf('【請你這樣做】');
+        return [
+            `請當我的時間管理教練，分兩步：先看我 ${this.dateLabel(R.date)} 的收工帳單，再幫我排 ${this.dateLabel(tomorrow)} 的計畫。`,
+            '',
+            '======== 第一步：今天的收工帳單 ========',
+            ...review,
+            '',
+            `======== 第二步：排 ${this.dateLabel(tomorrow)} ========`,
+            ...plan.slice(0, cut),
+            '【請你這樣做】',
+            '1. 兩部分有看不懂、需要知道原因或判斷不了的地方（某件為什麼沒做完、類型或重要性），先問我，一次最多 3 個問題，等我回答再繼續。不要自己猜。',
+            '2. 用 3～5 句回饋今天：哪裡估錯了、時間被什麼吃掉、哪個時段用得好或不好；明天的排法要用上這些教訓。',
+            '3. 把最後結果放在一個程式碼區塊裡：',
+            '第一行：反思：（一句話總結今天，用我的口吻）',
+            '之後每件一行：[編號] 必做|備選|不做 類型 時段 分鐘',
+            '例如：[3] 必做 分析 上午 60',
+            `類型只能是：分析、研究、創造、溝通、雜物；時段只能是：上午、低谷、下午（分別對應 ${this.slots().am.name}、${this.slots().low.name}、${this.slots().pm.name}）。`,
+            '4. 程式碼區塊後面，用 1～2 句說明明天這樣排的理由與要注意的地方。'
+        ].join('\n');
+    },
+    async aiCombinedSend() {
+        const text = this.aiCombinedPrompt();
+        if (navigator.share && /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent)) {
+            try { await navigator.share({ text }); return; } catch (err) { if (err?.name === 'AbortError') return; }
+        }
+        this.W().copyText(text, '已複製，貼到 AI。討論完把結果貼回「📥 貼上 AI 的結果」，會排進明天、反思填進今天');
+    },
+
     async aiReviewSend() {
         const text = this.aiReviewPrompt();
         if (navigator.share && /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent)) {
@@ -7709,7 +7744,7 @@ app.today = {
                 ${acc.lines.length ? `<ul class="rv-acc">${acc.lines.map(l => `<li>${esc(l)}</li>`).join('')}</ul>` : '<div class="td-meta">資料還不夠。持續排計畫、計時、收工，大約一週後就看得出來。</div>'}
             </section>
             <div class="rv-actions">
-                <button type="button" onclick="app.today.aiReviewSend()">🤖 請 AI 看今天的帳單</button>
+                <button type="button" onclick="app.today.aiReviewSend()">🤖 只檢討今天</button>
                 <button type="button" class="primary" onclick="app.today.closeDay()">收工，排明天 →</button>
             </div>
         </div>`;
@@ -7751,14 +7786,14 @@ app.today = {
 
     // ---------- AI：分類＋排時段（會反問） ----------
     AI_KEY: 'whiteboard_today_ai',
-    aiPrompt() {
-        const date = this.date(), W = this.W(), slots = this.slots();
+    aiPrompt(date = this.date(), reviewDate = null) {
+        const W = this.W(), slots = this.slots();
         const S = this.summary(date);
         const list = [...S.planned.map(r => r), ...this.candidates(date)].slice(0, 60);
         const seen = new Set();
         const items = list.filter(r => !seen.has(r.card.id) && seen.add(r.card.id)).slice(0, 40);
         const map = items.map(r => r.card.id);
-        try { localStorage.setItem(this.AI_KEY, JSON.stringify({ date, map })); } catch (_) {}
+        try { localStorage.setItem(this.AI_KEY, JSON.stringify({ date, map, reviewDate })); } catch (_) {}
         const line = (r, i) => {
             const c = r.card, p = this.planOf(c, date), t = this.typeOf(c), end = c.isMemo ? '' : W.plannedEnd(c);
             const why = (r.why || this.reasons(c, date)).map(x => x.t).join('、');
@@ -7801,9 +7836,11 @@ app.today = {
         }
         this.W().copyText(text, '已複製，貼到 AI（Claude、ChatGPT…）。討論完把結果貼回「📥 貼上 AI 的結果」');
     },
+    aiMeta() { try { return JSON.parse(localStorage.getItem(this.AI_KEY) || '{}') || {}; } catch (_) { return {}; } },
+    parseReflection(text) { const m = String(text || '').match(/^\s*(?:反思|今天的反思)\s*[:：]\s*(.+)$/m); return m ? m[1].trim() : ''; },
     parseAi(text) {
-        let map = [];
-        try { const s = JSON.parse(localStorage.getItem(this.AI_KEY) || '{}'); map = Array.isArray(s.map) ? s.map : []; } catch (_) {}
+        const meta = this.aiMeta();
+        const map = Array.isArray(meta.map) ? meta.map : [];
         const typeBy = Object.fromEntries(this.TYPE_ORDER.map(k => [this.TYPES[k].name, k]));
         const slotBy = { '上午': 'am', '低谷': 'low', '下午': 'pm' };
         const priBy = { '必做': 'must', '備選': 'opt', '不做': 'skip' };
@@ -7830,8 +7867,14 @@ app.today = {
         });
         if (v !== 'ok') return;
         const rows = this.parseAi(this._aiText);
-        if (!rows.length) { app.ui.toast('沒有讀到結果。請確認貼的是 AI 最後那段「[編號] 必做…」', 'warn'); return; }
-        const date = this.date();
+        const meta = this.aiMeta(), note = this.parseReflection(this._aiText);
+        if (note && meta.reviewDate) {
+            const old = String(app.daylog.get(meta.reviewDate).note || '').trim();
+            app.daylog.set(meta.reviewDate, { note: old && !old.includes(note) ? `${old}\n${note}` : (old || note) });
+        }
+        if (!rows.length) { if (!note) app.ui.toast('沒有讀到結果。請確認貼的是 AI 最後那段「[編號] 必做…」', 'warn'); else this.render(); return; }
+        // 排進產生提示時的那一天（收工時＝明天）
+        const date = meta.date || this.date();
         rows.forEach(r => {
             if (r.type) r.card.taskType = r.type;
             const cur = this.planOf(r.card, date) || {};
@@ -7843,8 +7886,9 @@ app.today = {
             });
         });
         app.saveToLocal();
+        if (meta.reviewDate) { this.ui.mode = 'plan'; this.ui.which = date === this.todayStr() ? 'today' : 'tomorrow'; }
         this.render();
-        app.ui.toast(`已套用 ${rows.length} 件`);
+        app.ui.toast(`已排進 ${this.dateLabel(date)}：${rows.length} 件${note ? '，反思已填進收工帳單' : ''}`);
     },
     aiPreview() {
         const el = document.getElementById('td-ai-preview');
@@ -7852,8 +7896,10 @@ app.today = {
         const rows = this.parseAi(this._aiText);
         const slots = this.slots();
         const pri = { must: '必做', opt: '備選', skip: '不做' };
-        el.innerHTML = rows.length ? `<div class="td-ai-prev">${rows.map(r => `<div><span class="td-tag ${r.pri}">${pri[r.pri]}</span> ${r.type ? this.TYPES[r.type].icon : ''} ${this.esc(this.name(r.card))} <span class="td-meta">${r.slot ? this.esc(slots[r.slot].name) : ''}${r.est ? ` · ${r.est} 分` : ''}</span></div>`).join('')}</div>`
-            : (this._aiText.trim() ? '<div class="td-meta">還沒讀到「[編號] 必做…」這種行。</div>' : '');
+        const meta = this.aiMeta(), note = this.parseReflection(this._aiText);
+        const head = (meta.date ? `<div class="td-meta" style="margin-top:6px;">會排進 ${this.esc(this.dateLabel(meta.date))}${note && meta.reviewDate ? '；反思會填進 ' + this.esc(this.dateLabel(meta.reviewDate)) + ' 的收工帳單' : ''}</div>` : '') + (note ? `<div class="td-ai-note">反思：${this.esc(note)}</div>` : '');
+        el.innerHTML = head + (rows.length ? `<div class="td-ai-prev">${rows.map(r => `<div><span class="td-tag ${r.pri}">${pri[r.pri]}</span> ${r.type ? this.TYPES[r.type].icon : ''} ${this.esc(this.name(r.card))} <span class="td-meta">${r.slot ? this.esc(slots[r.slot].name) : ''}${r.est ? ` · ${r.est} 分` : ''}</span></div>`).join('')}</div>`
+            : (this._aiText.trim() ? '<div class="td-meta">還沒讀到「[編號] 必做…」這種行。</div>' : ''));
     }
 };
 
