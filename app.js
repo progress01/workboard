@@ -1,5 +1,5 @@
 // =====================================================================
-// 白板 & 心流沙盒 v5.5
+// 白板 & 心流沙盒 v5.6
 // ---------------------------------------------------------------------
 // v3.0 重整重點（資料邏輯）：
 // 1. 所有修改只走一個入口 app.saveToLocal()（= store.markDirty）：
@@ -27,7 +27,7 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 const provider = new firebase.auth.GoogleAuthProvider();
 
-const APP_VERSION = '5.5';
+const APP_VERSION = '5.6';
 const SCHEMA_VERSION = 3;
 const CLOUD_DOC_SOFT_LIMIT = 750 * 1024;   // 超過時提醒
 const CLOUD_DOC_HARD_LIMIT = 1000 * 1000;  // Firestore 單一文件上限約 1 MiB，保守一點
@@ -240,7 +240,7 @@ const app = {
                 tabs: s.tabs, workspaces: s.workspaces, nodes: s.nodes,
                 globalNotebook: s.globalNotebook,
                 tsumego: { stones: s.tsumego.stones },
-                sandbox: { deadlineTask: s.sandbox.deadlineTask, deadlineDate: s.sandbox.deadlineDate, settings: s.sandbox.settings || '' },
+                sandbox: { deadlineTask: s.sandbox.deadlineTask, deadlineDate: s.sandbox.deadlineDate, settings: s.sandbox.settings || '', daylog: s.sandbox.daylog || '' },
                 meta: s.meta
             });
         },
@@ -256,6 +256,7 @@ const app = {
             s.sandbox.deadlineTask = doc.sandbox.deadlineTask;
             s.sandbox.deadlineDate = doc.sandbox.deadlineDate;
             s.sandbox.settings = doc.sandbox.settings || '';
+            s.sandbox.daylog = doc.sandbox.daylog || '';
             s.meta = doc.meta;
             if (!s.tabs.some(t => t.id === s.activeTabId)) s.activeTabId = s.tabs[0].id;
             if (!s.nodes[s.activeTabId]) s.nodes[s.activeTabId] = [];
@@ -340,7 +341,7 @@ const app = {
             for (const tabId in s.nodes) (s.nodes[tabId] || []).forEach(n => { if (n?.id) nodes[n.id] = `${tabId}|${this.cardSig(n)}`; });
             const tabs = {};
             s.tabs.forEach(t => { tabs[t.id] = t.name; });
-            const misc = JSON.stringify([s.tabs, s.globalNotebook, s.tsumego.stones, s.sandbox.deadlineTask, s.sandbox.deadlineDate, s.sandbox.settings || '']);
+            const misc = JSON.stringify([s.tabs, s.globalNotebook, s.tsumego.stones, s.sandbox.deadlineTask, s.sandbox.deadlineDate, s.sandbox.settings || '', s.sandbox.daylog || '']);
             return { cards, nodes, tabs, misc };
         },
 
@@ -549,7 +550,8 @@ const app = {
             out.sandbox = {
                 deadlineTask: String(src.sandbox?.deadlineTask ?? ''),
                 deadlineDate: String(src.sandbox?.deadlineDate ?? ''),
-                settings: typeof src.sandbox?.settings === 'string' ? src.sandbox.settings : ''
+                settings: typeof src.sandbox?.settings === 'string' ? src.sandbox.settings : '',
+                daylog: typeof src.sandbox?.daylog === 'string' ? src.sandbox.daylog : ''
             };
             if (!withFlag) return out;
             return { doc: out, changed: JSON.stringify([out.tabs, out.workspaces, out.nodes]) !== before };
@@ -565,6 +567,20 @@ const app = {
             const v = this.all();
             if (val === undefined) delete v[k]; else v[k] = val;
             app.state.sandbox.settings = JSON.stringify(v);
+            app.saveToLocal();
+        }
+    },
+
+    // 每天的收工紀錄（精神時段、反思、計畫 vs 實際摘要），跟著雲端同步；只留 180 天
+    daylog: {
+        all() { try { const v = JSON.parse(app.state.sandbox.daylog || '{}'); return v && typeof v === 'object' ? v : {}; } catch { return {}; } },
+        get(date) { return this.all()[date] || {}; },
+        set(date, patch) {
+            const v = this.all();
+            v[date] = { ...(v[date] || {}), ...patch };
+            const keep = app.today.addDays(app.today.todayStr(), -180);
+            Object.keys(v).forEach(d => { if (d < keep) delete v[d]; });
+            app.state.sandbox.daylog = JSON.stringify(v);
             app.saveToLocal();
         }
     },
@@ -609,7 +625,8 @@ const app = {
                 q1: nb.matrix?.q1, q2: nb.matrix?.q2, q3: nb.matrix?.q3, q4: nb.matrix?.q4,
                 stones: doc.tsumego?.stones || [],
                 deadlineTask: doc.sandbox?.deadlineTask, deadlineDate: doc.sandbox?.deadlineDate,
-                settings: doc.sandbox?.settings || ''
+                settings: doc.sandbox?.settings || '',
+                daylog: doc.sandbox?.daylog || ''
             };
         },
 
@@ -866,7 +883,7 @@ const app = {
 
             // --- 筆記本／詰棋／死線：逐欄位比對，文字衝突時兩邊都留 ---
             const ma = this.miscFields(A), mb = this.miscFields(B);
-            const miscLabels = { template: '筆記本模式', free: '全域筆記', q1: '四象限：重要緊急', q2: '四象限：重要不急', q3: '四象限：緊急不重', q4: '四象限：不重不急', stones: '詰棋盤', deadlineTask: '死線倒數名稱', deadlineDate: '死線倒數日期', settings: '設定（時段、公司專案清單）' };
+            const miscLabels = { template: '筆記本模式', free: '全域筆記', q1: '四象限：重要緊急', q2: '四象限：重要不急', q3: '四象限：緊急不重', q4: '四象限：不重不急', stones: '詰棋盤', deadlineTask: '死線倒數名稱', deadlineDate: '死線倒數日期', settings: '設定（時段、公司專案清單）', daylog: '收工帳單' };
             const mm = {};
             Object.keys(ma).forEach(k => {
                 const r = this.pick(ma[k], mb[k], bMisc ? bMisc[k] : undefined, aMiscNewer);
@@ -891,7 +908,7 @@ const app = {
                 tabs, workspaces, nodes: nodesOut,
                 globalNotebook: { template: mm.template === 'matrix' ? 'matrix' : 'free', free: mm.free ?? '', matrix: { q1: mm.q1 ?? '', q2: mm.q2 ?? '', q3: mm.q3 ?? '', q4: mm.q4 ?? '' } },
                 tsumego: { stones: mm.stones || [] },
-                sandbox: { deadlineTask: mm.deadlineTask ?? '', deadlineDate: mm.deadlineDate ?? '', settings: mm.settings ?? '' },
+                sandbox: { deadlineTask: mm.deadlineTask ?? '', deadlineDate: mm.deadlineDate ?? '', settings: mm.settings ?? '', daylog: mm.daylog ?? '' },
                 meta: { ...A.meta, tombstones: tomb, miscUpdatedAt: Math.max(A.meta.miscUpdatedAt || 0, B.meta.miscUpdatedAt || 0), updatedAt: Math.max(A.meta.updatedAt || 0, B.meta.updatedAt || 0) }
             };
             return { doc, report };
@@ -7447,7 +7464,11 @@ app.today = {
         const slots = this.slots();
         target.innerHTML = `<div class="td-wrap">
             <div class="td-top">
-                <div class="td-days">
+                <div class="td-mode">
+                    <button type="button" class="${this.ui.mode !== 'review' ? 'on' : ''}" onclick="app.today.ui.mode='plan'; app.today.render()">排計畫</button>
+                    <button type="button" class="${this.ui.mode === 'review' ? 'on' : ''} ${new Date().getHours() >= 16 && !app.daylog.get(this.todayStr()).closedAt ? 'hint' : ''}" onclick="app.today.ui.mode='review'; app.today.render()" title="計畫 vs 實際">🌆 收工帳單</button>
+                </div>
+                <div class="td-days" ${this.ui.mode === 'review' ? 'style="display:none"' : ''}>
                     <button type="button" class="${this.which() === 'today' ? 'active' : ''}" onclick="app.today.ui.which='today'; app.today.render()">今天 ${esc(this.dateLabel(this.todayStr()))}</button>
                     <button type="button" class="${this.which() === 'tomorrow' ? 'active' : ''}" onclick="app.today.ui.which='tomorrow'; app.today.render()">明天 ${esc(this.dateLabel(this.addDays(this.todayStr(), 1)))}</button>
                 </div>
@@ -7493,6 +7514,13 @@ app.today = {
             </div>
         </div>`;
         const dump = document.getElementById('td-dump');
+        if (this.ui.mode === 'review') {
+            target.querySelector('.td-mtabs')?.remove();
+            const main = target.querySelector('.td-main');
+            if (main) main.outerHTML = this.reviewHtml();
+            target.querySelectorAll('.td-sum, .td-ai').forEach(el => { el.style.display = 'none'; });
+            return;
+        }
         if (dump) { const fit = () => { dump.style.height = 'auto'; dump.style.height = Math.min(120, dump.scrollHeight + 2) + 'px'; }; dump.oninput = () => { this.ui.dump = dump.value; fit(); }; fit(); if (keepDump) { dump.focus(); } }
         if (keepSearch !== null) { const el = document.getElementById('td-search'); el.focus(); el.selectionStart = el.selectionEnd = keepSearch; }
     },
@@ -7514,6 +7542,164 @@ app.today = {
             return;
         }
         this.setSlot(id, slot);
+    },
+
+    // ---------- 🌆 收工帳單：計畫 vs 實際 ----------
+    reviewDate() { return this.ui.reviewDay === 'yesterday' ? this.addDays(this.todayStr(), -1) : this.todayStr(); },
+    reviewData(date = this.reviewDate()) {
+        const S = this.summary(date);
+        const items = S.planned.map(r => ({
+            card: r.card, pri: r.p.pri, slot: r.p.slot, type: this.typeOf(r.card),
+            est: Number(r.p.est) || 0, act: this.minutesOn(r.card, date), done: this.isDone(r.card)
+        })).sort((a, b) => (a.pri === 'must' ? 0 : 1) - (b.pri === 'must' ? 0 : 1));
+        const fixed = S.fixed.map(r => ({ card: r.card, est: Number(r.card.fixed.est) || 0, act: this.minutesOn(r.card, date), done: this.fixedDoneOn(r.card, date) }));
+        const plannedIds = new Set([...items, ...fixed].map(x => x.card.id));
+        const unplanned = this.W().allCards().filter(({ card }) => !plannedIds.has(card.id) && this.minutesOn(card, date) > 0)
+            .map(({ card }) => ({ card, act: this.minutesOn(card, date), type: this.typeOf(card) })).sort((a, b) => b.act - a.act);
+        const sum = (list, k) => list.reduce((s, x) => s + (Number(x[k]) || 0), 0);
+        const estTotal = sum(items, 'est') + sum(fixed, 'est');
+        const actPlanned = sum(items, 'act') + sum(fixed, 'act');
+        const actUnplanned = sum(unplanned, 'act');
+        return { date, items, fixed, unplanned, estTotal, actPlanned, actUnplanned, actTotal: actPlanned + actUnplanned,
+            mustDone: items.filter(x => x.pri === 'must' && x.done).length, mustN: items.filter(x => x.pri === 'must').length,
+            doneN: items.filter(x => x.done).length + fixed.filter(x => x.done).length, n: items.length + fixed.length };
+    },
+    // 預估準確度：近 30 天收工紀錄＋今天，依類型算「實際 ÷ 預估」
+    accuracy(days = 30) {
+        const from = this.addDays(this.todayStr(), -days), today = this.todayStr();
+        const rows = [];
+        Object.entries(app.daylog.all()).forEach(([d, v]) => { if (d >= from && d < today && Array.isArray(v.items)) rows.push(...v.items); });
+        this.reviewData(today).items.forEach(x => rows.push({ t: x.type, e: x.est, a: x.act }));
+        const by = {};
+        rows.filter(x => x.e > 0 && x.a > 0).forEach(x => { const k = this.TYPES[x.t] ? x.t : 'none'; by[k] = by[k] || { e: 0, a: 0, n: 0 }; by[k].e += x.e; by[k].a += x.a; by[k].n += 1; });
+        const all = Object.values(by).reduce((s, x) => ({ e: s.e + x.e, a: s.a + x.a, n: s.n + x.n }), { e: 0, a: 0, n: 0 });
+        return { by, all };
+    },
+    ratioText(x) { if (!x || !x.e || x.n < 1) return ''; const r = x.a / x.e; return r >= 1 ? `實際約為預估的 ${Math.round(r * 10) / 10} 倍` : `實際約為預估的 ${Math.round(r * 100)}%`; },
+    accuracyLines() {
+        const A = this.accuracy();
+        const lines = [...this.TYPE_ORDER, 'none'].filter(k => A.by[k]?.n >= 2).map(k => `${k === 'none' ? '未設類型' : this.TYPES[k].name + '型'}：${this.ratioText(A.by[k])}（${A.by[k].n} 件）`);
+        return { lines, all: A.all };
+    },
+    setEnergy(v) { app.daylog.set(this.reviewDate(), { energy: v }); this.render(); },
+    setNote(v) { app.daylog.set(this.reviewDate(), { note: String(v || '') }); },
+    carry(cardId) {
+        const card = this.W().getCard(cardId);
+        const d = this.reviewDate(), next = this.addDays(d, 1);
+        const p = this.planOf(card, d);
+        if (!card || !p) return;
+        if (!this.planOf(card, next)) this.setPlan(card, next, { pri: p.pri, slot: p.slot, est: p.est });
+        app.saveToLocal(); this.render();
+    },
+    carryAll() {
+        const R = this.reviewData();
+        const left = R.items.filter(x => !x.done && !this.planOf(x.card, this.addDays(R.date, 1)));
+        left.forEach(x => { const next = this.addDays(R.date, 1); if (!this.planOf(x.card, next)) this.setPlan(x.card, next, { pri: x.pri, slot: x.slot, est: x.est }); });
+        app.saveToLocal(); this.render();
+        app.ui.toast(`${left.length} 件移到明天`);
+    },
+    closeDay() {
+        const R = this.reviewData();
+        app.daylog.set(R.date, {
+            closedAt: Date.now(),
+            items: R.items.map(x => ({ t: x.type, e: x.est, a: x.act, d: x.done ? 1 : 0, p: x.pri })),
+            est: R.estTotal, act: R.actTotal, unplanned: R.actUnplanned, done: R.doneN, n: R.n
+        });
+        this.ui.mode = 'plan';
+        if (R.date === this.todayStr()) this.ui.which = 'tomorrow';
+        this.render();
+        app.ui.toast('收工！接著排明天（不排也可以，明早再排）', 'info', 4500);
+    },
+    aiReviewPrompt() {
+        const R = this.reviewData(), slots = this.slots(), log = app.daylog.get(R.date);
+        const h = m => `${m} 分`;
+        const acc = this.accuracyLines();
+        const pri = { must: '必做', opt: '備選' };
+        return [
+            `請當我的時間管理教練，幫我看 ${this.dateLabel(R.date)} 的收工帳單（方法出自《幫你的時間記帳》：每天比對計畫和實際，找出時間去了哪裡、估得準不準）。`,
+            '',
+            '【計畫 vs 實際】',
+            ...(R.items.length ? R.items.map(x => `- ${pri[x.pri]}｜${x.type ? this.TYPES[x.type].name : '未設類型'}｜${this.name(x.card)}｜${x.slot ? slots[x.slot].name : '未排時段'}｜預估 ${h(x.est)}｜實際 ${h(x.act)}｜${x.done ? '完成' : '沒完成'}`) : ['（今天沒有排計畫）']),
+            ...R.fixed.map(x => `- 固定｜${this.name(x.card)}｜預估 ${h(x.est)}｜${x.done ? '有做' : '沒做'}`),
+            '',
+            '【計畫外的時間】',
+            ...(R.unplanned.length ? R.unplanned.map(x => `- ${this.name(x.card)}｜${h(x.act)}`) : ['（沒有）']),
+            '',
+            `【合計】預估 ${h(R.estTotal)}；實際 ${h(R.actTotal)}（其中計畫外 ${h(R.actUnplanned)}）；必做完成 ${R.mustDone}/${R.mustN}。`,
+            `【我的時段】我是中間型：${this.SLOT_ORDER.map(k => `${slots[k].name} ${slots[k].from}–${slots[k].to}`).join('、')}。${log.energy ? `今天精神最好的是：${log.energy === 'none' ? '都普通' : slots[log.energy]?.name}。` : ''}`,
+            acc.lines.length ? `【近 30 天預估偏差】${acc.lines.join('；')}` : '',
+            log.note ? `【我自己的感想】${log.note}` : '',
+            '',
+            '【請你這樣做】',
+            '1. 有看不懂或需要知道原因的地方（例如某件為什麼沒做完、計畫外的事是什麼），先問我，一次最多 2 個問題。',
+            '2. 討論完，用 3～5 句告訴我：哪裡估錯了、時間被什麼吃掉、哪個時段用得好或不好。',
+            '3. 給我明天 1～2 個具體的調整建議（例如某類工作預估要乘以多少、某件事該放哪個時段）。不要給一般性的時間管理大道理。'
+        ].filter(x => x !== '').join('\n');
+    },
+    async aiReviewSend() {
+        const text = this.aiReviewPrompt();
+        if (navigator.share && /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent)) {
+            try { await navigator.share({ text }); return; } catch (err) { if (err?.name === 'AbortError') return; }
+        }
+        this.W().copyText(text, '已複製，貼到 AI。回饋可以貼回「今天的反思」留著');
+    },
+    reviewHtml() {
+        const esc = x => this.esc(x);
+        const R = this.reviewData(), slots = this.slots(), log = app.daylog.get(R.date);
+        const fm = m => m >= 60 ? `${Math.floor(m / 60)}h${m % 60 ? ` ${m % 60}m` : ''}` : `${m}m`;
+        const diff = (e, a) => { if (!e || !a) return ''; const r = a / e; const cls = r > 1.3 ? 'over' : (r < 0.7 ? 'under' : 'ok'); return `<span class="rv-diff ${cls}">${r >= 1 ? '+' : ''}${Math.round((r - 1) * 100)}%</span>`; };
+        const pri = { must: '必做', opt: '備選' };
+        const acc = this.accuracyLines();
+        const tomorrow = this.addDays(R.date, 1);
+        const left = R.items.filter(x => !x.done && !this.planOf(x.card, tomorrow));
+        const row = x => `<tr class="${x.done ? 'done' : ''}">
+                <td>${x.done ? '✅' : '⬜'}</td>
+                <td><span class="td-tag ${x.pri}">${pri[x.pri]}</span></td>
+                <td class="rv-title">${x.type ? this.TYPES[x.type].icon + ' ' : ''}${esc(this.name(x.card))}<div class="td-meta">${x.slot ? esc(slots[x.slot].name) : '未排時段'}</div></td>
+                <td>${fm(x.est)}</td><td><b>${fm(x.act)}</b> ${diff(x.est, x.act)}</td>
+                <td>${x.done ? '' : (this.planOf(x.card, tomorrow) ? '<span class="td-meta">已排明天</span>' : `<button type="button" class="rv-btn" onclick="app.today.carry('${x.card.id}')">移到明天</button>`)}</td>
+            </tr>`;
+        const energy = [['am', slots.am.name], ['low', slots.low.name], ['pm', slots.pm.name], ['none', '都普通']];
+        return `<div class="rv-wrap">
+            <div class="rv-head">
+                <div class="td-days">
+                    <button type="button" class="${this.ui.reviewDay !== 'yesterday' ? 'active' : ''}" onclick="app.today.ui.reviewDay='today'; app.today.render()">今天 ${esc(this.dateLabel(this.todayStr()))}</button>
+                    <button type="button" class="${this.ui.reviewDay === 'yesterday' ? 'active' : ''}" onclick="app.today.ui.reviewDay='yesterday'; app.today.render()">昨天</button>
+                </div>
+                ${log.closedAt ? `<span class="td-meta">已收工 ${esc(app.ui.fmtTime(log.closedAt))}</span>` : ''}
+            </div>
+            <div class="rv-cards">
+                <div class="rv-stat"><div class="rv-num">${R.doneN}/${R.n}</div><div>計畫完成</div><div class="td-meta">必做 ${R.mustDone}/${R.mustN}</div></div>
+                <div class="rv-stat"><div class="rv-num">${fm(R.estTotal)} → ${fm(R.actPlanned)}</div><div>計畫的預估 → 實際</div><div class="td-meta">${(() => { const t = R.items.filter(x => x.est && x.act); const e = t.reduce((a, x) => a + x.est, 0), a = t.reduce((b, x) => b + x.act, 0); return e && a ? `有計時的 ${t.length} 件：${this.ratioText({ e, a, n: 1 })}` : '還沒有計時紀錄可以比對'; })()}</div></div>
+                <div class="rv-stat ${R.actUnplanned > R.actPlanned ? 'warn' : ''}"><div class="rv-num">${fm(R.actUnplanned)}</div><div>計畫外</div><div class="td-meta">${R.actTotal ? `佔今天記錄的 ${Math.round(R.actUnplanned / R.actTotal * 100)}%` : '今天還沒有計時紀錄'}</div></div>
+            </div>
+            <section class="td-sec">
+                <h4>計畫 vs 實際 ${left.length ? `<button type="button" class="rv-btn" style="float:right;" onclick="app.today.carryAll()">沒做完的 ${left.length} 件全部移到明天</button>` : ''}</h4>
+                ${R.items.length || R.fixed.length ? `<table class="rv-table"><thead><tr><th></th><th>分類</th><th>事情</th><th>預估</th><th>實際</th><th></th></tr></thead><tbody>
+                    ${R.items.map(row).join('')}
+                    ${R.fixed.map(x => `<tr class="${x.done ? 'done' : ''}"><td>${x.done ? '✅' : '⬜'}</td><td><span class="td-tag fixed">固定</span></td><td class="rv-title">${esc(this.name(x.card))}</td><td>${fm(x.est)}</td><td>${x.act ? fm(x.act) : '—'}</td><td></td></tr>`).join('')}
+                </tbody></table>` : '<div class="data-empty">這天沒有排計畫。明天試著排 2～3 件必做就好。</div>'}
+                <div class="td-meta" style="margin-top:6px;">實際＝這天記到這張卡的工時（計時或補登）。沒計時的事會顯示 0m。</div>
+            </section>
+            <section class="td-sec">
+                <h4>計畫外的時間 <span class="td-meta">這天有記工時、但不在計畫裡</span></h4>
+                ${R.unplanned.length ? R.unplanned.map(x => `<div class="rv-un"><span>${x.type ? this.TYPES[x.type].icon + ' ' : ''}${esc(this.name(x.card))}</span><b>${fm(x.act)}</b></div>`).join('') : '<div class="td-meta">沒有。</div>'}
+            </section>
+            <section class="td-sec">
+                <h4>今天哪個時段最有精神？</h4>
+                <div class="rv-energy">${energy.map(([k, l]) => `<button type="button" class="${log.energy === k ? 'on' : ''}" onclick="app.today.setEnergy('${k}')">${esc(l)}</button>`).join('')}</div>
+                <h4 style="margin-top:14px;">今天的反思 <span class="td-meta">一兩句就好，也可以貼 AI 的回饋</span></h4>
+                <textarea class="rv-note" placeholder="例如：上午被會議切碎，研究型的事應該放下午後段" onchange="app.today.setNote(this.value)">${esc(log.note || '')}</textarea>
+            </section>
+            <section class="td-sec">
+                <h4>預估準確度 <span class="td-meta">近 30 天，同類型至少 2 件才算</span></h4>
+                ${acc.lines.length ? `<ul class="rv-acc">${acc.lines.map(l => `<li>${esc(l)}</li>`).join('')}</ul>` : '<div class="td-meta">資料還不夠。持續排計畫、計時、收工，大約一週後就看得出來。</div>'}
+            </section>
+            <div class="rv-actions">
+                <button type="button" onclick="app.today.aiReviewSend()">🤖 請 AI 看今天的帳單</button>
+                <button type="button" class="primary" onclick="app.today.closeDay()">收工，排明天 →</button>
+            </div>
+        </div>`;
     },
 
     // ---------- 心流裡的今日計畫 ----------
@@ -7578,6 +7764,7 @@ app.today = {
             '【我的時段】我是中間型（不是早起型也不是夜貓型）。',
             ...this.SLOT_ORDER.map(k => `- ${slots[k].name} ${slots[k].from}–${slots[k].to}（${this.cap(k)} 分鐘）`),
             '原則：分析、研究放精神最好的時段；溝通、雜物放低谷；創造放下午後段。',
+            ...(this.accuracyLines().lines.length ? ['', `【我近 30 天的預估偏差】${this.accuracyLines().lines.join('；')}。排的時候請幫我把預估調整得實際一點。`] : []),
             '',
             '【固定項】（已經佔掉的時間）',
             ...(S.fixed.length ? S.fixed.map(r => `- ${this.name(r.card)}：${slots[r.card.fixed.slot]?.name || '未定'} ${r.card.fixed.est} 分鐘`) : ['（沒有）']),
