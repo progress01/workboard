@@ -1,5 +1,5 @@
 // =====================================================================
-// 白板 & 心流沙盒 v5.1
+// 白板 & 心流沙盒 v5.2
 // ---------------------------------------------------------------------
 // v3.0 重整重點（資料邏輯）：
 // 1. 所有修改只走一個入口 app.saveToLocal()（= store.markDirty）：
@@ -27,7 +27,7 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 const provider = new firebase.auth.GoogleAuthProvider();
 
-const APP_VERSION = '5.1';
+const APP_VERSION = '5.2';
 const SCHEMA_VERSION = 3;
 const CLOUD_DOC_SOFT_LIMIT = 750 * 1024;   // 超過時提醒
 const CLOUD_DOC_HARD_LIMIT = 1000 * 1000;  // Firestore 單一文件上限約 1 MiB，保守一點
@@ -7123,9 +7123,8 @@ app.today = {
         const q = this.ui.search.trim().toLowerCase();
         return this.rows().filter(({ card }) => !card.fixed && Number(card.status) !== 2 && !this.planOf(card, date))
             .map(r => ({ ...r, why: this.reasons(r.card, date) }))
-            .filter(r => q ? [r.card.title, r.card.project, r.tabName].some(x => String(x || '').toLowerCase().includes(q)) : r.why.length)
-            .sort((a, b) => Math.max(0, ...b.why.map(x => x.w)) - Math.max(0, ...a.why.map(x => x.w)))
-            .slice(0, q ? 30 : 40);
+            .filter(r => !q || [r.card.title, r.card.project, r.tabName].some(x => String(x || '').toLowerCase().includes(q)))
+            .sort((a, b) => Math.max(0, ...b.why.map(x => x.w)) - Math.max(0, ...a.why.map(x => x.w)));
     },
     skippedRows(date = this.date()) { return this.rows().filter(({ card }) => !card.fixed && this.planOf(card, date)?.pri === 'skip'); },
 
@@ -7321,9 +7320,16 @@ app.today = {
         </div>`;
     },
 
-    candidatesHtml(cands) {
+    candidatesHtml(all) {
         const esc = x => this.esc(x);
-        if (this.groupBy() === 'urgency' || this.ui.search.trim()) return cands.map(r => this.candidateRow(r)).join('');
+        if (this.ui.search.trim()) return all.map(r => this.candidateRow(r)).join('');
+        // 有理由的（快到期、進行中、有待辦…）排前面；其他未完成的卡收在最下面，不會漏掉
+        const cands = all.filter(r => r.why.length), quiet = all.filter(r => !r.why.length);
+        const quietHtml = quiet.length ? `<details class="td-quiet" ${this.ui.showQuiet ? 'open' : ''} ontoggle="app.today.ui.showQuiet=this.open">
+                <summary>其他未完成的卡 <span class="ls-count">${quiet.length}</span> <span class="td-meta">沒有截止日、還沒開始、沒有待辦</span></summary>
+                ${quiet.map(r => this.candidateRow(r)).join('')}
+            </details>` : '';
+        if (this.groupBy() === 'urgency') return cands.map(r => this.candidateRow(r)).join('') + quietHtml;
         const groups = new Map();
         cands.forEach(r => { const k = String(r.card.project || '').trim() || '（沒有專案）'; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(r); });
         const top = rs => Math.max(0, ...rs.flatMap(r => r.why.map(x => x.w)));
@@ -7336,7 +7342,7 @@ app.today = {
                 </div>
                 ${closed ? '' : rs.map(r => this.candidateRow(r, false)).join('')}
             </div>`;
-        }).join('');
+        }).join('') + quietHtml;
     },
 
     item(r, kind) {
@@ -7401,7 +7407,8 @@ app.today = {
         if (!target) return;
         const esc = x => this.esc(x);
         const date = this.date(), S = this.summary(date), warns = this.warnings(date);
-        const cands = this.candidates(date), skipped = this.skippedRows(date);
+        const allCands = this.candidates(date), skipped = this.skippedRows(date);
+        const cands = this.ui.search.trim() ? allCands : allCands.filter(r => r.why.length);
         const h = m => Math.round(m / 6) / 10;
         const keepSearch = document.activeElement?.id === 'td-search' ? document.activeElement.selectionStart : null;
         const keepDump = document.activeElement?.id === 'td-dump';
@@ -7442,7 +7449,7 @@ app.today = {
                     <textarea id="td-dump" rows="1" placeholder="＋ 腦中想到什麼先打下來（Enter 加入；貼多行＝多張卡）" onkeydown="if(event.key==='Enter' && !event.shiftKey && !event.isComposing){ event.preventDefault(); app.today.brainDump(); }">${esc(this.ui.dump || '')}</textarea>
                 </div>
                 <input type="search" id="td-search" class="td-search" placeholder="從所有卡片找…" value="${esc(this.ui.search)}" oninput="app.today.ui.search=this.value; clearTimeout(app.today._t); app.today._t=setTimeout(()=>app.today.render(),200)">
-                ${cands.length ? this.candidatesHtml(cands) : `<div class="data-empty">${this.ui.search ? '找不到符合的卡片。' : '候選都分好了。想加別的卡，用上面的搜尋。'}</div>`}
+                ${allCands.length ? this.candidatesHtml(allCands) : `<div class="data-empty">${this.ui.search ? '找不到符合的卡片。' : '候選都分好了。想加別的卡，用上面的搜尋。'}</div>`}
                 ${skipped.length ? `<details class="td-skipped" ${this.ui.showSkipped ? 'open' : ''} ontoggle="app.today.ui.showSkipped=this.open"><summary>今天不做 ${skipped.length}</summary>${skipped.map(({ card }) => `<div class="td-skip-row"><span>${esc(this.name(card))}</span><button type="button" onclick="app.today.unplan('${card.id}')">↩ 放回候選</button></div>`).join('')}</details>` : ''}
                 <div class="td-meta" style="margin-top:6px;">兩分鐘內能做完的事不用記，直接做。</div>
             </section>
@@ -7518,7 +7525,7 @@ app.today = {
     aiPrompt() {
         const date = this.date(), W = this.W(), slots = this.slots();
         const S = this.summary(date);
-        const list = [...S.planned.map(r => r), ...this.candidates(date)];
+        const list = [...S.planned.map(r => r), ...this.candidates(date)].slice(0, 60);
         const seen = new Set();
         const items = list.filter(r => !seen.has(r.card.id) && seen.add(r.card.id)).slice(0, 40);
         const map = items.map(r => r.card.id);
