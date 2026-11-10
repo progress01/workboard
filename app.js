@@ -1,5 +1,5 @@
 // =====================================================================
-// 白板 & 心流沙盒 v5.6
+// 白板 & 心流沙盒 v5.7
 // ---------------------------------------------------------------------
 // v3.0 重整重點（資料邏輯）：
 // 1. 所有修改只走一個入口 app.saveToLocal()（= store.markDirty）：
@@ -27,7 +27,7 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 const provider = new firebase.auth.GoogleAuthProvider();
 
-const APP_VERSION = '5.6';
+const APP_VERSION = '5.7';
 const SCHEMA_VERSION = 3;
 const CLOUD_DOC_SOFT_LIMIT = 750 * 1024;   // 超過時提醒
 const CLOUD_DOC_HARD_LIMIT = 1000 * 1000;  // Firestore 單一文件上限約 1 MiB，保守一點
@@ -583,6 +583,14 @@ const app = {
             app.state.sandbox.daylog = JSON.stringify(v);
             app.saveToLocal();
         }
+    },
+
+    // 卡片顯示名稱：沒有標題時用筆記第一行，讓「未命名」也認得出來
+    cardLabel(card) {
+        const t = String(card?.title || '').trim().split('\n')[0];
+        if (t) return t;
+        const line = String(card?.content || '').split('\n').map(l => l.replace(/^\s*(?:[-*•]\s+(?:\[[ xX?aA]\]\s*)?|#+\s*|\*\*\[[^\]]*\]\*\*\s*)/, '').trim()).find(Boolean);
+        return line ? `（未命名）${line.length > 24 ? line.slice(0, 24) + '…' : line}` : '未命名';
     },
 
     makeId(prefix = 'card') { return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`; },
@@ -1546,6 +1554,7 @@ const app = {
         async render() {
             const esc = s => app.entries.escapeHtml(s);
             const target = document.getElementById('data-render-target');
+            if (!target) return;
             const doc = app.store.serialize();
             const size = app.store.sizeOf(doc);
             const pct = Math.min(100, Math.round(size / CLOUD_DOC_HARD_LIMIT * 100));
@@ -7074,7 +7083,7 @@ app.today = {
 
     esc(s) { return app.entries.escapeHtml(s); },
     W() { return app.worktime; },
-    name(card) { return String(card?.title || '').trim().split('\n')[0] || '未命名'; },
+    name(card) { return app.cardLabel(card); },
     addDays(dateStr, n) { const d = this.W().parseLocalDate(dateStr); d.setDate(d.getDate() + n); return this.W().localDateString(d); },
     todayStr() { return this.W().localDateString(); },
     // 預設：下午五點後打開＝排明天
@@ -7127,7 +7136,10 @@ app.today = {
     isDone(card) { return Number(card.status) === 2; },
     minutesOn(card, date) { return Math.round(this.W().dailyMinutesMap(card)[date] || 0); },
 
-    rows() { return this.W().allCards().filter(({ tabId }) => !/^♻/.test(app.state.tabs.find(t => t.id === tabId)?.name || '')); },
+    // 完全空白的卡（沒標題、沒內容、沒工時）不列進今日；另外提示可以清掉
+    rows() { return this.W().allCards().filter(({ card, tabId }) => !/^♻/.test(app.state.tabs.find(t => t.id === tabId)?.name || '') && !app.sync.isBlankCard(card)); },
+    blankCount() { return app.dataCenter.blankCards().length; },
+    async clearBlanks() { await app.dataCenter.removeBlanks(); this.render(); },
     fixedRows() { return this.rows().filter(({ card }) => card.fixed && Number(card.status) !== 2); },
     plannedRows(date = this.date()) {
         return this.rows().filter(({ card }) => !card.fixed && ['must', 'opt'].includes(this.planOf(card, date)?.pri));
@@ -7499,6 +7511,7 @@ app.today = {
                 <div class="td-dump">
                     <textarea id="td-dump" rows="1" placeholder="＋ 腦中想到什麼先打下來（Enter 加入；貼多行＝多張卡）" onkeydown="if(event.key==='Enter' && !event.shiftKey && !event.isComposing){ event.preventDefault(); app.today.brainDump(); }">${esc(this.ui.dump || '')}</textarea>
                 </div>
+                ${this.blankCount() ? `<div class="td-blank">另有 ${this.blankCount()} 張空白卡（沒有標題、內容、工時），沒有列在這裡。<button type="button" onclick="app.today.clearBlanks()">清掉</button></div>` : ''}
                 <input type="search" id="td-search" class="td-search" placeholder="從所有卡片找…" value="${esc(this.ui.search)}" oninput="app.today.ui.search=this.value; clearTimeout(app.today._t); app.today._t=setTimeout(()=>app.today.render(),200)">
                 ${allCands.length ? this.candidatesHtml(allCands) : `<div class="data-empty">${this.ui.search ? '找不到符合的卡片。' : '候選都分好了。想加別的卡，用上面的搜尋。'}</div>`}
                 ${skipped.length ? `<details class="td-skipped" ${this.ui.showSkipped ? 'open' : ''} ontoggle="app.today.ui.showSkipped=this.open"><summary>今天不做 ${skipped.length}</summary>${skipped.map(({ card }) => `<div class="td-skip-row"><span>${esc(this.name(card))}</span><button type="button" onclick="app.today.unplan('${card.id}')">↩ 放回候選</button></div>`).join('')}</details>` : ''}
@@ -8013,7 +8026,7 @@ app.lists = {
     ui: { tab: 'todo', project: '', search: '', showDone: false, showArchived: true, addCard: '', ctTab: '', ctStatus: 'open', ctSort: 'due', ctGroup: 'none', ctCollapsed: {} },
 
     esc(s) { return app.entries.escapeHtml(s); },
-    cardTitle(card) { return String(card?.title || '').trim().split('\n')[0] || '未命名'; },
+    cardTitle(card) { return app.cardLabel(card); },
 
     rows() {
         const W = app.worktime, U = this.ui, q = U.search.trim().toLowerCase();
