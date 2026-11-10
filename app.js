@@ -1,5 +1,5 @@
 // =====================================================================
-// 白板 & 心流沙盒 v5.0
+// 白板 & 心流沙盒 v5.1
 // ---------------------------------------------------------------------
 // v3.0 重整重點（資料邏輯）：
 // 1. 所有修改只走一個入口 app.saveToLocal()（= store.markDirty）：
@@ -27,7 +27,7 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 const provider = new firebase.auth.GoogleAuthProvider();
 
-const APP_VERSION = '5.0';
+const APP_VERSION = '5.1';
 const SCHEMA_VERSION = 3;
 const CLOUD_DOC_SOFT_LIMIT = 750 * 1024;   // 超過時提醒
 const CLOUD_DOC_HARD_LIMIT = 1000 * 1000;  // Firestore 單一文件上限約 1 MiB，保守一點
@@ -74,7 +74,7 @@ function defaultState() {
         nodes: { 'main': [] },
         globalNotebook: { template: 'free', free: '', matrix: { q1:'', q2:'', q3:'', q4:'' } },
         tsumego: { isOpen: false, currentColor: 'black', stones: [] },
-        view: 'timeline',
+        view: 'today',
         filters: { keyword: '', activeProject: null },
         ganttFilters: { project: '', month: '', mode: 'schedule', scale: 'week' },
         chronicleFilters: { scope: 'all', project: '' },
@@ -171,6 +171,7 @@ const app = {
         const s = this.state;
         // 首頁＝今日：每次打開都從今日開始
         s.view = 'today';
+        if (this.taskNav?.ui?.initialized && this.taskNav.ui.open) { this.taskNav.ui.open = false; this.taskNav.applyOpenState(); }
         s.activeTabId = s.tabs.some(t => t.id === p.activeTabId) ? p.activeTabId : s.tabs[0].id;
         s.ganttFilters.scale = ['day','week','month'].includes(p.ganttScale) ? p.ganttScale : 'week';
         s.ganttFilters.mode = p.ganttMode === 'time' ? 'time' : 'schedule';
@@ -4129,7 +4130,8 @@ const app = {
             if (own(viewName) && !own(prevView)) {
                 this.taskNav.ui.openBeforeSandbox = this.taskNav.ui.open;
                 if (this.taskNav.ui.open) { this.taskNav.ui.open = false; this.taskNav.applyOpenState(); }
-            } else if (!own(viewName) && own(prevView) && this.taskNav.ui.openBeforeSandbox) {
+            } else if (!own(viewName) && own(prevView) && (this.taskNav.ui.openBeforeSandbox || (viewName === 'timeline' && !this.taskNav.ui.userClosed && this.taskNav.defaultOpen()))) {
+                // 回到時間軸：導覽列（專案與卡片總覽）自動打開；自己關掉過就尊重
                 this.taskNav.ui.open = true; this.taskNav.ui.openBeforeSandbox = false; this.taskNav.applyOpenState();
                 this.taskNav.safe(() => this.taskNav.renderList());
             }
@@ -8317,7 +8319,8 @@ app.taskNav = {
         if (this.ui.initialized) return;
         this.ui.initialized = true;
         this.ui.lastMobile = this.isMobile();
-        this.ui.open = this.defaultOpen();
+        // 今日、卡片、心流有自己的列表，開在這些頁面時先不打開導覽
+        this.ui.open = this.defaultOpen() && !['today', 'lists', 'sandbox'].includes(app.state.view);
         this.applyOpenState();
         this.safe(() => this.renderList());
         this.installMutationObserver();
@@ -8341,6 +8344,7 @@ app.taskNav = {
 
     toggle() {
         this.ui.open = !this.ui.open;
+        this.ui.userClosed = !this.ui.open;
         this.applyOpenState();
         if (this.ui.open) {
             this.safe(() => this.renderList());
