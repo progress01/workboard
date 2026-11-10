@@ -1,5 +1,5 @@
 // =====================================================================
-// 白板 & 心流沙盒 v5.3
+// 白板 & 心流沙盒 v5.4
 // ---------------------------------------------------------------------
 // v3.0 重整重點（資料邏輯）：
 // 1. 所有修改只走一個入口 app.saveToLocal()（= store.markDirty）：
@@ -27,7 +27,7 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 const provider = new firebase.auth.GoogleAuthProvider();
 
-const APP_VERSION = '5.3';
+const APP_VERSION = '5.4';
 const SCHEMA_VERSION = 3;
 const CLOUD_DOC_SOFT_LIMIT = 750 * 1024;   // 超過時提醒
 const CLOUD_DOC_HARD_LIMIT = 1000 * 1000;  // Firestore 單一文件上限約 1 MiB，保守一點
@@ -7325,6 +7325,7 @@ app.today = {
                 <button type="button" class="opt" onclick="app.today.classify('${card.id}','opt')" title="備選">備選</button>
                 <button type="button" class="skip" onclick="app.today.classify('${card.id}','skip')" title="今天不做">不做</button>
             </div>
+            <button type="button" class="td-del" onclick="app.actions.deleteCard('${card.id}')" title="刪除這張卡（可在「資料 → 最近刪除」救回）">🗑</button>
         </div>`;
     },
 
@@ -7381,6 +7382,7 @@ app.today = {
                     ${this.estSelect(card.id, est)}${worked ? `<span class="td-worked" title="今天已記的工時">⏱ 今天 ${worked} 分</span>` : ''}
                     ${this.slotSelect(card.id, slot)}
                     ${fixed ? `<button type="button" class="td-x" onclick="app.today.removeFixed('${card.id}')" title="取消固定">×</button>` : `<button type="button" class="td-x" onclick="app.today.unplan('${card.id}')" title="移回候選">↩</button>`}
+                    <button type="button" class="td-del" onclick="app.actions.deleteCard('${card.id}')" title="刪除這張卡（可在「資料 → 最近刪除」救回）">🗑</button>
                 </div>
             </div>
         </div>`;
@@ -7985,7 +7987,7 @@ app.lists = {
                 <select class="ct-status st-${st}" onchange="app.lists.setStatus('${card.id}', this.value)">${statusOpts.map(v => `<option value="${v}" ${v === st ? 'selected' : ''}>${esc(W.statusLabel(v))}</option>`).join('')}</select>
                 <input class="ct-date ${dueCls}" type="date" value="${esc(end)}" onchange="app.lists.setDate('${card.id}', this.value)" title="${end ? '預計完成日（清空＝改回自由卡片）' : '選日期＝變成排程工項'}">
                 <span class="ct-info">${subs.length ? `<span title="待辦完成／全部">☑ ${doneN}/${subs.length}</span>` : ''}${openQ ? `<span title="未答問題">❓ ${openQ}</span>` : ''}${mins ? `<span title="已記工時">⏱ ${esc(W.formatMinutes(mins))}</span>` : ''}</span>
-                <span class="ct-actions"><button type="button" class="ct-move" onclick="app.lists.moveBy('${card.id}',-1)" title="往上">▲</button><button type="button" class="ct-move" onclick="app.lists.moveBy('${card.id}',1)" title="往下">▼</button><button type="button" onclick="app.sandbox.focusTaskForTimer('${card.id}')" title="進心流專注這張卡">🎯</button><button type="button" onclick="app.actions.jumpToCard('${card.id}','${tabId}')" title="到時間軸看這張卡">↗</button></span>
+                <span class="ct-actions"><button type="button" class="ct-move" onclick="app.lists.moveBy('${card.id}',-1)" title="往上">▲</button><button type="button" class="ct-move" onclick="app.lists.moveBy('${card.id}',1)" title="往下">▼</button><button type="button" onclick="app.sandbox.focusTaskForTimer('${card.id}')" title="進心流專注這張卡">🎯</button><button type="button" onclick="app.actions.jumpToCard('${card.id}','${tabId}')" title="到時間軸看這張卡">↗</button><button type="button" onclick="app.actions.deleteCard('${card.id}','${tabId}')" title="刪除這張卡（可在「資料 → 最近刪除」救回）">🗑</button></span>
             </div>`;
         };
         const newTab = U.ctTab || app.state.activeTabId;
