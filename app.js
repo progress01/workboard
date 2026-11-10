@@ -1,5 +1,5 @@
 // =====================================================================
-// 白板 & 心流沙盒 v4.4
+// 白板 & 心流沙盒 v4.5
 // ---------------------------------------------------------------------
 // v3.0 重整重點（資料邏輯）：
 // 1. 所有修改只走一個入口 app.saveToLocal()（= store.markDirty）：
@@ -27,7 +27,7 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 const provider = new firebase.auth.GoogleAuthProvider();
 
-const APP_VERSION = '4.4';
+const APP_VERSION = '4.5';
 const SCHEMA_VERSION = 3;
 const CLOUD_DOC_SOFT_LIMIT = 750 * 1024;   // 超過時提醒
 const CLOUD_DOC_HARD_LIMIT = 1000 * 1000;  // Firestore 單一文件上限約 1 MiB，保守一點
@@ -7050,7 +7050,9 @@ app.today = {
         if (pm > 0 && pm <= 120) return pm;
         return t ? this.TYPES[t].est : 60;
     },
-    isDone(card, plan) { return !!plan?.done || Number(card.status) === 2; },
+    // 統一：勾選＝這件事（整張卡）完成。做了一部分不用勾，計時會記下今天做了多久，沒完成的隔天自動回到候選。
+    isDone(card) { return Number(card.status) === 2; },
+    minutesOn(card, date) { return Math.round(this.W().dailyMinutesMap(card)[date] || 0); },
 
     rows() { return this.W().allCards().filter(({ tabId }) => !/^♻/.test(app.state.tabs.find(t => t.id === tabId)?.name || '')); },
     fixedRows() { return this.rows().filter(({ card }) => card.fixed && Number(card.status) !== 2); },
@@ -7061,7 +7063,7 @@ app.today = {
     // 候選：之前沒做完、快到期、進行中、有下一步、有未完成待辦、本週重點、剛新增
     reasons(card, date) {
         const W = this.W(), r = [];
-        const prev = Object.entries(card.plans || {}).filter(([d, p]) => d < date && ['must', 'opt'].includes(p?.pri) && !p.done).sort().pop();
+        const prev = Object.entries(card.plans || {}).filter(([d, p]) => d < date && ['must', 'opt'].includes(p?.pri)).sort().pop();
         if (prev) r.push({ k: 'carry', t: `${prev[0].slice(5).replace('-', '/')} 沒做完`, w: 100 });
         const end = card.isMemo ? '' : W.plannedEnd(card);
         if (end) {
@@ -7142,12 +7144,10 @@ app.today = {
         if (card.fixed) {
             const list = Array.isArray(card.fixedDone) ? card.fixedDone.filter(d => d >= this.addDays(this.todayStr(), -120)) : [];
             card.fixedDone = list.includes(date) ? list.filter(d => d !== date) : [...list, date].sort();
-        } else {
-            const p = this.planOf(card, date);
-            if (!p) return;
-            this.setPlan(card, date, { done: !p.done });
+            return this.save(cardId);
         }
-        this.save(cardId);
+        if (this.isDone(card)) { this.W().reopenCompleted(card, 1); this.save(cardId); app.ui.toast(`「${this.name(card)}」重新打開`); }
+        else this.completeCard(cardId);
     },
     fixedDoneOn(card, date = this.date()) { return Array.isArray(card.fixedDone) && card.fixedDone.includes(date); },
     // 候選裡直接把整張卡標成完成（可復原）
@@ -7226,7 +7226,7 @@ app.today = {
         this.SLOT_ORDER.forEach(k => { bySlot[k] = 0; });
         planned.forEach(r => { if (bySlot[r.p.slot] !== undefined) bySlot[r.p.slot] += Number(r.p.est) || 0; });
         fixed.forEach(r => { if (bySlot[r.card.fixed.slot] !== undefined) bySlot[r.card.fixed.slot] += Number(r.card.fixed.est) || 0; });
-        const done = planned.filter(r => this.isDone(r.card, r.p)).length + fixed.filter(r => this.fixedDoneOn(r.card, date)).length;
+        const done = planned.filter(r => this.isDone(r.card)).length + fixed.filter(r => this.fixedDoneOn(r.card, date)).length;
         return { planned, fixed, must, opt, total, bySlot, done, count: planned.length + fixed.length };
     },
     warnings(date = this.date()) {
@@ -7236,7 +7236,7 @@ app.today = {
         if (S.must.length > this.LIMIT_MUST) out.push(`必做 ${S.must.length} 件，超過 ${this.LIMIT_MUST} 件。`);
         if (S.opt.length > this.LIMIT_OPT) out.push(`備選 ${S.opt.length} 件，超過 ${this.LIMIT_OPT} 件。`);
         this.SLOT_ORDER.forEach(k => { const c = this.cap(k); if (c && S.bySlot[k] > c) out.push(`「${slots[k].name}」排了 ${S.bySlot[k]} 分鐘，容量 ${c} 分鐘。`); });
-        S.planned.filter(r => r.p.slot === 'low' && this.DEEP.includes(this.typeOf(r.card)) && !this.isDone(r.card, r.p)).forEach(r =>
+        S.planned.filter(r => r.p.slot === 'low' && this.DEEP.includes(this.typeOf(r.card)) && !this.isDone(r.card)).forEach(r =>
             out.push(`「${this.name(r.card)}」是${this.TYPES[this.typeOf(r.card)].name}型，放在「${slots.low.name}」容易卡住。`));
         const deepAm = S.planned.filter(r => r.p.slot === 'am' && this.DEEP.includes(this.typeOf(r.card)));
         const amCap = this.cap('am');
@@ -7307,7 +7307,8 @@ app.today = {
         const card = r.card;
         const fixed = kind === 'fixed';
         const p = fixed ? null : r.p;
-        const done = fixed ? this.fixedDoneOn(card) : this.isDone(card, p);
+        const done = fixed ? this.fixedDoneOn(card) : this.isDone(card);
+        const worked = !fixed && this.date() === this.todayStr() ? this.minutesOn(card, this.todayStr()) : 0;
         const t = this.typeOf(card);
         const est = fixed ? card.fixed.est : p.est;
         const slot = fixed ? card.fixed.slot : p.slot;
@@ -7318,14 +7319,14 @@ app.today = {
             if (p.pri === 'opt' && end && end <= this.addDays(this.date(), 1)) flags.push(`${end.slice(5).replace('-', '/')} 截止，考慮改成必做`);
         }
         return `<div class="td-item ${kind} ${done ? 'done' : ''}" draggable="${fixed ? 'false' : 'true'}" ondragstart="app.today.dragStart(event,'${card.id}')" data-id="${card.id}">
-            <input type="checkbox" ${done ? 'checked' : ''} onchange="app.today.toggleDone('${card.id}')" title="${fixed ? '今天做了' : '今天這部分做完了'}">
+            ${fixed ? `<button type="button" class="td-fixed-done ${done ? 'on' : ''}" onclick="app.today.toggleDone('${card.id}')" title="固定項每天打一次">${done ? '✓ 今天做了' : '今天做了？'}</button>` : `<input type="checkbox" ${done ? 'checked' : ''} onchange="app.today.toggleDone('${card.id}')" title="這件事做完了（整張卡標成完成）">`}
             <div class="td-item-body">
                 <button type="button" class="td-item-title" onclick="app.today.focus('${card.id}')" title="進入專注模式（計時、筆記）">${t ? this.TYPES[t].icon + ' ' : ''}${esc(this.name(card))}</button>
                 ${flags.map(f => `<div class="td-flag">⚠ ${esc(f)}</div>`).join('')}
                 <div class="td-item-meta">
                     ${fixed ? '' : `<button type="button" class="td-tag ${kind} td-tag-btn" onclick="app.today.classify('${card.id}','${p.pri === 'must' ? 'opt' : 'must'}')" title="點一下切換必做／備選">${p.pri === 'must' ? '必做' : '備選'}</button>`}${fixed ? '<span class="td-tag fixed">固定</span>' : ''}
                     ${!fixed && !t ? this.typeSelect(card) : ''}
-                    ${this.estSelect(card.id, est)}
+                    ${this.estSelect(card.id, est)}${worked ? `<span class="td-worked" title="今天已記的工時">⏱ 今天 ${worked} 分</span>` : ''}
                     ${this.slotSelect(card.id, slot)}
                     ${fixed ? `<button type="button" class="td-x" onclick="app.today.removeFixed('${card.id}')" title="取消固定">×</button>` : `<button type="button" class="td-x" onclick="app.today.unplan('${card.id}')" title="移回候選">↩</button>`}
                 </div>
@@ -7336,7 +7337,7 @@ app.today = {
     board(S) {
         const esc = x => this.esc(x);
         const slots = this.slots();
-        const rank = r => (this.isDone(r.card, r.p) ? 10 : 0) + (r.p.pri === 'must' ? 0 : 1);
+        const rank = r => (this.isDone(r.card) ? 10 : 0) + (r.p.pri === 'must' ? 0 : 1);
         const col = (k) => {
             const fixed = S.fixed.filter(r => r.card.fixed.slot === k);
             const items = S.planned.filter(r => r.p.slot === k).sort((a, b) => rank(a) - rank(b));
@@ -7410,6 +7411,7 @@ app.today = {
 
             <section class="td-sec td-right">
                 <h4>② 排程板 <span class="td-meta">依類型自動放進時段，拖動或用下拉調整。點標題進入專注。</span></h4>
+                <div class="td-legend">☐ 勾選＝這件事做完了（整張卡完成，哪裡勾都一樣）。只做了一部分不用勾：計時會記下今天做了多久，沒做完的明天會自動回到候選。</div>
                 ${this.board(S)}
                 <button type="button" class="td-add-fixed" onclick="app.today.addFixed()">＋ 固定項（晨會、週會…）</button>
             </section>
@@ -7448,13 +7450,13 @@ app.today = {
         const slots = this.slots();
         const list = [
             ...S.fixed.map(r => ({ card: r.card, slot: r.card.fixed.slot, tag: '固定', done: this.fixedDoneOn(r.card, date), pr: 0 })),
-            ...S.planned.map(r => ({ card: r.card, slot: r.p.slot, tag: r.p.pri === 'must' ? '必做' : '備選', done: this.isDone(r.card, r.p), pr: r.p.pri === 'must' ? 1 : 2 }))
+            ...S.planned.map(r => ({ card: r.card, slot: r.p.slot, tag: r.p.pri === 'must' ? '必做' : '備選', done: this.isDone(r.card), pr: r.p.pri === 'must' ? 1 : 2 }))
         ].sort((a, b) => (this.SLOT_ORDER.indexOf(a.slot) + 1 || 9) - (this.SLOT_ORDER.indexOf(b.slot) + 1 || 9) || a.pr - b.pr);
         const sb = app.state.sandbox;
         return `<div class="sb-today">
             <div class="sb-today-head"><b>📅 今日計畫</b><span>${S.done}/${S.count} 完成</span><button type="button" onclick="app.switchView('today')">排程板</button></div>
             ${list.map(x => `<div class="sb-today-row ${x.done ? 'done' : ''} ${sb.activeTaskId === x.card.id ? 'active' : ''}">
-                <input type="checkbox" ${x.done ? 'checked' : ''} onchange="app.today.ui.which='today'; app.today.toggleDone('${x.card.id}')">
+                <input type="checkbox" ${x.done ? 'checked' : ''} onchange="app.today.ui.which='today'; app.today.toggleDone('${x.card.id}')" title="${x.tag === '固定' ? '固定項：今天做了' : '這件事做完了（整張卡完成）'}">
                 <span class="sb-today-slot">${esc(slots[x.slot]?.name || '未排')}</span>
                 <button type="button" onclick="app.sandbox.setActiveTask('${x.card.id}')">${this.typeOf(x.card) ? this.TYPES[this.typeOf(x.card)].icon + ' ' : ''}${esc(this.name(x.card))}</button>
                 <span class="td-tag ${x.tag === '必做' ? 'must' : x.tag === '備選' ? 'opt' : 'fixed'}">${x.tag}</span>
@@ -7468,7 +7470,7 @@ app.today = {
         const t = this.typeOf(card);
         const p = this.planOf(card, this.todayStr());
         const tb = t ? `<span class="type-badge" title="任務類型：${this.TYPES[t].name}型">${this.TYPES[t].icon}</span>` : '';
-        const pb = p && ['must', 'opt'].includes(p.pri) ? `<span class="plan-badge ${p.pri} ${p.done ? 'done' : ''}" title="今日計畫">今日・${p.pri === 'must' ? '必做' : '備選'}${p.done ? ' ✓' : ''}</span>` : '';
+        const pb = p && ['must', 'opt'].includes(p.pri) && !this.isDone(card) ? `<span class="plan-badge ${p.pri}" title="今日計畫">今日・${p.pri === 'must' ? '必做' : '備選'}</span>` : '';
         const fb = card.fixed ? '<span class="plan-badge fixed" title="每天的固定項">固定</span>' : '';
         return tb + pb + fb;
     },

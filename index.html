@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>白板 & 心流沙盒 v4.4</title>
+    <title>白板 & 心流沙盒 v4.5</title>
     
     <!-- Firebase Compat -->
     <script src="https://www.gstatic.com/firebasejs/10.8.1/firebase-app-compat.js"></script>
@@ -660,6 +660,10 @@
         .td-col-head.over-cap .td-cap { color:#b91c1c; font-weight:bold; }
         .td-empty { font-size:.78rem; color:#cbd5e1; text-align:center; padding:6px 0; }
         .td-flag { font-size:.74rem; color:#b45309; margin-top:2px; }
+        .td-legend { font-size:.76rem; color:#64748b; background:#f8fafc; border-radius:6px; padding:5px 8px; margin:-4px 0 8px; }
+        .td-worked { font-size:.72rem; color:#4338ca; background:#eef2ff; border-radius:4px; padding:0 5px; white-space:nowrap; }
+        .td-fixed-done { border:1px dashed #cbd5e1; background:#fff; color:#64748b; border-radius:999px; font-size:.7rem; padding:1px 7px; cursor:pointer; white-space:nowrap; margin-top:1px; }
+        .td-fixed-done.on { border-style:solid; border-color:#86efac; background:#dcfce7; color:#166534; font-weight:bold; }
         .td-tag-btn { border:none; cursor:pointer; }
         .td-cand.urgent { box-shadow:inset 3px 0 0 #ef4444; padding-left:6px; }
         .td-mtabs { display:none; }
@@ -988,7 +992,7 @@
     <!-- 登入畫面 -->
     <div id="login-screen">
         <h1 style="font-size: 2.5rem; margin-bottom: 10px;">白板系統</h1>
-        <p style="color: #94a3b8; margin-bottom: 30px;">v4.4</p>
+        <p style="color: #94a3b8; margin-bottom: 30px;">v4.5</p>
         <button onclick="app.login()" style="padding: 14px 28px; font-size: 1.1rem; border-radius: 30px; border: none; background: #3b82f6; color: white; font-weight: bold; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.3);">
             使用 Google 登入
         </button>
@@ -1344,6 +1348,6 @@
     </div>
 
     <!-- 引用大腦檔案 -->
-    <script src="app.js?v=4.4"></script>
+    <script src="app.js?v=4.5"></script>
 </body>
 </html>
