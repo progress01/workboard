@@ -1,5 +1,5 @@
 // =====================================================================
-// 白板 & 心流沙盒 v5.4
+// 白板 & 心流沙盒 v5.5
 // ---------------------------------------------------------------------
 // v3.0 重整重點（資料邏輯）：
 // 1. 所有修改只走一個入口 app.saveToLocal()（= store.markDirty）：
@@ -27,7 +27,7 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 const provider = new firebase.auth.GoogleAuthProvider();
 
-const APP_VERSION = '5.4';
+const APP_VERSION = '5.5';
 const SCHEMA_VERSION = 3;
 const CLOUD_DOC_SOFT_LIMIT = 750 * 1024;   // 超過時提醒
 const CLOUD_DOC_HARD_LIMIT = 1000 * 1000;  // Firestore 單一文件上限約 1 MiB，保守一點
@@ -48,7 +48,8 @@ const COMPANY_PROJECTS = [
 ];
 // 公司專案清單：可在「週報／日誌 → 給 AI 的設定」自己改；沒改過就用預設
 function companyProjects() {
-    const list = (typeof app !== 'undefined' && Array.isArray(app.prefs?.companyProjects)) ? app.prefs.companyProjects.map(x => String(x || '').trim()).filter(Boolean) : [];
+    const saved = typeof app !== 'undefined' && app.settings ? app.settings.get('companyProjects') : null;
+    const list = Array.isArray(saved) ? saved.map(x => String(x || '').trim()).filter(Boolean) : [];
     return list.length ? list : COMPANY_PROJECTS;
 }
 function workCategoryOptions(selected, emptyLabel = '（不指定）') {
@@ -239,7 +240,7 @@ const app = {
                 tabs: s.tabs, workspaces: s.workspaces, nodes: s.nodes,
                 globalNotebook: s.globalNotebook,
                 tsumego: { stones: s.tsumego.stones },
-                sandbox: { deadlineTask: s.sandbox.deadlineTask, deadlineDate: s.sandbox.deadlineDate },
+                sandbox: { deadlineTask: s.sandbox.deadlineTask, deadlineDate: s.sandbox.deadlineDate, settings: s.sandbox.settings || '' },
                 meta: s.meta
             });
         },
@@ -254,6 +255,7 @@ const app = {
             s.tsumego.stones = doc.tsumego.stones;
             s.sandbox.deadlineTask = doc.sandbox.deadlineTask;
             s.sandbox.deadlineDate = doc.sandbox.deadlineDate;
+            s.sandbox.settings = doc.sandbox.settings || '';
             s.meta = doc.meta;
             if (!s.tabs.some(t => t.id === s.activeTabId)) s.activeTabId = s.tabs[0].id;
             if (!s.nodes[s.activeTabId]) s.nodes[s.activeTabId] = [];
@@ -338,7 +340,7 @@ const app = {
             for (const tabId in s.nodes) (s.nodes[tabId] || []).forEach(n => { if (n?.id) nodes[n.id] = `${tabId}|${this.cardSig(n)}`; });
             const tabs = {};
             s.tabs.forEach(t => { tabs[t.id] = t.name; });
-            const misc = JSON.stringify([s.tabs, s.globalNotebook, s.tsumego.stones, s.sandbox.deadlineTask, s.sandbox.deadlineDate]);
+            const misc = JSON.stringify([s.tabs, s.globalNotebook, s.tsumego.stones, s.sandbox.deadlineTask, s.sandbox.deadlineDate, s.sandbox.settings || '']);
             return { cards, nodes, tabs, misc };
         },
 
@@ -546,10 +548,24 @@ const app = {
             out.tsumego = { stones: Array.isArray(src.tsumego?.stones) ? src.tsumego.stones : [] };
             out.sandbox = {
                 deadlineTask: String(src.sandbox?.deadlineTask ?? ''),
-                deadlineDate: String(src.sandbox?.deadlineDate ?? '')
+                deadlineDate: String(src.sandbox?.deadlineDate ?? ''),
+                settings: typeof src.sandbox?.settings === 'string' ? src.sandbox.settings : ''
             };
             if (!withFlag) return out;
             return { doc: out, changed: JSON.stringify([out.tabs, out.workspaces, out.nodes]) !== before };
+        }
+    },
+
+    // 跟著雲端同步的設定（時段、可專心時數、公司專案清單、專案名稱對照）。沒設過的沿用這台電腦以前的值。
+    settings: {
+        KEYS: ['todaySlots', 'todayBudget', 'companyProjects', 'companyProjectMap'],
+        all() { try { const v = JSON.parse(app.state.sandbox.settings || '{}'); return v && typeof v === 'object' ? v : {}; } catch { return {}; } },
+        get(k) { const v = this.all(); return v[k] !== undefined ? v[k] : app.prefs?.[k]; },
+        set(k, val) {
+            const v = this.all();
+            if (val === undefined) delete v[k]; else v[k] = val;
+            app.state.sandbox.settings = JSON.stringify(v);
+            app.saveToLocal();
         }
     },
 
@@ -592,7 +608,8 @@ const app = {
                 template: nb.template, free: nb.free,
                 q1: nb.matrix?.q1, q2: nb.matrix?.q2, q3: nb.matrix?.q3, q4: nb.matrix?.q4,
                 stones: doc.tsumego?.stones || [],
-                deadlineTask: doc.sandbox?.deadlineTask, deadlineDate: doc.sandbox?.deadlineDate
+                deadlineTask: doc.sandbox?.deadlineTask, deadlineDate: doc.sandbox?.deadlineDate,
+                settings: doc.sandbox?.settings || ''
             };
         },
 
@@ -849,7 +866,7 @@ const app = {
 
             // --- 筆記本／詰棋／死線：逐欄位比對，文字衝突時兩邊都留 ---
             const ma = this.miscFields(A), mb = this.miscFields(B);
-            const miscLabels = { template: '筆記本模式', free: '全域筆記', q1: '四象限：重要緊急', q2: '四象限：重要不急', q3: '四象限：緊急不重', q4: '四象限：不重不急', stones: '詰棋盤', deadlineTask: '死線倒數名稱', deadlineDate: '死線倒數日期' };
+            const miscLabels = { template: '筆記本模式', free: '全域筆記', q1: '四象限：重要緊急', q2: '四象限：重要不急', q3: '四象限：緊急不重', q4: '四象限：不重不急', stones: '詰棋盤', deadlineTask: '死線倒數名稱', deadlineDate: '死線倒數日期', settings: '設定（時段、公司專案清單）' };
             const mm = {};
             Object.keys(ma).forEach(k => {
                 const r = this.pick(ma[k], mb[k], bMisc ? bMisc[k] : undefined, aMiscNewer);
@@ -874,7 +891,7 @@ const app = {
                 tabs, workspaces, nodes: nodesOut,
                 globalNotebook: { template: mm.template === 'matrix' ? 'matrix' : 'free', free: mm.free ?? '', matrix: { q1: mm.q1 ?? '', q2: mm.q2 ?? '', q3: mm.q3 ?? '', q4: mm.q4 ?? '' } },
                 tsumego: { stones: mm.stones || [] },
-                sandbox: { deadlineTask: mm.deadlineTask ?? '', deadlineDate: mm.deadlineDate ?? '' },
+                sandbox: { deadlineTask: mm.deadlineTask ?? '', deadlineDate: mm.deadlineDate ?? '', settings: mm.settings ?? '' },
                 meta: { ...A.meta, tombstones: tomb, miscUpdatedAt: Math.max(A.meta.miscUpdatedAt || 0, B.meta.miscUpdatedAt || 0), updatedAt: Math.max(A.meta.updatedAt || 0, B.meta.updatedAt || 0) }
             };
             return { doc, report };
@@ -1319,7 +1336,11 @@ const app = {
             document.addEventListener('pointerup', release, true);
             document.addEventListener('pointercancel', release, true);
             window.addEventListener('storage', e => app.store.onStorage(e));
-            window.addEventListener('beforeunload', () => { app.store.flush(); app.sandbox.persistTimer(); });
+            window.addEventListener('beforeunload', e => {
+                app.store.flush(); app.sandbox.persistTimer();
+                // 還有修改沒上傳：瀏覽器會先問要不要離開（手動同步的提醒）
+                if (app.currentUser && app.cloud.hasUnsynced()) { e.preventDefault(); e.returnValue = ''; }
+            });
             window.addEventListener('pagehide', () => { app.store.flush(); app.sandbox.persistTimer(); });
             document.addEventListener('visibilitychange', () => {
                 if (document.visibilityState === 'hidden') { app.store.flush(); app.sandbox.persistTimer(); }
@@ -5347,7 +5368,7 @@ const app = {
                         <textarea class="task-meta-textarea" rows="5" oninput="app.journal.saveCompanyProjects(this.value)">${esc(companyProjects().join('\n'))}</textarea>
                         <div style="display:flex; justify-content:flex-end; margin:-4px 0 8px;"><button type="button" class="ps-mini" onclick="app.journal.resetCompanyProjects()" title="回到內建的四個專案">恢復預設</button></div>
                         <div class="data-note"><b>專案名稱對照</b>（選填）。AI 會依工作區和專案名稱自動判斷；只有判斷容易錯的，才需要寫：白板上的專案名稱 = 公司案名。</div>
-                        <textarea class="task-meta-textarea" rows="4" placeholder="化學署官網會議 = 化學物質管理署「114-116年度中英文全球資訊網與業務網站整合、維運暨功能擴增案」&#10;環境部 = 環境部「115-116年度內外網系統維運暨功能擴增案」&#10;日常 = 公司/部門事務" oninput="app.journal.saveProjectMap(this.value)">${esc(app.prefs.companyProjectMap || '')}</textarea>
+                        <textarea class="task-meta-textarea" rows="4" placeholder="化學署官網會議 = 化學物質管理署「114-116年度中英文全球資訊網與業務網站整合、維運暨功能擴增案」&#10;環境部 = 環境部「115-116年度內外網系統維運暨功能擴增案」&#10;日常 = 公司/部門事務" oninput="app.journal.saveProjectMap(this.value)">${esc(app.settings.get('companyProjectMap') || '')}</textarea>
                     </details>
                     <div class="data-note" style="padding:0 12px 10px;">時間欄：計時的紀錄會自動有起訖時間；補登時可以選填「開始」時間。只有日期的補登，時間欄會留白。</div>
                 </section>`;
@@ -5355,15 +5376,13 @@ const app = {
 
         copy() { app.worktime.copyText(this.text(), '已複製工作日誌'); },
 
-        saveProjectMap(v) { app.prefs.companyProjectMap = v; app.store.savePrefs(); },
+        saveProjectMap(v) { app.settings.set('companyProjectMap', v); },
         saveCompanyProjects(v) {
-            app.prefs.companyProjects = String(v || '').split('\n').map(x => x.trim()).filter(Boolean);
-            app.store.savePrefs();
+            app.settings.set('companyProjects', String(v || '').split('\n').map(x => x.trim()).filter(Boolean));
         },
         async resetCompanyProjects() {
             if (!await app.ui.confirm('恢復預設的公司專案清單？', `<p>會回到內建的四個：</p><p>${COMPANY_PROJECTS.map(c => app.entries.escapeHtml(c)).join('<br>')}</p>`, '恢復預設')) return;
-            delete app.prefs.companyProjects;
-            app.store.savePrefs();
+            app.settings.set('companyProjects', []);
             this.filters.showAiSettings = true;
             app.report.render();
         },
@@ -5378,7 +5397,7 @@ const app = {
                     else lines.push(`- ${x.time || ''}｜（筆記，不算工時）｜工作區：${x.tabName}｜專案：${x.project}｜卡片：${x.title}｜${x.content}`);
                 });
             });
-            const map = String(app.prefs.companyProjectMap || '').trim();
+            const map = String(app.settings.get('companyProjectMap') || '').trim();
             return [
                 '請幫我把下面的工作紀錄整理成公司工時表。',
                 '',
@@ -7055,20 +7074,20 @@ app.today = {
 
     // ---------- 設定（時段、預算）：記在這台電腦 ----------
     slots() {
-        const p = app.prefs.todaySlots || {};
+        const p = app.settings.get('todaySlots') || {};
         const out = {};
         this.SLOT_ORDER.forEach(k => { out[k] = { ...this.DEFAULT_SLOTS[k], ...(p[k] || {}) }; });
         return out;
     },
     mins(hhmm) { const m = String(hhmm || '').match(/^(\d{1,2}):(\d{2})$/); return m ? Number(m[1]) * 60 + Number(m[2]) : 0; },
     cap(k) { const s = this.slots()[k]; return Math.max(0, this.mins(s.to) - this.mins(s.from)); },
-    budget() { return Number(app.prefs.todayBudget) > 0 ? Number(app.prefs.todayBudget) : 300; },
+    budget() { const b = Number(app.settings.get('todayBudget')); return b > 0 ? b : 300; },
     setSlotPref(k, field, v) {
-        if (!app.prefs.todaySlots) app.prefs.todaySlots = {};
-        app.prefs.todaySlots[k] = { ...(app.prefs.todaySlots[k] || {}), [field]: v };
-        app.store.savePrefs(); this.render();
+        const cur = { ...(app.settings.get('todaySlots') || {}) };
+        cur[k] = { ...(cur[k] || {}), [field]: v };
+        app.settings.set('todaySlots', cur); this.render();
     },
-    setBudget(h) { const v = Math.round(Number(h) * 60); if (v > 0) { app.prefs.todayBudget = v; app.store.savePrefs(); this.render(); } },
+    setBudget(h) { const v = Math.round(Number(h) * 60); if (v > 0) { app.settings.set('todayBudget', v); this.render(); } },
 
     // ---------- 卡片上的資料 ----------
     planOf(card, date = this.date()) { return card?.plans && typeof card.plans === 'object' ? card.plans[date] || null : null; },
