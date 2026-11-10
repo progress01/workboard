@@ -1,5 +1,5 @@
 // =====================================================================
-// 白板 & 心流沙盒 v4.1
+// 白板 & 心流沙盒 v4.2
 // ---------------------------------------------------------------------
 // v3.0 重整重點（資料邏輯）：
 // 1. 所有修改只走一個入口 app.saveToLocal()（= store.markDirty）：
@@ -27,7 +27,7 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 const provider = new firebase.auth.GoogleAuthProvider();
 
-const APP_VERSION = '4.1';
+const APP_VERSION = '4.2';
 const SCHEMA_VERSION = 3;
 const CLOUD_DOC_SOFT_LIMIT = 750 * 1024;   // 超過時提醒
 const CLOUD_DOC_HARD_LIMIT = 1000 * 1000;  // Firestore 單一文件上限約 1 MiB，保守一點
@@ -4124,10 +4124,12 @@ const app = {
         this.state.view = viewName;
         // 心流裡已經有「任務清單」，左側導覽列先收起來，離開心流再恢復。
         if (this.taskNav?.ui) {
-            if (viewName === 'sandbox' && prevView !== 'sandbox') {
+            // 今日、清單也有自己的列表，同樣先收起導覽列
+            const own = v => ['sandbox', 'today', 'lists'].includes(v);
+            if (own(viewName) && !own(prevView)) {
                 this.taskNav.ui.openBeforeSandbox = this.taskNav.ui.open;
                 if (this.taskNav.ui.open) { this.taskNav.ui.open = false; this.taskNav.applyOpenState(); }
-            } else if (viewName !== 'sandbox' && prevView === 'sandbox' && this.taskNav.ui.openBeforeSandbox) {
+            } else if (!own(viewName) && own(prevView) && this.taskNav.ui.openBeforeSandbox) {
                 this.taskNav.ui.open = true; this.taskNav.ui.openBeforeSandbox = false; this.taskNav.applyOpenState();
                 this.taskNav.safe(() => this.taskNav.renderList());
             }
@@ -7165,6 +7167,7 @@ app.today = {
         app.saveToLocal();
         this.ui.dump = '';
         this.render();
+        setTimeout(() => document.getElementById('td-dump')?.focus(), 0);
         app.ui.toast(`已新增 ${lines.length} 張卡，在下面分類`);
     },
 
@@ -7247,7 +7250,8 @@ app.today = {
         const esc = x => this.esc(x);
         const wk = this.weekKey(this.date());
         const meta = [showProject && card.project ? `#${esc(card.project)}` : '', showProject ? esc(tabName) : ''].filter(Boolean).join(' · ');
-        return `<div class="td-cand">
+        const urgent = why.some(x => x.k === 'carry' || (x.k === 'due' && x.w >= 79));
+        return `<div class="td-cand ${urgent ? 'urgent' : ''}">
             <button type="button" class="td-star ${card.weekFocus === wk ? 'on' : ''}" onclick="app.today.toggleStar('${card.id}')" title="本週重點">${card.weekFocus === wk ? '★' : '☆'}</button>
             <div class="td-cand-text">
                 <div class="td-title" title="${esc(card.title || '')}">${esc(this.name(card))}</div>
@@ -7289,12 +7293,20 @@ app.today = {
         const t = this.typeOf(card);
         const est = fixed ? card.fixed.est : p.est;
         const slot = fixed ? card.fixed.slot : p.slot;
+        const flags = [];
+        if (!fixed && !done) {
+            if (slot === 'low' && this.DEEP.includes(t)) flags.push(`${this.TYPES[t].name}型需要專心，放在「${this.slots().low.name}」容易卡住`);
+            const end = card.isMemo ? '' : this.W().plannedEnd(card);
+            if (p.pri === 'opt' && end && end <= this.addDays(this.date(), 1)) flags.push(`${end.slice(5).replace('-', '/')} 截止，考慮改成必做`);
+        }
         return `<div class="td-item ${kind} ${done ? 'done' : ''}" draggable="${fixed ? 'false' : 'true'}" ondragstart="app.today.dragStart(event,'${card.id}')" data-id="${card.id}">
             <input type="checkbox" ${done ? 'checked' : ''} onchange="app.today.toggleDone('${card.id}')" title="${fixed ? '今天做了' : '今天這部分做完了'}">
             <div class="td-item-body">
                 <button type="button" class="td-item-title" onclick="app.today.focus('${card.id}')" title="進入專注模式（計時、筆記）">${t ? this.TYPES[t].icon + ' ' : ''}${esc(this.name(card))}</button>
+                ${flags.map(f => `<div class="td-flag">⚠ ${esc(f)}</div>`).join('')}
                 <div class="td-item-meta">
-                    <span class="td-tag ${kind}">${fixed ? '固定' : (p.pri === 'must' ? '必做' : '備選')}</span>
+                    ${fixed ? '' : `<button type="button" class="td-tag ${kind} td-tag-btn" onclick="app.today.classify('${card.id}','${p.pri === 'must' ? 'opt' : 'must'}')" title="點一下切換必做／備選">${p.pri === 'must' ? '必做' : '備選'}</button>`}${fixed ? '<span class="td-tag fixed">固定</span>' : ''}
+                    ${!fixed && !t ? this.typeSelect(card) : ''}
                     ${this.estSelect(card.id, est)}
                     ${this.slotSelect(card.id, slot)}
                     ${fixed ? `<button type="button" class="td-x" onclick="app.today.removeFixed('${card.id}')" title="取消固定">×</button>` : `<button type="button" class="td-x" onclick="app.today.unplan('${card.id}')" title="移回候選">↩</button>`}
@@ -7306,7 +7318,7 @@ app.today = {
     board(S) {
         const esc = x => this.esc(x);
         const slots = this.slots();
-        const rank = r => (r.p.pri === 'must' ? 0 : 1);
+        const rank = r => (this.isDone(r.card, r.p) ? 10 : 0) + (r.p.pri === 'must' ? 0 : 1);
         const col = (k) => {
             const fixed = S.fixed.filter(r => r.card.fixed.slot === k);
             const items = S.planned.filter(r => r.p.slot === k).sort((a, b) => rank(a) - rank(b));
@@ -7336,6 +7348,9 @@ app.today = {
         const cands = this.candidates(date), skipped = this.skippedRows(date);
         const h = m => Math.round(m / 6) / 10;
         const keepSearch = document.activeElement?.id === 'td-search' ? document.activeElement.selectionStart : null;
+        const keepDump = document.activeElement?.id === 'td-dump';
+        const mtab = this.ui.mtab === 'board' ? 'board' : 'classify';
+        const tip = { total: S.total > this.budget() ? '超過每天可專心的時間，考慮把一件必做改成備選或明天' : '必做＋備選＋固定項的預估合計', must: `必做建議不超過 ${this.LIMIT_MUST} 件`, opt: `備選建議不超過 ${this.LIMIT_OPT} 件` };
         const slots = this.slots();
         target.innerHTML = `<div class="td-wrap">
             <div class="td-top">
@@ -7344,31 +7359,30 @@ app.today = {
                     <button type="button" class="${this.which() === 'tomorrow' ? 'active' : ''}" onclick="app.today.ui.which='tomorrow'; app.today.render()">明天 ${esc(this.dateLabel(this.addDays(this.todayStr(), 1)))}</button>
                 </div>
                 <div class="td-sum">
-                    <span class="${S.must.length > this.LIMIT_MUST ? 'bad' : ''}">必做 <b>${S.must.length}</b>/${this.LIMIT_MUST}</span>
-                    <span class="${S.opt.length > this.LIMIT_OPT ? 'bad' : ''}">備選 <b>${S.opt.length}</b>/${this.LIMIT_OPT}</span>
-                    <span class="${S.total > this.budget() ? 'bad' : ''}">預估 <b>${h(S.total)}</b>/${h(this.budget())} 小時</span>
+                    <span class="${S.must.length > this.LIMIT_MUST ? 'bad' : ''}" title="${esc(tip.must)}">必做 <b>${S.must.length}</b>/${this.LIMIT_MUST}</span>
+                    <span class="${S.opt.length > this.LIMIT_OPT ? 'bad' : ''}" title="${esc(tip.opt)}">備選 <b>${S.opt.length}</b>/${this.LIMIT_OPT}</span>
+                    <span class="${S.total > this.budget() ? 'bad' : ''}" title="${esc(tip.total)}">預估 <b>${h(S.total)}</b>/${h(this.budget())} 小時</span>
                     ${S.count ? `<span>完成 <b>${S.done}</b>/${S.count}</span>` : ''}
                 </div>
-            </div>
-            <div class="td-ai">
+                <div class="td-ai">
                 <button type="button" class="primary" onclick="app.today.aiSend()">🤖 請 AI 幫我分類／排時段</button>
                 <button type="button" onclick="app.today.aiPaste()">📥 貼上 AI 的結果</button>
-                <button type="button" onclick="app.today.ui.showSettings=!app.today.ui.showSettings; app.today.render()">⚙ 時段設定</button>
+                <button type="button" onclick="app.today.ui.showSettings=!app.today.ui.showSettings; app.today.render()" title="時段設定">⚙</button>
+                </div>
             </div>
             ${this.ui.showSettings ? `<div class="td-settings">
                 ${this.SLOT_ORDER.map(k => `<div class="td-set-row"><input value="${esc(slots[k].name)}" onchange="app.today.setSlotPref('${k}','name',this.value)"><input type="time" value="${esc(slots[k].from)}" onchange="app.today.setSlotPref('${k}','from',this.value)"><span>–</span><input type="time" value="${esc(slots[k].to)}" onchange="app.today.setSlotPref('${k}','to',this.value)"><span class="td-meta">${this.cap(k)} 分</span></div>`).join('')}
                 <div class="td-set-row"><span>每天可專心的時間</span><input type="number" min="1" max="12" step="0.5" value="${h(this.budget())}" onchange="app.today.setBudget(this.value)"><span>小時（書上建議 ≤ 5）</span></div>
                 <div class="td-meta">預設是中間型的節奏。這些設定記在這台電腦。</div>
             </div>` : ''}
-            ${warns.length ? `<div class="td-warns">${warns.slice(0, 4).map(w => `<div>⚠ ${esc(w)}</div>`).join('')}${warns.length > 4 ? `<div class="td-meta">還有 ${warns.length - 4} 則提醒</div>` : ''}</div>` : ''}
+            <div class="td-mtabs"><button type="button" class="${mtab === 'classify' ? 'on' : ''}" onclick="app.today.ui.mtab='classify'; app.today.render()">① 分類 <b>${cands.length}</b></button><button type="button" class="${mtab === 'board' ? 'on' : ''}" onclick="app.today.ui.mtab='board'; app.today.render()">② 排程板 <b>${S.count}</b></button></div>
 
-            <div class="td-main">
+            <div class="td-main" data-mtab="${mtab}">
             <section class="td-sec td-left">
                 <h4>① 分類 <span class="td-meta">最重要的先點。</span>
                     <span class="td-groupby"><button type="button" class="${this.groupBy() === 'project' ? 'on' : ''}" onclick="app.today.setGroupBy('project')">依專案</button><button type="button" class="${this.groupBy() === 'urgency' ? 'on' : ''}" onclick="app.today.setGroupBy('urgency')">依急迫</button></span></h4>
                 <div class="td-dump">
-                    <textarea id="td-dump" rows="2" placeholder="腦中想到什麼先打下來，一行一件（清空大腦，可跳過）">${esc(this.ui.dump || '')}</textarea>
-                    <button type="button" onclick="app.today.brainDump()">加入</button>
+                    <textarea id="td-dump" rows="1" placeholder="＋ 腦中想到什麼先打下來（Enter 加入；貼多行＝多張卡）" onkeydown="if(event.key==='Enter' && !event.shiftKey && !event.isComposing){ event.preventDefault(); app.today.brainDump(); }">${esc(this.ui.dump || '')}</textarea>
                 </div>
                 <input type="search" id="td-search" class="td-search" placeholder="從所有卡片找…" value="${esc(this.ui.search)}" oninput="app.today.ui.search=this.value; clearTimeout(app.today._t); app.today._t=setTimeout(()=>app.today.render(),200)">
                 ${cands.length ? this.candidatesHtml(cands) : `<div class="data-empty">${this.ui.search ? '找不到符合的卡片。' : '候選都分好了。想加別的卡，用上面的搜尋。'}</div>`}
@@ -7384,7 +7398,7 @@ app.today = {
             </div>
         </div>`;
         const dump = document.getElementById('td-dump');
-        if (dump) dump.oninput = () => { this.ui.dump = dump.value; };
+        if (dump) { const fit = () => { dump.style.height = 'auto'; dump.style.height = Math.min(120, dump.scrollHeight + 2) + 'px'; }; dump.oninput = () => { this.ui.dump = dump.value; fit(); }; fit(); if (keepDump) { dump.focus(); } }
         if (keepSearch !== null) { const el = document.getElementById('td-search'); el.focus(); el.selectionStart = el.selectionEnd = keepSearch; }
     },
 

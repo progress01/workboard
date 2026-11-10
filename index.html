@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>白板 & 心流沙盒 v4.1</title>
+    <title>白板 & 心流沙盒 v4.2</title>
     
     <!-- Firebase Compat -->
     <script src="https://www.gstatic.com/firebasejs/10.8.1/firebase-app-compat.js"></script>
@@ -599,15 +599,15 @@
         .refpick-item:hover { background:#eef2ff; }
         .refpick-title { font-size:.9rem; color:#1e293b; font-weight:bold; }
         .td-wrap { max-width:1400px; margin:0 auto; display:flex; flex-direction:column; gap:12px; }
-        .td-top { display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; }
+        .td-top { display:flex; align-items:center; gap:12px; flex-wrap:wrap; background:#fff; border:1px solid #e2e8f0; border-radius:12px; padding:8px 12px; }
         .td-days { display:flex; gap:6px; }
         .td-days button { border:1px solid #cbd5e1; background:#fff; border-radius:999px; padding:7px 14px; cursor:pointer; font-size:.9rem; color:#334155; }
         .td-days button.active { background:var(--primary); border-color:var(--primary); color:#fff; font-weight:bold; }
         .td-sum { display:flex; gap:12px; flex-wrap:wrap; font-size:.88rem; color:#475569; }
         .td-sum b { color:#0f172a; font-size:1.05rem; }
         .td-sum .bad, .td-sum .bad b { color:#b91c1c; }
-        .td-ai { display:flex; gap:8px; flex-wrap:wrap; }
-        .td-ai button { border:1px solid #cbd5e1; background:#fff; border-radius:8px; padding:8px 12px; cursor:pointer; font-size:.88rem; color:#334155; }
+        .td-ai { display:flex; gap:6px; flex-wrap:wrap; margin-left:auto; }
+        .td-ai button { border:1px solid #cbd5e1; background:#fff; border-radius:8px; padding:6px 10px; cursor:pointer; font-size:.88rem; color:#334155; }
         .td-ai button.primary { background:#eef2ff; border-color:#c7d2fe; color:#3730a3; font-weight:bold; }
         .td-settings { background:#fff; border:1px solid #e2e8f0; border-radius:10px; padding:10px 12px; display:flex; flex-direction:column; gap:6px; }
         .td-set-row { display:flex; gap:6px; align-items:center; flex-wrap:wrap; font-size:.86rem; }
@@ -617,8 +617,9 @@
         .td-sec { background:#fff; border:1px solid #e2e8f0; border-radius:12px; padding:12px; }
         .td-sec h4 { margin:0 0 10px; color:#1e293b; font-size:1rem; }
         .td-meta { font-size:.78rem; color:#94a3b8; font-weight:normal; }
-        .td-dump { display:flex; gap:8px; margin-bottom:8px; }
-        .td-dump textarea { flex:1; min-width:0; padding:7px 9px; border:1px dashed #cbd5e1; border-radius:8px; font-size:.88rem; resize:vertical; }
+        .td-dump { margin-bottom:8px; }
+        .td-dump textarea { width:100%; box-sizing:border-box; padding:7px 9px; border:1px dashed #cbd5e1; border-radius:8px; font-size:.88rem; resize:none; min-height:34px; max-height:120px; font-family:inherit; overflow-y:auto; }
+        .td-dump textarea:focus { border-style:solid; border-color:var(--primary); outline:none; }
         .td-dump button { border:1px solid #cbd5e1; background:#f8fafc; border-radius:8px; padding:0 14px; cursor:pointer; }
         .td-search { width:100%; box-sizing:border-box; padding:7px 9px; border:1px solid #e2e8f0; border-radius:8px; font-size:.86rem; margin-bottom:8px; }
         .td-main { display:grid; grid-template-columns:minmax(0,1.15fr) minmax(0,1fr); gap:12px; align-items:start; }
@@ -649,14 +650,18 @@
         .td-skip-row { display:flex; justify-content:space-between; padding:4px 0; }
         .td-skip-row button { border:1px solid #e2e8f0; background:#fff; border-radius:6px; cursor:pointer; font-size:.78rem; }
         .td-board { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:10px; }
-        .td-col { background:#f8fafc; border:1px solid #e2e8f0; border-radius:10px; padding:8px; min-height:110px; display:flex; flex-direction:column; gap:6px; }
+        .td-col { background:#f8fafc; border:1px solid #e2e8f0; border-radius:10px; padding:8px; min-height:64px; display:flex; flex-direction:column; gap:6px; }
         .td-col.over { outline:2px dashed var(--primary); }
         .td-tray { margin-top:10px; background:#fffbeb; border-color:#fde68a; }
         .td-col-head { display:flex; gap:6px; align-items:baseline; flex-wrap:wrap; font-size:.88rem; color:#1e293b; }
         .td-time { font-size:.76rem; color:#94a3b8; }
         .td-cap { margin-left:auto; font-size:.76rem; color:#64748b; }
         .td-col-head.over-cap .td-cap { color:#b91c1c; font-weight:bold; }
-        .td-empty { font-size:.78rem; color:#cbd5e1; text-align:center; padding:14px 0; }
+        .td-empty { font-size:.78rem; color:#cbd5e1; text-align:center; padding:6px 0; }
+        .td-flag { font-size:.74rem; color:#b45309; margin-top:2px; }
+        .td-tag-btn { border:none; cursor:pointer; }
+        .td-cand.urgent { box-shadow:inset 3px 0 0 #ef4444; padding-left:6px; }
+        .td-mtabs { display:none; }
         .td-item { display:flex; gap:7px; align-items:flex-start; background:#fff; border:1px solid #e2e8f0; border-radius:8px; padding:7px 8px; }
         .td-item[draggable=true] { cursor:grab; }
         .td-item.must { border-left:3px solid #ef4444; } .td-item.opt { border-left:3px solid #3b82f6; } .td-item.fixed { border-left:3px solid #94a3b8; background:#f8fafc; }
@@ -697,7 +702,11 @@
             .td-pri button { padding:10px 4px; font-size:.88rem; }
         }
         .ls-wrap { max-width:820px; margin:0 auto; }
-        @media (max-width: 1000px) { .td-main { grid-template-columns:1fr; } .td-right { position:static; max-height:none; } .td-right .td-board { grid-template-columns:repeat(3, minmax(0,1fr)); } }
+        @media (max-width: 1000px) { .td-main { grid-template-columns:1fr; } .td-right { position:static; max-height:none; } .td-right .td-board { grid-template-columns:repeat(3, minmax(0,1fr)); }
+            .td-mtabs { display:grid; grid-template-columns:1fr 1fr; gap:6px; position:sticky; top:60px; z-index:5; }
+            .td-mtabs button { border:1px solid #cbd5e1; background:#fff; border-radius:10px; padding:9px; font-size:.92rem; color:#475569; cursor:pointer; }
+            .td-mtabs button.on { background:var(--primary); border-color:var(--primary); color:#fff; font-weight:bold; }
+            .td-main[data-mtab=classify] .td-right, .td-main[data-mtab=board] .td-left { display:none; } }
         @media (max-width: 768px) { .td-right .td-board { grid-template-columns:1fr; } }
         .ls-wrap:has(.ct-table) { max-width:1100px; }
         .qa-fields { display:flex; gap:8px; flex-wrap:wrap; margin:8px 0; }
@@ -978,7 +987,7 @@
     <!-- 登入畫面 -->
     <div id="login-screen">
         <h1 style="font-size: 2.5rem; margin-bottom: 10px;">白板系統</h1>
-        <p style="color: #94a3b8; margin-bottom: 30px;">v4.1</p>
+        <p style="color: #94a3b8; margin-bottom: 30px;">v4.2</p>
         <button onclick="app.login()" style="padding: 14px 28px; font-size: 1.1rem; border-radius: 30px; border: none; background: #3b82f6; color: white; font-weight: bold; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.3);">
             使用 Google 登入
         </button>
