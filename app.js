@@ -1,5 +1,5 @@
 // =====================================================================
-// 白板 & 心流沙盒 v5.8
+// 白板 & 心流沙盒 v5.9
 // ---------------------------------------------------------------------
 // v3.0 重整重點（資料邏輯）：
 // 1. 所有修改只走一個入口 app.saveToLocal()（= store.markDirty）：
@@ -27,7 +27,7 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 const provider = new firebase.auth.GoogleAuthProvider();
 
-const APP_VERSION = '5.8';
+const APP_VERSION = '5.9';
 const SCHEMA_VERSION = 3;
 const CLOUD_DOC_SOFT_LIMIT = 750 * 1024;   // 超過時提醒
 const CLOUD_DOC_HARD_LIMIT = 1000 * 1000;  // Firestore 單一文件上限約 1 MiB，保守一點
@@ -240,7 +240,7 @@ const app = {
                 tabs: s.tabs, workspaces: s.workspaces, nodes: s.nodes,
                 globalNotebook: s.globalNotebook,
                 tsumego: { stones: s.tsumego.stones },
-                sandbox: { deadlineTask: s.sandbox.deadlineTask, deadlineDate: s.sandbox.deadlineDate, settings: s.sandbox.settings || '', daylog: s.sandbox.daylog || '' },
+                sandbox: { deadlineTask: s.sandbox.deadlineTask, deadlineDate: s.sandbox.deadlineDate, settings: s.sandbox.settings || '', daylog: s.sandbox.daylog || '', projects: s.sandbox.projects || '' },
                 meta: s.meta
             });
         },
@@ -257,6 +257,7 @@ const app = {
             s.sandbox.deadlineDate = doc.sandbox.deadlineDate;
             s.sandbox.settings = doc.sandbox.settings || '';
             s.sandbox.daylog = doc.sandbox.daylog || '';
+            s.sandbox.projects = doc.sandbox.projects || '';
             s.meta = doc.meta;
             if (!s.tabs.some(t => t.id === s.activeTabId)) s.activeTabId = s.tabs[0].id;
             if (!s.nodes[s.activeTabId]) s.nodes[s.activeTabId] = [];
@@ -341,7 +342,7 @@ const app = {
             for (const tabId in s.nodes) (s.nodes[tabId] || []).forEach(n => { if (n?.id) nodes[n.id] = `${tabId}|${this.cardSig(n)}`; });
             const tabs = {};
             s.tabs.forEach(t => { tabs[t.id] = t.name; });
-            const misc = JSON.stringify([s.tabs, s.globalNotebook, s.tsumego.stones, s.sandbox.deadlineTask, s.sandbox.deadlineDate, s.sandbox.settings || '', s.sandbox.daylog || '']);
+            const misc = JSON.stringify([s.tabs, s.globalNotebook, s.tsumego.stones, s.sandbox.deadlineTask, s.sandbox.deadlineDate, s.sandbox.settings || '', s.sandbox.daylog || '', s.sandbox.projects || '']);
             return { cards, nodes, tabs, misc };
         },
 
@@ -551,7 +552,8 @@ const app = {
                 deadlineTask: String(src.sandbox?.deadlineTask ?? ''),
                 deadlineDate: String(src.sandbox?.deadlineDate ?? ''),
                 settings: typeof src.sandbox?.settings === 'string' ? src.sandbox.settings : '',
-                daylog: typeof src.sandbox?.daylog === 'string' ? src.sandbox.daylog : ''
+                daylog: typeof src.sandbox?.daylog === 'string' ? src.sandbox.daylog : '',
+                projects: typeof src.sandbox?.projects === 'string' ? src.sandbox.projects : ''
             };
             if (!withFlag) return out;
             return { doc: out, changed: JSON.stringify([out.tabs, out.workspaces, out.nodes]) !== before };
@@ -569,6 +571,31 @@ const app = {
             app.state.sandbox.settings = JSON.stringify(v);
             app.saveToLocal();
         }
+    },
+
+    // 專案表：卡片上仍存專案名稱（文字），這裡另記每個專案的公司標案、狀態、截止日。改名＝所有卡片一起改。
+    projectReg: {
+        all() { try { const v = JSON.parse(app.state.sandbox.projects || '{}'); return v && typeof v === 'object' ? v : {}; } catch { return {}; } },
+        save(v) { app.state.sandbox.projects = JSON.stringify(v); app.saveToLocal(); },
+        get(name) { return this.all()[String(name || '').trim()] || {}; },
+        set(name, patch) { const n = String(name || '').trim(); if (!n) return; const v = this.all(); v[n] = { ...(v[n] || {}), ...patch }; this.save(v); },
+        isClosed(name) { return this.get(name).status === 'closed'; },
+        // 卡片上出現過的名稱＋表裡登記的名稱
+        names() { return [...new Set([...app.lists.projects(), ...Object.keys(this.all())])].sort((a, b) => a.localeCompare(b, 'zh-Hant')); },
+        cardsOf(name) { const n = String(name || '').trim(); return app.worktime.allCards().filter(({ card }) => String(card.project || '').trim() === n); },
+        rename(from, to) {
+            const a = String(from || '').trim(), b = String(to || '').trim();
+            if (!a || !b || a === b) return 0;
+            const rows = this.cardsOf(a);
+            rows.forEach(({ card }) => { card.project = b; });
+            const v = this.all();
+            if (v[a]) { v[b] = { ...v[a], ...(v[b] || {}) }; delete v[a]; }
+            this.save(v);
+            return rows.length;
+        },
+        remove(name) { const v = this.all(); delete v[String(name || '').trim()]; this.save(v); },
+        // 給公司工時表 AI 用：專案 → 公司標案
+        mappingLines() { return Object.entries(this.all()).filter(([, p]) => p.company).map(([n, p]) => `${n} = ${p.company}`); }
     },
 
     // 每天的收工紀錄（精神時段、反思、計畫 vs 實際摘要），跟著雲端同步；只留 180 天
@@ -634,7 +661,8 @@ const app = {
                 stones: doc.tsumego?.stones || [],
                 deadlineTask: doc.sandbox?.deadlineTask, deadlineDate: doc.sandbox?.deadlineDate,
                 settings: doc.sandbox?.settings || '',
-                daylog: doc.sandbox?.daylog || ''
+                daylog: doc.sandbox?.daylog || '',
+                projects: doc.sandbox?.projects || ''
             };
         },
 
@@ -891,7 +919,7 @@ const app = {
 
             // --- 筆記本／詰棋／死線：逐欄位比對，文字衝突時兩邊都留 ---
             const ma = this.miscFields(A), mb = this.miscFields(B);
-            const miscLabels = { template: '筆記本模式', free: '全域筆記', q1: '四象限：重要緊急', q2: '四象限：重要不急', q3: '四象限：緊急不重', q4: '四象限：不重不急', stones: '詰棋盤', deadlineTask: '死線倒數名稱', deadlineDate: '死線倒數日期', settings: '設定（時段、公司專案清單）', daylog: '收工帳單' };
+            const miscLabels = { template: '筆記本模式', free: '全域筆記', q1: '四象限：重要緊急', q2: '四象限：重要不急', q3: '四象限：緊急不重', q4: '四象限：不重不急', stones: '詰棋盤', deadlineTask: '死線倒數名稱', deadlineDate: '死線倒數日期', settings: '設定（時段、公司專案清單）', daylog: '收工帳單', projects: '專案表' };
             const mm = {};
             Object.keys(ma).forEach(k => {
                 const r = this.pick(ma[k], mb[k], bMisc ? bMisc[k] : undefined, aMiscNewer);
@@ -916,7 +944,7 @@ const app = {
                 tabs, workspaces, nodes: nodesOut,
                 globalNotebook: { template: mm.template === 'matrix' ? 'matrix' : 'free', free: mm.free ?? '', matrix: { q1: mm.q1 ?? '', q2: mm.q2 ?? '', q3: mm.q3 ?? '', q4: mm.q4 ?? '' } },
                 tsumego: { stones: mm.stones || [] },
-                sandbox: { deadlineTask: mm.deadlineTask ?? '', deadlineDate: mm.deadlineDate ?? '', settings: mm.settings ?? '', daylog: mm.daylog ?? '' },
+                sandbox: { deadlineTask: mm.deadlineTask ?? '', deadlineDate: mm.deadlineDate ?? '', settings: mm.settings ?? '', daylog: mm.daylog ?? '', projects: mm.projects ?? '' },
                 meta: { ...A.meta, tombstones: tomb, miscUpdatedAt: Math.max(A.meta.miscUpdatedAt || 0, B.meta.miscUpdatedAt || 0), updatedAt: Math.max(A.meta.updatedAt || 0, B.meta.updatedAt || 0) }
             };
             return { doc, report };
@@ -5444,7 +5472,7 @@ const app = {
                 '7. 表格後面用 1～3 行列出：每天工時合計，以及你不確定、需要我確認的地方。',
                 '',
                 '【專案名稱對照】（我自己補充的，優先使用）',
-                map || '（沒有額外對照，依上面規則判斷）',
+                [...app.projectReg.mappingLines(), map].filter(Boolean).join('\n') || '（沒有額外對照，依上面規則判斷）',
                 '',
                 `【工作紀錄】${data.r.s} ～ ${data.r.e}`,
                 lines.join('\n') || '（這段期間沒有紀錄）'
@@ -7137,7 +7165,7 @@ app.today = {
     minutesOn(card, date) { return Math.round(this.W().dailyMinutesMap(card)[date] || 0); },
 
     // 完全空白的卡（沒標題、沒內容、沒工時）不列進今日；另外提示可以清掉
-    rows() { return this.W().allCards().filter(({ card, tabId }) => !/^♻/.test(app.state.tabs.find(t => t.id === tabId)?.name || '') && !app.sync.isBlankCard(card)); },
+    rows() { return this.W().allCards().filter(({ card, tabId }) => !/^♻/.test(app.state.tabs.find(t => t.id === tabId)?.name || '') && !app.sync.isBlankCard(card) && !app.projectReg.isClosed(card.project)); },
     blankCount() { return app.dataCenter.blankCards().length; },
     async clearBlanks() { await app.dataCenter.removeBlanks(); this.render(); },
     fixedRows() { return this.rows().filter(({ card }) => card.fixed && Number(card.status) !== 2); },
@@ -7938,7 +7966,7 @@ app.projectPicker = {
     render() {
         const esc = x => app.entries.escapeHtml(x);
         const v = String(this.input?.value || '').trim();
-        const all = app.lists.projects();
+        const all = app.projectReg.names().filter(p => !app.projectReg.isClosed(p) || p === v);
         const q = v.toLowerCase();
         const list = this.showAll || !v ? all : all.filter(p => p.toLowerCase().includes(q));
         this.items = list.map(p => ({ value: p, label: p }));
@@ -8126,7 +8154,10 @@ app.lists = {
     },
 
     projects() {
-        return [...new Set(app.worktime.allCards().map(({ card }) => String(card.project || '').trim()).filter(Boolean))].sort();
+        const fromCards = app.worktime.allCards().map(({ card }) => String(card.project || '').trim()).filter(Boolean);
+        let reg = [];
+        try { reg = Object.keys(JSON.parse(app.state.sandbox.projects || '{}')); } catch (_) {}
+        return [...new Set([...fromCards, ...reg])].sort();
     },
 
     // 依卡片分組
@@ -8169,7 +8200,7 @@ app.lists = {
         const active = document.activeElement;
         const keepSearch = active && active.id === 'ls-search' ? active.selectionStart : null;
         const openCards = app.worktime.allCards().filter(({ card }) => Number(card.status) !== 2 && (!U.project || String(card.project || '').trim() === U.project)).length;
-        const tabs = [['todo', `✅ 待辦 <b>${d.todoOpen.length}</b>`], ['question', `❓ 問題 <b>${d.qOpen.length}</b>`], ['review', `💬 問答回顧 <b>${d.qAnswered.length + d.qArchived.length}</b>`], ['cards', `🗂 卡片 <b>${openCards}</b>`]];
+        const tabs = [['todo', `✅ 待辦 <b>${d.todoOpen.length}</b>`], ['question', `❓ 問題 <b>${d.qOpen.length}</b>`], ['review', `💬 問答回顧 <b>${d.qAnswered.length + d.qArchived.length}</b>`], ['cards', `🗂 卡片 <b>${openCards}</b>`], ['projects', `📁 專案 <b>${app.projectReg.names().filter(n => !app.projectReg.isClosed(n)).length}</b>`]];
         const cards = app.worktime.allCards().filter(({ card }) => Number(card.status) !== 2 && (!U.project || String(card.project || '').trim() === U.project));
         const defCard = U.addCard && cards.some(r => r.card.id === U.addCard) ? U.addCard : (app.state.sandbox.activeTaskId && cards.some(r => r.card.id === app.state.sandbox.activeTaskId) ? app.state.sandbox.activeTaskId : (cards[0]?.card.id || ''));
         let body = '';
@@ -8181,6 +8212,8 @@ app.lists = {
                 ${d.todoOpen.length ? this.grouped(d.todoOpen, x => this.todoItem(x)) : '<div class="data-empty">沒有未完成的待辦 🎉</div>'}
                 ${this.section('已勾選（還在筆記裡，按 🧹 整理會收進紀錄）', d.todoDone.length, this.grouped(d.todoDone, x => this.todoItem(x)), { open: false, key: 'done' })}
                 ${this.section('已整理收進工作紀錄', d.todoArchived.length, this.grouped(d.todoArchived, x => `<div class="ls-item done archived"><span>✅ ${this.esc(x.text)}</span><span class="ls-meta">${this.esc(x.date)}</span></div>`), { open: false, key: 'arch' })}`;
+        } else if (U.tab === 'projects') {
+            body = this.projectsTable();
         } else if (U.tab === 'cards') {
             body = this.cardsTable();
         } else if (U.tab === 'question') {
@@ -8200,6 +8233,83 @@ app.lists = {
         </div>`;
         if (keepSearch !== null) { const el = document.getElementById('ls-search'); el.focus(); el.selectionStart = el.selectionEnd = keepSearch; }
     },
+
+    // ---------- 📁 專案表 ----------
+    projectsTable() {
+        const esc = x => this.esc(x), R = app.projectReg, W = app.worktime;
+        const names = R.names();
+        const cps = companyProjects();
+        const showClosed = !!this.ui.showClosedProjects;
+        const rows = names.map(n => {
+            const cards = R.cardsOf(n).filter(({ card }) => !app.sync.isBlankCard(card));
+            const open = cards.filter(({ card }) => Number(card.status) !== 2).length;
+            const mins = cards.reduce((a, { card }) => a + W.totalMinutes(card), 0);
+            return { n, p: R.get(n), open, total: cards.length, mins };
+        }).filter(r => showClosed || r.p.status !== 'closed')
+          .sort((a, b) => (a.p.status === 'closed') - (b.p.status === 'closed') || b.open - a.open || a.n.localeCompare(b.n, 'zh-Hant'));
+        const closedN = names.filter(n => R.isClosed(n)).length;
+        const row = r => `<div class="pj-row ${r.p.status === 'closed' ? 'closed' : ''}">
+                <input class="pj-name" value="${esc(r.n)}" onchange="app.lists.renameProject(${esc(JSON.stringify(r.n))}, this.value)" onkeydown="if(event.key==='Enter' && !event.isComposing) this.blur()" title="改名＝所有卡片一起改">
+                <select class="pj-company" onchange="app.lists.setProject(${esc(JSON.stringify(r.n))}, 'company', this.value)" title="公司工時表的標案">
+                    <option value="">（公司標案）</option>${[...new Set([...cps, ...(r.p.company ? [r.p.company] : [])])].map(c => `<option value="${esc(c)}" ${c === r.p.company ? 'selected' : ''}>${esc(c.length > 26 ? c.slice(0, 26) + '…' : c)}</option>`).join('')}
+                </select>
+                <select class="pj-status" onchange="app.lists.setProject(${esc(JSON.stringify(r.n))}, 'status', this.value)"><option value="active" ${r.p.status !== 'closed' ? 'selected' : ''}>進行中</option><option value="closed" ${r.p.status === 'closed' ? 'selected' : ''}>已結案</option></select>
+                <input class="pj-due" type="date" value="${esc(r.p.due || '')}" onchange="app.lists.setProject(${esc(JSON.stringify(r.n))}, 'due', this.value)" title="專案截止日">
+                <span class="pj-stat">未完成 ${r.open}・共 ${r.total} 張${r.mins ? ` · ⏱ ${esc(W.formatMinutes(r.mins))}` : ''}</span>
+                <span class="ct-actions">
+                    <button type="button" onclick="app.lists.openProject(${esc(JSON.stringify(r.n))})" title="看這個專案的卡片">↗</button>
+                    <button type="button" onclick="app.lists.mergeProject(${esc(JSON.stringify(r.n))})" title="合併到另一個專案（名字打錯、重複時用）">⇢</button>
+                    ${r.total ? '' : `<button type="button" onclick="app.lists.removeProject(${esc(JSON.stringify(r.n))})" title="刪除這個專案（沒有卡片才能刪）">🗑</button>`}
+                </span>
+            </div>`;
+        return `<div class="td-meta" style="margin-bottom:8px;">改專案名稱＝所有卡片一起改。設定「公司標案」後，AI 填公司工時表就照這個對。結案的專案，卡片不會再出現在今日頁（資料都還在）。</div>
+            <div class="ct-table pj-table">
+                <div class="pj-row ct-head"><span>專案</span><span>公司標案</span><span>狀態</span><span>截止日</span><span>卡片</span><span></span></div>
+                ${rows.length ? rows.map(row).join('') : '<div class="data-empty">還沒有專案。在卡片的專案欄打名字就會出現在這裡。</div>'}
+                <div class="pj-row ct-new"><input id="pj-new" placeholder="＋ 新增專案，打名字按 Enter" onkeydown="if(event.key==='Enter' && !event.isComposing) app.lists.addProject(this.value)"></div>
+            </div>
+            ${closedN ? `<label class="td-meta" style="display:block;margin-top:8px;"><input type="checkbox" ${showClosed ? 'checked' : ''} onchange="app.lists.ui.showClosedProjects=this.checked; app.lists.render()"> 顯示已結案的專案（${closedN}）</label>` : ''}`;
+    },
+    setProject(name, field, value) {
+        app.projectReg.set(name, { [field]: value });
+        if (field === 'status') { app.ui.toast(value === 'closed' ? `「${name}」已結案：卡片不再出現在今日頁` : `「${name}」恢復進行中`); this.render(); app.today?.renderSandbox?.(); }
+    },
+    renameProject(from, to) {
+        const b = String(to || '').trim();
+        if (!b) { this.render(); return; }
+        if (app.projectReg.names().includes(b) && b !== from) { this.mergeProject(from, b); return; }
+        const n = app.projectReg.rename(from, b);
+        app.ui.defer(() => app.renderAll());
+        app.ui.toast(`已改名，${n} 張卡片一起改成「${b}」`);
+    },
+    async mergeProject(from, preset = '') {
+        const others = app.projectReg.names().filter(n => n !== from);
+        if (!others.length) { app.ui.toast('沒有其他專案可以合併'); return; }
+        this._mergeTo = preset && others.includes(preset) ? preset : others[0];
+        const n = app.projectReg.cardsOf(from).length;
+        const v = await app.ui.dialog({
+            title: '合併專案',
+            html: `<p>把「<b>${this.esc(from)}</b>」的 ${n} 張卡片改到：</p>
+                <select class="task-meta-input" style="width:100%;" onchange="app.lists._mergeTo=this.value">${others.map(o => `<option value="${this.esc(o)}" ${o === this._mergeTo ? 'selected' : ''}>${this.esc(o)}</option>`).join('')}</select>
+                <p class="pm-hint">「${this.esc(from)}」會從專案表移除。</p>`,
+            buttons: [{ label: '取消', value: null }, { label: '合併', value: 'ok', primary: true }]
+        });
+        if (v !== 'ok') { this.render(); return; }
+        const to = this._mergeTo;
+        const moved = app.projectReg.rename(from, to);
+        app.projectReg.remove(from);
+        app.ui.defer(() => app.renderAll());
+        app.ui.toast(`已合併：${moved} 張卡片改到「${to}」`);
+    },
+    removeProject(name) { app.projectReg.remove(name); this.render(); },
+    addProject(value) {
+        const n = String(value || '').trim();
+        if (!n) return;
+        app.projectReg.set(n, { status: 'active' });
+        this.render();
+        setTimeout(() => document.getElementById('pj-new')?.focus(), 0);
+    },
+    openProject(name) { this.ui.project = name; this.ui.tab = 'cards'; this.savePrefs(); this.render(); },
 
     // ---------- 🗂 卡片表 ----------
     cardRows() {
