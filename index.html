@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>白板 & 心流沙盒 v6.0</title>
+    <title>白板 & 心流沙盒 v6.1</title>
     
     <!-- Firebase Compat -->
     <script src="https://www.gstatic.com/firebasejs/10.8.1/firebase-app-compat.js"></script>
@@ -779,6 +779,10 @@
         .qa-fields select, .qa-fields input { padding:6px 8px; border:1px solid #cbd5e1; border-radius:6px; font-size:.88rem; }
         .bt-open { border:1px solid #c7d2fe; background:#eef2ff; color:#3730a3; border-radius:8px; padding:6px 10px; cursor:pointer; font-weight:bold; font-size:.86rem; }
         .bt-step { margin-bottom:12px; }
+        .bt-undo { border:1px solid #fdba74; background:#fff7ed; color:#9a3412; border-radius:8px; padding:6px 10px; cursor:pointer; font-size:.84rem; }
+        .bt-opt { display:flex; gap:6px; align-items:center; font-size:.84rem; color:#334155; margin:4px 0; }
+        .bt-mask { margin-top:6px; font-size:.84rem; } .bt-mask summary { cursor:pointer; color:#475569; }
+        .bt-flag { font-size:.72rem; background:#fef3c7; color:#92400e; border-radius:4px; padding:0 5px; margin-left:4px; white-space:nowrap; }
         .bt-row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:6px 0; }
         .bt-row select { padding:6px 8px; border:1px solid #cbd5e1; border-radius:8px; font-size:.88rem; max-width:60%; }
         .bt-warn { background:#fff7ed; border:1px solid #fdba74; color:#9a3412; border-radius:8px; padding:6px 10px; font-size:.82rem; margin-top:6px; }
@@ -1070,7 +1074,7 @@
     <!-- 登入畫面 -->
     <div id="login-screen">
         <h1 style="font-size: 2.5rem; margin-bottom: 10px;">白板系統</h1>
-        <p style="color: #94a3b8; margin-bottom: 30px;">v6.0</p>
+        <p style="color: #94a3b8; margin-bottom: 30px;">v6.1</p>
         <button onclick="app.login()" style="padding: 14px 28px; font-size: 1.1rem; border-radius: 30px; border: none; background: #3b82f6; color: white; font-weight: bold; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.3);">
             使用 Google 登入
         </button>
@@ -1440,6 +1444,6 @@
     </div>
 
     <!-- 引用大腦檔案 -->
-    <script src="app.js?v=6.0"></script>
+    <script src="app.js?v=6.1"></script>
 </body>
 </html>
