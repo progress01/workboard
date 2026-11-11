@@ -1,5 +1,5 @@
 // =====================================================================
-// 白板 & 心流沙盒 v5.9
+// 白板 & 心流沙盒 v6.0
 // ---------------------------------------------------------------------
 // v3.0 重整重點（資料邏輯）：
 // 1. 所有修改只走一個入口 app.saveToLocal()（= store.markDirty）：
@@ -27,7 +27,7 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 const provider = new firebase.auth.GoogleAuthProvider();
 
-const APP_VERSION = '5.9';
+const APP_VERSION = '6.0';
 const SCHEMA_VERSION = 3;
 const CLOUD_DOC_SOFT_LIMIT = 750 * 1024;   // 超過時提醒
 const CLOUD_DOC_HARD_LIMIT = 1000 * 1000;  // Firestore 單一文件上限約 1 MiB，保守一點
@@ -7932,6 +7932,199 @@ app.today = {
 };
 
 // ==========================================
+// 🤖 AI 大表：匯出卡片表給 AI 補充／新增 → 貼回 → 逐筆勾選套用
+// AI 只能改：標題、專案、類型、預估、下一步；可以新增卡片；可以「建議完成」（預設不勾）。
+// 筆記內容、工時、截止日、狀態只給 AI 看，不會被改。
+// ==========================================
+app.batch = {
+    KEY: 'whiteboard_batch_ai',
+    state: { scope: '', text: '', rows: null, sel: {} },
+    esc(x) { return app.entries.escapeHtml(x); },
+    typeName(k) { return app.today.TYPES[k]?.name || ''; },
+    typeKey(name) { const n = String(name || '').replace(/型$/, '').trim(); return app.today.TYPE_ORDER.find(k => app.today.TYPES[k].name === n) || ''; },
+    clean(v) { return String(v ?? '').replace(/[\t\r\n]+/g, ' ').trim(); },
+
+    scopeCards(scope) {
+        return app.worktime.allCards().filter(({ card }) => Number(card.status) !== 2 && !app.sync.isBlankCard(card)
+            && !app.projectReg.isClosed(card.project) && (scope === '__all__' || String(card.project || '').trim() === scope));
+    },
+    defaultScope() {
+        const f = app.lists.ui.project;
+        if (f) return f;
+        const counts = {};
+        this.scopeCards('__all__').forEach(({ card }) => { const p = String(card.project || '').trim(); if (p) counts[p] = (counts[p] || 0) + 1; });
+        return Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] || '__all__';
+    },
+
+    prompt(scope) {
+        const rows = this.scopeCards(scope);
+        const map = rows.map(r => r.card.id);
+        try { localStorage.setItem(this.KEY, JSON.stringify({ scope, map, at: Date.now() })); } catch (_) {}
+        const W = app.worktime;
+        const summary = c => this.clean(String(c.content || '').split('\n').filter(l => l.trim()).slice(0, 3).join(' / ')).slice(0, 80);
+        const head = ['編號', '標題', '專案', '類型', '預估分鐘', '下一步', '截止日（唯讀）', '狀態（唯讀）', '筆記摘要（唯讀）'];
+        const lines = rows.map(({ card }, i) => [
+            `#${i + 1}`, this.clean(app.cardLabel(card)), this.clean(card.project), this.typeName(card.taskType),
+            Number(card.plannedMinutes) || '', this.clean(card.nextStep), card.isMemo ? '' : (W.plannedEnd(card) || ''), W.statusLabel(card.status), summary(card)
+        ].join('\t'));
+        const projects = app.projectReg.names().filter(n => !app.projectReg.isClosed(n));
+        return [
+            `請幫我整理白板上的工項${scope === '__all__' ? '（全部未完成的卡）' : `（專案：${scope}）`}。目標是讓每件事都變成清楚、可執行的工項。`,
+            '',
+            '【你可以做的】',
+            '1. 補上或修正：標題（改成清楚的動作＋對象，例如「確認流量報表欄位」）、專案、類型、預估分鐘、下一步（下一個具體動作）。',
+            '2. 新增卡片：如果某件事太大、或筆記摘要裡藏著別的工項，可以新增卡片。',
+            '3. 建議完成：如果看起來已經做完或不需要了，在「建議」欄寫「完成」。（我會自己確認，你不能刪除卡片。）',
+            '',
+            '【你不能改的】截止日、狀態、筆記內容、工時。表中標「唯讀」的欄位只是讓你參考。',
+            '',
+            '【類型只能填】' + app.today.TYPE_ORDER.map(k => `${app.today.TYPES[k].name}（${app.today.TYPES[k].q}）`).join('；'),
+            `【現有專案】${projects.join('、') || '（無）'}。盡量用現有的；真的需要才開新專案。`,
+            '',
+            '【請你這樣做】',
+            '1. 先看表。不確定的地方（某件在做什麼、該不該拆、屬於哪個專案）先問我，一次最多 3 個問題，等我回答再繼續。不要自己猜。',
+            '2. 討論完，把結果放在一個程式碼區塊裡，用 Tab 分隔，第一行是標題列：',
+            '編號\t標題\t專案\t類型\t預估分鐘\t下一步\t建議',
+            '3. 只列「有改的卡」和「新增的卡」；沒改的不要列。沒改的欄位留空就好（留空＝不改）。',
+            '4. 新增的卡，編號寫「新」。',
+            '5. 程式碼區塊後面，用 1～3 句說明你做了什麼、還有什麼要我決定。',
+            '',
+            '【目前的卡片】（Tab 分隔）',
+            head.join('\t'),
+            ...lines
+        ].join('\n');
+    },
+
+    // 讀 AI 回傳的表（Tab 或 | 分隔都可以）
+    parse(text) {
+        let meta = {};
+        try { meta = JSON.parse(localStorage.getItem(this.KEY) || '{}') || {}; } catch (_) {}
+        const map = Array.isArray(meta.map) ? meta.map : [];
+        const lines = String(text || '').split('\n').map(l => l.replace(/\r/g, '')).filter(l => l.trim() && !/^\s*```/.test(l) && !/^\s*\|?\s*:?-{2,}/.test(l));
+        const split = l => (l.includes('\t') ? l.split('\t') : l.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|')).map(x => x.trim());
+        const headerIdx = lines.findIndex(l => /編號/.test(l) && /標題/.test(l));
+        if (headerIdx < 0) return { changes: [], adds: [], warns: ['找不到標題列（第一行要有「編號」「標題」）。'], meta };
+        const header = split(lines[headerIdx]);
+        const col = name => header.findIndex(h => h.replace(/（.*）|\(.*\)/g, '').trim() === name);
+        const C = { id: col('編號'), title: col('標題'), project: col('專案'), type: col('類型'), est: col('預估分鐘'), next: col('下一步'), hint: col('建議') };
+        const changes = [], adds = [], warns = [];
+        lines.slice(headerIdx + 1).forEach(l => {
+            const f = split(l);
+            const get = k => C[k] >= 0 ? this.clean(f[C[k]] ?? '') : '';
+            const idRaw = get('id');
+            // 只認「#數字」「數字」「新」開頭的列；AI 的說明文字直接略過
+            if (!idRaw || !/^(#?\d+|新)/.test(idRaw)) return;
+            const typeRaw = get('type'), estRaw = get('est');
+            const type = typeRaw ? this.typeKey(typeRaw) : '';
+            if (typeRaw && !type) warns.push(`「${typeRaw}」不是五種類型之一，已略過（${idRaw}）。`);
+            const est = estRaw ? Math.round(Number(String(estRaw).replace(/[^\d.]/g, ''))) : 0;
+            if (estRaw && !(est > 0)) warns.push(`預估「${estRaw}」看不懂，已略過（${idRaw}）。`);
+            const vals = { title: get('title'), project: get('project'), type, est: est > 0 ? est : 0, next: get('next'), done: /完成/.test(get('hint')) };
+            if (/^新/.test(idRaw)) {
+                if (!vals.title) { warns.push('有一列新增的卡沒有標題，已略過。'); return; }
+                adds.push(vals);
+                return;
+            }
+            const n = Number(idRaw.replace(/[^\d]/g, ''));
+            const id = map[n - 1];
+            const card = id ? app.worktime.getCard(id) : null;
+            if (!card) { warns.push(`找不到 ${idRaw}（可能是不同一次匯出的表），已略過。`); return; }
+            const W = app.worktime;
+            const fields = [];
+            if (vals.title && vals.title !== String(card.title || '').trim()) fields.push({ k: 'title', label: '標題', from: String(card.title || '').trim(), to: vals.title });
+            if (vals.project && vals.project !== String(card.project || '').trim()) fields.push({ k: 'project', label: '專案', from: String(card.project || '').trim(), to: vals.project });
+            if (vals.type && vals.type !== card.taskType) fields.push({ k: 'type', label: '類型', from: this.typeName(card.taskType), to: this.typeName(vals.type), val: vals.type });
+            if (vals.est && vals.est !== Number(card.plannedMinutes || 0)) fields.push({ k: 'est', label: '預估', from: card.plannedMinutes ? W.formatMinutes(card.plannedMinutes) : '', to: W.formatMinutes(vals.est), val: vals.est });
+            if (vals.next && vals.next !== String(card.nextStep || '').trim()) fields.push({ k: 'next', label: '下一步', from: String(card.nextStep || '').trim(), to: vals.next });
+            if (vals.done && Number(card.status) !== 2) fields.push({ k: 'done', label: '建議完成', from: '', to: '標成完成' });
+            if (fields.length) changes.push({ n: idRaw, card, fields });
+        });
+        return { changes, adds, warns, meta };
+    },
+
+    async open() {
+        this.state = { scope: this.defaultScope(), text: '', rows: null, sel: {} };
+        const names = app.projectReg.names().filter(n => !app.projectReg.isClosed(n) && this.scopeCards(n).length);
+        setTimeout(() => this.count(), 30);
+        const v = await app.ui.dialog({
+            title: '🤖 AI 大表：批次補充與新增',
+            wide: true,
+            html: `<div class="bt-step"><b>① 選範圍，複製給 AI</b>
+                    <div class="bt-row">
+                        <select onchange="app.batch.state.scope=this.value; app.batch.count()">${names.map(n => `<option value="${this.esc(n)}" ${n === this.state.scope ? 'selected' : ''}>${this.esc(n)}</option>`).join('')}<option value="__all__" ${this.state.scope === '__all__' ? 'selected' : ''}>全部未完成的卡</option></select>
+                        <span id="bt-count" class="td-meta"></span>
+                        <button type="button" class="rv-btn" onclick="app.batch.send()">🤖 複製給 AI</button>
+                    </div>
+                    <div class="td-meta">AI 只能改：標題、專案、類型、預估、下一步；可以新增卡片；可以「建議完成」。筆記內容、工時、截止日、狀態不會被改。建議一次一個專案，比較好檢查。</div>
+                </div>
+                <div class="bt-step"><b>② 把 AI 最後給的表貼回來</b>
+                    <textarea class="ps-input" id="bt-text" placeholder="整段貼上（含程式碼區塊也可以）" oninput="app.batch.state.text=this.value; app.batch.preview()"></textarea>
+                    <div id="bt-preview"></div>
+                </div>`,
+            buttons: [{ label: '取消', value: null }, { label: '套用勾選的變更', value: 'ok', primary: true }]
+        });
+        if (v === 'ok') this.apply();
+    },
+    count() { const el = document.getElementById('bt-count'); if (el) el.textContent = `${this.scopeCards(this.state.scope).length} 張未完成的卡`; },
+    async send() {
+        const text = this.prompt(this.state.scope);
+        if (navigator.share && /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent)) {
+            try { await navigator.share({ text }); return; } catch (err) { if (err?.name === 'AbortError') return; }
+        }
+        app.worktime.copyText(text, '已複製，貼到 AI。討論完把它最後給的表貼回第②步');
+    },
+    preview() {
+        const el = document.getElementById('bt-preview');
+        if (!el) return;
+        if (!this.state.text.trim()) { el.innerHTML = ''; return; }
+        const R = this.parse(this.state.text);
+        this.state.rows = R;
+        const esc = x => this.esc(x), sel = this.state.sel;
+        const key = (i, j) => `c${i}_${j}`;
+        R.changes.forEach((c, i) => c.fields.forEach((f, j) => { const k = key(i, j); if (sel[k] === undefined) sel[k] = f.k !== 'done'; }));
+        R.adds.forEach((a, i) => { if (sel[`a${i}`] === undefined) sel[`a${i}`] = true; });
+        const box = (k, label) => `<label class="bt-chk"><input type="checkbox" ${sel[k] ? 'checked' : ''} onchange="app.batch.state.sel['${k}']=this.checked">${label}</label>`;
+        const n = R.changes.reduce((a, c) => a + c.fields.length, 0);
+        el.innerHTML = `${R.warns.length ? `<div class="bt-warn">${R.warns.map(w => `<div>⚠ ${esc(w)}</div>`).join('')}</div>` : ''}
+            <div class="td-meta" style="margin:6px 0;">讀到 ${R.changes.length} 張卡的 ${n} 個變更、${R.adds.length} 張新卡。沒勾的不會改。「建議完成」預設不勾，要你自己確認。</div>
+            ${R.changes.map((c, i) => `<div class="bt-card"><div class="bt-card-title">${esc(c.n)} ${esc(app.cardLabel(c.card))}</div>
+                ${c.fields.map((f, j) => box(key(i, j), `<span class="bt-label ${f.k === 'done' ? 'done' : ''}">${esc(f.label)}</span> ${f.k === 'done' ? '' : `<span class="bt-from">${esc(f.from || '（空）')}</span> → `}<b>${esc(f.to)}</b>`)).join('')}
+            </div>`).join('')}
+            ${R.adds.length ? `<div class="bt-card"><div class="bt-card-title">＋ 新增的卡</div>${R.adds.map((a, i) => box(`a${i}`, `<b>${esc(a.title)}</b> <span class="td-meta">${[a.project && '#' + a.project, a.type && this.typeName(a.type), a.est && a.est + ' 分', a.next && '下一步：' + a.next].filter(Boolean).map(esc).join('・')}</span>`)).join('')}</div>` : ''}`;
+    },
+    apply() {
+        const R = this.state.rows || this.parse(this.state.text);
+        if (!R || (!R.changes.length && !R.adds.length)) { app.ui.toast('沒有讀到可以套用的變更', 'warn'); return; }
+        const sel = this.state.sel;
+        let nChange = 0, nAdd = 0, nDone = 0;
+        R.changes.forEach((c, i) => c.fields.forEach((f, j) => {
+            if (!sel[`c${i}_${j}`]) return;
+            const card = app.worktime.getCard(c.card.id);
+            if (!card) return;
+            if (f.k === 'title') card.title = f.to;
+            else if (f.k === 'project') card.project = f.to;
+            else if (f.k === 'type') card.taskType = f.val;
+            else if (f.k === 'est') { card.plannedMinutes = f.val; delete card.plannedHours; }
+            else if (f.k === 'next') { card.nextStep = f.to; card.nextAction = f.to; }
+            else if (f.k === 'done') { app.worktime.markCompleted(card); nDone++; return; }
+            nChange++;
+        }));
+        const scope = R.meta?.scope && R.meta.scope !== '__all__' ? R.meta.scope : '';
+        R.adds.forEach((a, i) => {
+            if (!sel[`a${i}`]) return;
+            const card = app.quickAdd.create({ title: a.title, tabId: app.state.activeTabId, project: a.project || scope });
+            if (a.type) card.taskType = a.type;
+            if (a.est) card.plannedMinutes = a.est;
+            if (a.next) { card.nextStep = a.next; card.nextAction = a.next; }
+            nAdd++;
+        });
+        app.saveToLocal();
+        app.ui.defer(() => app.renderAll());
+        app.ui.toast(`已套用：${nChange} 個變更、新增 ${nAdd} 張${nDone ? `、${nDone} 張標成完成` : ''}`, 'info', 5000);
+    }
+};
+
+// ==========================================
 // 專案選擇：點下去列出所有專案；打了沒有的名字＝「＋ 新增專案」
 // ==========================================
 app.projectPicker = {
@@ -8370,6 +8563,7 @@ app.lists = {
                 <select onchange="app.lists.set('ctTab', this.value)"><option value="">全部工作區</option>${tabs.map(t => `<option value="${t.id}" ${t.id === U.ctTab ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select>
                 <select onchange="app.lists.set('ctStatus', this.value)">${[['open', '未完成'], ['all', '全部狀態'], ['0', '未開始'], ['1', '進行中'], ['3', '卡住／等待'], ['2', '完成']].map(([v, l]) => `<option value="${v}" ${v === U.ctStatus ? 'selected' : ''}>${l}</option>`).join('')}</select>
                 <select onchange="app.lists.set('ctSort', this.value)">${[['due', '依完成日'], ['recent', '最近新增'], ['ws', '依工作區'], ['manual', '自訂順序（拖曳）']].map(([v, l]) => `<option value="${v}" ${v === U.ctSort ? 'selected' : ''}>${l}</option>`).join('')}</select>
+                <button type="button" class="bt-open" onclick="app.batch.open()" title="把卡片表交給 AI 批次補充、新增，貼回來逐筆勾選套用">🤖 AI 大表</button>
                 <select onchange="app.lists.set('ctGroup', this.value)">${[['none', '不分組'], ['project', '依專案分組'], ['ws', '依工作區分組']].map(([v, l]) => `<option value="${v}" ${v === U.ctGroup ? 'selected' : ''}>${l}</option>`).join('')}</select>
             </div>
             <div class="ct-table">

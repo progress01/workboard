@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>白板 & 心流沙盒 v5.9</title>
+    <title>白板 & 心流沙盒 v6.0</title>
     
     <!-- Firebase Compat -->
     <script src="https://www.gstatic.com/firebasejs/10.8.1/firebase-app-compat.js"></script>
@@ -777,6 +777,17 @@
         .qa-fields { display:flex; gap:8px; flex-wrap:wrap; margin:8px 0; }
         .qa-fields label { display:flex; flex-direction:column; gap:3px; font-size:.8rem; color:#64748b; flex:1; min-width:140px; }
         .qa-fields select, .qa-fields input { padding:6px 8px; border:1px solid #cbd5e1; border-radius:6px; font-size:.88rem; }
+        .bt-open { border:1px solid #c7d2fe; background:#eef2ff; color:#3730a3; border-radius:8px; padding:6px 10px; cursor:pointer; font-weight:bold; font-size:.86rem; }
+        .bt-step { margin-bottom:12px; }
+        .bt-row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:6px 0; }
+        .bt-row select { padding:6px 8px; border:1px solid #cbd5e1; border-radius:8px; font-size:.88rem; max-width:60%; }
+        .bt-warn { background:#fff7ed; border:1px solid #fdba74; color:#9a3412; border-radius:8px; padding:6px 10px; font-size:.82rem; margin-top:6px; }
+        .bt-card { border:1px solid #e2e8f0; border-radius:8px; padding:6px 10px; margin-top:6px; }
+        .bt-card-title { font-weight:bold; font-size:.88rem; color:#1e293b; margin-bottom:2px; }
+        .bt-chk { display:flex; gap:6px; align-items:flex-start; font-size:.84rem; padding:2px 0; overflow-wrap:anywhere; }
+        .bt-label { background:#f1f5f9; color:#475569; border-radius:4px; padding:0 5px; font-size:.76rem; white-space:nowrap; }
+        .bt-label.done { background:#dcfce7; color:#166534; }
+        .bt-from { color:#94a3b8; text-decoration:line-through; }
         .pj-row { display:grid; grid-template-columns:minmax(150px,1.6fr) minmax(160px,1.6fr) 96px 130px minmax(120px,1fr) 94px; gap:6px; align-items:center; padding:5px 10px; border-top:1px solid #f1f5f9; }
         .pj-row input, .pj-row select { width:100%; min-width:0; box-sizing:border-box; border:1px solid transparent; background:transparent; border-radius:6px; padding:5px 6px; font-size:.86rem; color:#1e293b; }
         .pj-row input:hover, .pj-row select:hover { border-color:#e2e8f0; }
@@ -1059,7 +1070,7 @@
     <!-- 登入畫面 -->
     <div id="login-screen">
         <h1 style="font-size: 2.5rem; margin-bottom: 10px;">白板系統</h1>
-        <p style="color: #94a3b8; margin-bottom: 30px;">v5.9</p>
+        <p style="color: #94a3b8; margin-bottom: 30px;">v6.0</p>
         <button onclick="app.login()" style="padding: 14px 28px; font-size: 1.1rem; border-radius: 30px; border: none; background: #3b82f6; color: white; font-weight: bold; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.3);">
             使用 Google 登入
         </button>
@@ -1429,6 +1440,6 @@
     </div>
 
     <!-- 引用大腦檔案 -->
-    <script src="app.js?v=5.9"></script>
+    <script src="app.js?v=6.0"></script>
 </body>
 </html>
