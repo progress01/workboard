@@ -1,5 +1,5 @@
 // =====================================================================
-// 白板 & 心流沙盒 v6.2
+// 白板 & 心流沙盒 v6.3
 // ---------------------------------------------------------------------
 // v3.0 重整重點（資料邏輯）：
 // 1. 所有修改只走一個入口 app.saveToLocal()（= store.markDirty）：
@@ -27,7 +27,7 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 const provider = new firebase.auth.GoogleAuthProvider();
 
-const APP_VERSION = '6.2';
+const APP_VERSION = '6.3';
 const SCHEMA_VERSION = 3;
 const CLOUD_DOC_SOFT_LIMIT = 750 * 1024;   // 超過時提醒
 const CLOUD_DOC_HARD_LIMIT = 1000 * 1000;  // Firestore 單一文件上限約 1 MiB，保守一點
@@ -560,9 +560,17 @@ const app = {
         }
     },
 
+    // 「關於我」：每次交給 AI 都帶上（不用叫 AI 扮演誰，給它情境就好）。Project Lab 也會讀這一段。
+    aiAbout() { return String(app.settings?.get('aiAbout') || '').trim(); },
+    aiText(text) { const a = app.aiAbout(); return a ? `【關於我】\n${a}\n\n${text}` : text; },
+    aiAboutField() {
+        return `<div class="data-note"><b>關於我</b>（每次交給 AI 都會帶在最前面；Project Lab 也會用）。寫你的工作、常見情況、希望 AI 怎麼回，三五行就好。</div>
+            <textarea class="task-meta-textarea" rows="4" placeholder="我是網站維運標案的 PM，同時跟好幾個政府單位（化學署、環境部）。&#10;常被臨時會議和長官要資料打斷，上午比較能專心。&#10;我想學的是拆解和回報進度。&#10;回答請簡短、條列，判斷不了先問我，不要自己補成事實。" onchange="app.settings.set('aiAbout', this.value.trim())">${app.entries.escapeHtml(app.aiAbout())}</textarea>`;
+    },
+
     // 跟著雲端同步的設定（時段、可專心時數、公司專案清單、專案名稱對照）。沒設過的沿用這台電腦以前的值。
     settings: {
-        KEYS: ['todaySlots', 'todayBudget', 'companyProjects', 'companyProjectMap'],
+        KEYS: ['todaySlots', 'todayBudget', 'companyProjects', 'companyProjectMap', 'aiAbout'],
         all() { try { const v = JSON.parse(app.state.sandbox.settings || '{}'); return v && typeof v === 'object' ? v : {}; } catch { return {}; } },
         get(k) { const v = this.all(); return v[k] !== undefined ? v[k] : app.prefs?.[k]; },
         set(k, val) {
@@ -5449,7 +5457,8 @@ const app = {
                     </div>
                     ${data.rows.length ? `<div class="journal-days">${days}</div>` : '<div class="data-empty" style="padding:12px;">這段期間沒有工時或工作紀錄。用卡片上的 ⏱️ 計時，或在「工時」補登，就會出現在這裡。</div>'}
                     <details class="journal-ai-settings" ${f.showAiSettings ? 'open' : ''} ontoggle="app.journal.filters.showAiSettings=this.open">
-                        <summary>給 AI 的設定：公司專案清單、專案名稱對照</summary>
+                        <summary>給 AI 的設定：關於我、公司專案清單、專案名稱對照</summary>
+                        ${app.aiAboutField()}
                         <div class="data-note"><b>公司專案清單</b>（一行一個，照公司工時表上的全名）。AI 填工時表的「專案」欄只會從這裡選。公司接了新標案、或舊案結束，就在這裡改。</div>
                         <textarea class="task-meta-textarea" rows="5" oninput="app.journal.saveCompanyProjects(this.value)">${esc(companyProjects().join('\n'))}</textarea>
                         <div style="display:flex; justify-content:flex-end; margin:-4px 0 8px;"><button type="button" class="ps-mini" onclick="app.journal.resetCompanyProjects()" title="回到內建的四個專案">恢復預設</button></div>
@@ -5511,7 +5520,7 @@ const app = {
             ].join('\n');
         },
 
-        copyForAI() { app.worktime.copyText(this.aiPrompt(), '已複製，貼給 Claude 就會整理成公司工時表'); },
+        copyForAI() { app.worktime.copyText(app.aiText(this.aiPrompt()), '已複製，貼給 Claude 就會整理成公司工時表'); },
 
         async exportXlsx() {
             if (!window.ExcelJS) return app.ui.toast('Excel 匯出元件尚未載入，請確認網路後重新整理', 'warn');
@@ -5595,8 +5604,8 @@ const app = {
         },
 
         TEACHER: [
-            '你是一位資深專案經理，也是我的老師。我正在學專案管理，特別是「以交付物為主的拆解」和「跟別人協作、回報進度」。',
-            '請用「先示範、再解釋、最後考我」的方式帶我：',
+            '我正在學專案管理，特別是「以交付物為主的拆解」和「跟別人協作、回報進度」。我平常會自己做，但不確定拆得對不對、問得好不好。',
+            '請用帶新人的方式陪我練，「先示範、再解釋、最後考我」：',
             '1. 先直接示範你會怎麼做。資訊不足時，先寫下你的假設再往下做，不要一開始就丟一串問題給我。',
             '2. 再用簡短條列說明你為什麼這樣做：判斷依據、常見陷阱、新手最容易漏掉的地方。',
             '3. 最後問我 1～2 個問題：確認我懂了，或請我補上最關鍵的缺漏資訊。',
@@ -5705,7 +5714,7 @@ ${this.briefText(project, b)}
 【我目前的拆解與排程】
 ${cardsText}
 
-【請你像主管或資深 PM 審查計畫一樣挑毛病】
+【請用主管審查計畫的角度挑毛病】
 1. 哪些項目其實是「步驟」而不是「交付物」？哪些太大、哪些太細？
 2. 有沒有漏掉的工作包（例如需求確認、審查與修改、交付後的事、等別人的時間）？
 3. 時程與依賴合不合理？哪裡最可能延誤？
@@ -5909,7 +5918,7 @@ ${planned.length ? planned.map(({ card }) => this.cardLine(card)).join('\n') : '
         },
 
         copy(silent = false) {
-            const text = document.getElementById('coach-prompt')?.value || this.buildPrompt();
+            const text = app.aiText(document.getElementById('coach-prompt')?.value || this.buildPrompt());
             app.worktime.copyText(text, silent ? '已複製提問，到 Claude 貼上即可' : '已複製提問，貼到 Claude 或其他 AI 即可');
         },
 
@@ -7684,7 +7693,8 @@ app.today = {
             ${this.ui.showSettings ? `<div class="td-settings">
                 ${this.SLOT_ORDER.map(k => `<div class="td-set-row"><input value="${esc(slots[k].name)}" onchange="app.today.setSlotPref('${k}','name',this.value)"><input type="time" value="${esc(slots[k].from)}" onchange="app.today.setSlotPref('${k}','from',this.value)"><span>–</span><input type="time" value="${esc(slots[k].to)}" onchange="app.today.setSlotPref('${k}','to',this.value)"><span class="td-meta">${this.cap(k)} 分</span></div>`).join('')}
                 <div class="td-set-row"><span>每天可專心的時間</span><input type="number" min="1" max="12" step="0.5" value="${h(this.defaultBudget())}" onchange="app.today.setBudget(this.value)"><span>小時（書上建議 ≤ 5）</span></div>
-                <div class="td-meta">預設是中間型的節奏。這些設定記在這台電腦。</div>
+                <div class="td-meta">預設是中間型的節奏。這些設定會跟著雲端同步。</div>
+                ${app.aiAboutField()}
             </div>` : ''}
             <div class="td-mtabs"><button type="button" class="${mtab === 'classify' ? 'on' : ''}" onclick="app.today.ui.mtab='classify'; app.today.render()">① 分類 <b>${cands.length}</b></button><button type="button" class="${mtab === 'board' ? 'on' : ''}" onclick="app.today.ui.mtab='board'; app.today.render()">② 排程板 <b>${S.count}</b></button></div>
 
@@ -7864,7 +7874,7 @@ app.today = {
         ].join('\n');
     },
     async aiCombinedSend() {
-        const text = this.aiCombinedPrompt();
+        const text = app.aiText(this.aiCombinedPrompt());
         if (navigator.share && /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent)) {
             try { await navigator.share({ text }); return; } catch (err) { if (err?.name === 'AbortError') return; }
         }
@@ -7872,7 +7882,7 @@ app.today = {
     },
 
     async aiReviewSend() {
-        const text = this.aiReviewPrompt();
+        const text = app.aiText(this.aiReviewPrompt());
         if (navigator.share && /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent)) {
             try { await navigator.share({ text }); return; } catch (err) { if (err?.name === 'AbortError') return; }
         }
@@ -8048,7 +8058,7 @@ app.today = {
         ].join('\n');
     },
     async weekAiSend() {
-        let text = this.weekPrompt();
+        let text = app.aiText(this.weekPrompt());
         if (app.batch?.mask) text = app.batch.mask(text);
         if (navigator.share && /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent)) {
             try { await navigator.share({ text }); return; } catch (err) { if (err?.name === 'AbortError') return; }
@@ -8156,7 +8166,7 @@ app.today = {
         ].join('\n');
     },
     async aiSend() {
-        const text = this.aiPrompt();
+        const text = app.aiText(this.aiPrompt());
         if (navigator.share && /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent)) {
             try { await navigator.share({ text }); return; } catch (err) { if (err?.name === 'AbortError') return; }
         }
@@ -8395,7 +8405,7 @@ app.batch = {
     },
     count() { const el = document.getElementById('bt-count'); if (el) el.textContent = `${this.scopeCards(this.state.scope).length} 張未完成的卡`; },
     async send() {
-        const text = this.mask(this.prompt(this.state.scope));
+        const text = this.mask(app.aiText(this.prompt(this.state.scope)));
         if (navigator.share && /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent)) {
             try { await navigator.share({ text }); return; } catch (err) { if (err?.name === 'AbortError') return; }
         }
