@@ -1,5 +1,5 @@
 // =====================================================================
-// 白板 & 心流沙盒 v6.5
+// 白板 & 心流沙盒 v6.6
 // ---------------------------------------------------------------------
 // v3.0 重整重點（資料邏輯）：
 // 1. 所有修改只走一個入口 app.saveToLocal()（= store.markDirty）：
@@ -27,7 +27,7 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 const provider = new firebase.auth.GoogleAuthProvider();
 
-const APP_VERSION = '6.5';
+const APP_VERSION = '6.6';
 const SCHEMA_VERSION = 3;
 const CLOUD_DOC_SOFT_LIMIT = 750 * 1024;   // 超過時提醒
 const CLOUD_DOC_HARD_LIMIT = 1000 * 1000;  // Firestore 單一文件上限約 1 MiB，保守一點
@@ -570,7 +570,7 @@ const app = {
 
     // 跟著雲端同步的設定（時段、可專心時數、公司專案清單、專案名稱對照）。沒設過的沿用這台電腦以前的值。
     settings: {
-        KEYS: ['todaySlots', 'todayBudget', 'companyProjects', 'companyProjectMap', 'aiAbout', 'trelloTemplate'],
+        KEYS: ['todaySlots', 'todayBudget', 'companyProjects', 'companyProjectMap', 'aiAbout', 'trelloTemplate', 'boardZones'],
         all() { try { const v = JSON.parse(app.state.sandbox.settings || '{}'); return v && typeof v === 'object' ? v : {}; } catch { return {}; } },
         get(k) { const v = this.all(); return v[k] !== undefined ? v[k] : app.prefs?.[k]; },
         set(k, val) {
@@ -8831,7 +8831,8 @@ app.board = {
     },
     nodes(tabId = app.state.activeTabId) { return app.state.nodes[tabId] || (app.state.nodes[tabId] = []); },
     project() { return app.state.filters.activeProject || ''; },
-    visible(tabId) { const p = this.project(); return this.nodes(tabId).filter(n => !p || String(n.project || '').trim() === p); },
+    projOf(n) { const c = this.cardOf(n); return String((c ? c.project : n.project) || '').trim(); },
+    visible(tabId) { const p = this.project(); return this.nodes(tabId).filter(n => !p || this.projOf(n) === p); },
     pos(n) { return { x: n.gridX !== undefined ? n.gridX : 9, y: n.gridY !== undefined ? n.gridY : 9 }; },
     occupied(x, y, tabId) { return this.nodes(tabId).some(n => { const p = this.pos(n); return p.x === x && p.y === y; }); },
     // 從某點往外找最近的空位（不再隨機）
@@ -8883,8 +8884,10 @@ app.board = {
                 <div class="node-paper">
                     <div class="bd-head"><span class="bd-c">${this.coord(x, y)}</span>${n.tag && this.TAGS[n.tag] ? `<span class="node-tag tag-${n.tag}">${this.TAGS[n.tag]}</span>` : ''}</div>
                     <div class="matrix-node-text">${esc(text)}</div>
+                    ${n.note ? `<div class="bd-note">${esc(n.note)}</div>` : ''}
                     ${st ? `<div class="bd-st ${st.k}">${st.t}</div>` : ''}
                     <div class="node-action-group">
+                        <button class="node-action-btn" onclick="app.board.rename('${n.id}')" title="改名${st ? '（會改卡片標題）' : ''}">✎</button>
                         <button class="node-action-btn" onclick="app.actions.toggleStoneColor('${n.id}')" title="黑子＝標記警戒">☯️</button>
                         ${st ? `<button class="node-action-btn" onclick="app.today.focus('${n.cardId}')" title="打開卡片（專注模式）">↗</button>` : `<button class="node-action-btn" onclick="app.board.promote('${n.id}')" title="轉成卡片（棋子會留在盤上）">📄</button>`}
                         <button class="node-action-btn del" style="color:#ef4444;" onclick="app.board.removeNode('${n.id}')" title="${st ? '拿掉棋子（卡片保留）' : '刪除'}">×</button>
@@ -8906,8 +8909,12 @@ app.board = {
         const el = document.getElementById('matrix-bar-extra'); if (!el) return;
         const esc = x => this.esc(x), p = this.project();
         const names = app.projectReg?.names ? app.projectReg.names() : [];
-        const all = this.nodes(), linked = all.filter(n => this.cardOf(n)), done = linked.filter(n => Number(this.cardOf(n).status) === 2);
-        el.innerHTML = `<label class="bd-proj">專案<select onchange="app.board.setProject(this.value)"><option value="">全部</option>${[...new Set([...names, ...all.map(n => String(n.project || '').trim()).filter(Boolean)])].map(n => `<option value="${esc(n)}" ${n === p ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select></label>
+        const all = this.visible(), linked = all.filter(n => this.cardOf(n)), done = linked.filter(n => Number(this.cardOf(n).status) === 2);
+        el.innerHTML = `<span class="bd-tools"><button type="button" class="primary" onclick="app.board.aiOpen()" title="讓 AI 幫你拆第一層，或檢查你的拆法；結果先預覽再落子">🤖 和 AI 一起拆</button>
+                <button type="button" onclick="app.board.placeExisting()" title="把已經有的卡片放上棋盤">＋ 放現有卡片</button>
+                ${done.length ? `<button type="button" onclick="app.board.clearDone()" title="盤面太滿時，把已完成的子收掉（卡片不受影響）">收掉完成的子 ${done.length}</button>` : ''}
+                <button type="button" onclick="app.board.editZones()" title="寫下你的分區習慣，AI 會照著放">🗺 我的分區</button></span>
+            <label class="bd-proj">專案<select onchange="app.board.setProject(this.value)"><option value="">全部</option>${[...new Set([...names, ...this.nodes().map(n => this.projOf(n)).filter(Boolean)])].map(n => `<option value="${esc(n)}" ${n === p ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select></label>
             <span class="td-meta">工作區「${esc(app.state.tabs.find(t => t.id === app.state.activeTabId)?.name || '')}」· ${all.length} 顆棋子 · 轉成卡片 ${linked.length} · 完成 ${done.length}</span>
             <span class="bd-legend"><span><i style="border-color:#d6c28f"></i>想法</span><span><i style="border-color:#818cf8"></i>已是卡片</span><span><i style="border-color:#ef4444"></i>今天必做</span><span><i style="border-color:#3b82f6"></i>備選</span><span><i style="border-color:#f59e0b"></i>在追</span><span><i style="border-color:#22c55e"></i>完成</span></span>
             <span class="td-meta">${this.pick ? `下一顆落在 <b>${this.coord(this.pick.x, this.pick.y)}</b>（<a href="#" onclick="app.board.pick=null; app.board.renderFull(); return false;">取消</a>）` : '先點盤上的交叉點選位置，或打「D4 內容」'}</span>`;
@@ -8959,6 +8966,153 @@ app.board = {
         app.state.nodes[hit.tabId] = app.state.nodes[hit.tabId].filter(n => n.id !== id);
         app.saveToLocal(); this.renderFull();
         if (this.cardOf(hit.n)) app.ui.toast('已拿掉棋子，卡片還在');
+    },
+
+    async rename(id) {
+        const hit = this.findNode(id); if (!hit) return;
+        const c = this.cardOf(hit.n);
+        this._rn = { text: c ? (c.title || '') : hit.n.text, note: hit.n.note || '' };
+        const esc = x => this.esc(x);
+        const v = await app.ui.dialog({
+            title: `✎ ${this.coord(this.pos(hit.n).x, this.pos(hit.n).y)}`,
+            html: `<div class="qa-fields"><label style="flex:1;">名稱${c ? '（＝卡片標題）' : ''}<input id="bd-rn" value="${esc(this._rn.text)}" oninput="app.board._rn.text=this.value"></label></div>
+                <div class="qa-fields"><label style="flex:1;">一句說明（選填，滑過棋子會看到）<input value="${esc(this._rn.note)}" oninput="app.board._rn.note=this.value"></label></div>`,
+            buttons: [{ label: '取消', value: null }, { label: '儲存', value: 'ok', primary: true }]
+        });
+        if (v !== 'ok' || !this._rn.text.trim()) return;
+        if (c) c.title = this._rn.text.trim(); else hit.n.text = this._rn.text.trim();
+        hit.n.note = this._rn.note.trim();
+        app.saveToLocal(); this.renderFull();
+    },
+    async clearDone() {
+        const done = this.visible().filter(n => { const c = this.cardOf(n); return c && Number(c.status) === 2; });
+        if (!done.length) return;
+        if (!await app.ui.confirm('收掉完成的子', `<p>把 ${done.length} 顆已完成的棋子從盤上收掉？卡片本身不會動。</p>`, '收掉')) return;
+        const ids = new Set(done.map(n => n.id));
+        app.state.nodes[app.state.activeTabId] = this.nodes().filter(n => !ids.has(n.id));
+        app.saveToLocal(); this.renderFull();
+    },
+    async placeExisting() {
+        const on = this.linkedCardIds(), p = this.project(), tab = app.state.activeTabId;
+        const list = (app.state.workspaces[tab] || []).filter(c => Number(c.status) !== 2 && !on.has(c.id) && !app.sync.isBlankCard(c) && !c.fixed && (!p || String(c.project || '').trim() === p));
+        if (!list.length) { app.ui.toast(p ? `「${p}」沒有還沒上盤的卡` : '這個工作區的卡都已經在盤上了'); return; }
+        this._pe = new Set();
+        const esc = x => this.esc(x);
+        const v = await app.ui.dialog({
+            title: '＋ 放現有卡片',
+            wide: true,
+            html: `<p class="pm-hint" style="margin-top:0;">勾選要放上棋盤的卡。${this.pick ? `會從 <b>${this.coord(this.pick.x, this.pick.y)}</b> 開始往右排。` : '先在盤上點一個交叉點，就會從那裡開始排。'}放上去之後可以再拖。</p>
+                <div class="bd-pe-list">${list.map(c => `<label class="bd-pe"><input type="checkbox" onchange="this.checked ? app.board._pe.add('${c.id}') : app.board._pe.delete('${c.id}')"><span>${esc(c.title || '（未命名）')}</span><span class="td-meta">${esc(c.project || '雜項')}</span></label>`).join('')}</div>`,
+            buttons: [{ label: '取消', value: null }, { label: '放上棋盤', value: 'ok', primary: true }]
+        });
+        if (v !== 'ok' || !this._pe.size) return;
+        let at = this.pick || this.freePoint(9, 9);
+        list.filter(c => this._pe.has(c.id)).forEach(c => {
+            at = this.occupied(at.x, at.y) ? this.freePoint(at.x, at.y) : at;
+            this.nodes().push({ id: app.makeId('node'), text: c.title || '', tag: '', gridX: at.x, gridY: at.y, stoneColor: 'white', project: c.project || '', cardId: c.id });
+            at = this.freePoint(at.x, at.y);
+        });
+        this.pick = at;
+        app.saveToLocal(); this.renderFull();
+        app.ui.toast(`已放上 ${this._pe.size} 張卡`);
+    },
+    zones() { return String(app.settings.get('boardZones') || '').trim(); },
+    async editZones() {
+        this._z = this.zones();
+        const v = await app.ui.dialog({
+            title: '🗺 我的分區',
+            html: `<p class="pm-hint" style="margin-top:0;">寫下你習慣把什麼放在哪一區。AI 拆的時候會照著放座標；不寫也可以，AI 會自己排並說明。</p>
+                <textarea class="ps-input" style="min-height:110px;" placeholder="例如：&#10;左下（A–G, 1–7）＝前期：需求、訪談、資料&#10;右下（N–T, 1–7）＝開發與製作&#10;右上（N–T, 13–19）＝上線、驗收、交付&#10;左上（A–G, 13–19）＝溝通協調、等別人&#10;中腹＝還不確定、要研究的" oninput="app.board._z=this.value">${this.esc(this._z)}</textarea>`,
+            buttons: [{ label: '取消', value: null }, { label: '儲存', value: 'ok', primary: true }]
+        });
+        if (v === 'ok') { app.settings.set('boardZones', this._z.trim() || undefined); app.ui.toast('已存好分區'); }
+    },
+
+    // ---------- 🤖 和 AI 一起拆 ----------
+    ai: { mode: 'split', goal: '', text: '', rows: [] },
+    aiPrompt() {
+        const A = this.ai, p = this.project(), slots = [];
+        const nodes = this.visible();
+        const b = p && app.coach?.brief ? app.coach.brief(p) : {};
+        const brief = [['目的', b.goal], ['交付', b.deliverable], ['期限', b.deadline], ['相關的人', b.stakeholders], ['限制', b.constraints]].filter(x => String(x[1] || '').trim()).map(([k, v]) => `- ${k}：${v}`);
+        nodes.forEach(n => { const st = this.status(n), c = this.cardOf(n); slots.push(`- ${this.coord(this.pos(n).x, this.pos(n).y)}　${c ? c.title : n.text}${n.note ? `（${n.note}）` : ''}${st ? `［${st.t.replace(/^[^\s]+\s/, '')}］` : '［想法］'}${n.stoneColor === 'black' ? '［警戒］' : ''}`); });
+        const ask = A.mode === 'review'
+            ? ['請檢查我目前在棋盤上的拆法（第一層）：', '1. 有沒有漏掉的大塊？有沒有其實是同一件事、或太大要再拆的？', '2. 哪些其實是「執行步驟」而不是可以獨立交付的成果？', '3. 哪些是還沒驗證的假設或未知，應該先研究？', '4. 位置是否符合我的分區？', '先用條列說明（簡短），最後把「建議新增」的棋子用下面格式列出（沒有就寫「無」）。']
+            : ['請幫我把這件事拆成「第一層」：4～9 個可以獨立交付或驗收的大塊（不是執行步驟）。', '資訊不足時，先問我最多 3 個問題；我回答後再給最後結果。', '還不確定、要先研究的放「❓」開頭。', '依我的分區放座標，避開已經有棋子的位置，相關的放在相鄰的位置。'];
+        return [
+            '我在用一個 19 路棋盤做專案拆解的第一層：每顆棋子是一大塊工作，位置是我自己分的區（座標像圍棋：A–T 不含 I，1–19，1 在最下面）。',
+            '',
+            ...ask,
+            '',
+            '【輸出格式】最後結果放在一個程式碼區塊裡，一行一顆：',
+            '```', '座標 | 名稱（10 字內） | 一句說明', 'D4 | 需求訪談 | 跟承辦確認範圍與時程', '```',
+            '',
+            `【專案】${p || '（沒有指定，整個工作區）'}`,
+            ...(brief.length ? ['【專案簡述】', ...brief] : []),
+            `【我想拆的事】${A.goal.trim() || '（見專案與目前盤面）'}`,
+            this.zones() ? `【我的分區】\n${this.zones()}` : '【我的分區】沒有固定，請你排並在說明裡講一下分區邏輯。',
+            '【目前盤上】', ...(slots.length ? slots : ['（空的）'])
+        ].join('\n');
+    },
+    aiOpen() {
+        const A = this.ai; A.text = ''; A.rows = [];
+        const esc = x => this.esc(x), masked = (app.batch?.maskPairs?.() || []).length;
+        app.ui.dialog({
+            title: `🤖 和 AI 一起拆${this.project() ? `：${this.project()}` : ''}`,
+            wide: true,
+            html: `<div class="bt-step"><b>① 告訴 AI 要做什麼</b>
+                    <div class="bd-modes"><label><input type="radio" name="bd-mode" ${A.mode !== 'review' ? 'checked' : ''} onchange="app.board.ai.mode='split'"> 幫我拆第一層</label><label><input type="radio" name="bd-mode" ${A.mode === 'review' ? 'checked' : ''} onchange="app.board.ai.mode='review'"> 檢查我現在的拆法</label></div>
+                    <textarea class="ps-input" style="min-height:70px;" placeholder="想拆的事（可以很粗）：例如「化學署官網改版，明年 6 月上線，要先做使用者調查」" oninput="app.board.ai.goal=this.value">${esc(A.goal)}</textarea>
+                    <div class="bt-row"><button type="button" class="worklog-add-btn" onclick="app.board.aiSend()">🤖 複製給 AI</button><span class="pm-hint">會帶上：關於我、專案簡述、我的分區、目前盤面${masked ? `；${masked} 組敏感名稱先代換` : ''}。可以跟 AI 來回討論，最後的表再貼回來。</span></div>
+                </div>
+                <div class="bt-step"><b>② 把 AI 最後給的表貼回來</b>
+                    <textarea class="ps-input" id="bd-ai-text" style="min-height:90px;" placeholder="整段貼上也可以，只會讀「座標 | 名稱 | 說明」的行" oninput="app.board.ai.text=this.value; app.board.aiPreview()"></textarea>
+                    <div id="bd-ai-preview"></div>
+                </div>`,
+            buttons: [{ label: '取消', value: null }, { label: '落下勾選的子', value: 'ok', primary: true }]
+        }).then(v => { if (v === 'ok') this.aiApply(); });
+    },
+    async aiSend() {
+        let text = app.aiText(this.aiPrompt());
+        if (app.batch?.mask) text = app.batch.mask(text);
+        if (navigator.share && /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent)) {
+            try { await navigator.share({ text }); return; } catch (err) { if (err?.name === 'AbortError') return; }
+        }
+        app.worktime.copyText(text, '已複製，貼到 AI。討論完把最後的表貼回第②步');
+    },
+    aiParse(raw) {
+        let t = String(raw || '');
+        if (app.batch?.unmask) t = app.batch.unmask(t);
+        const rows = [], seen = new Set();
+        t.split('\n').forEach(line => {
+            const m = line.replace(/^\s*[-*•]\s*/, '').match(/^\s*([A-HJ-Ta-hj-t])\s*(1[0-9]|[1-9])\s*[|｜]\s*([^|｜]+?)\s*(?:[|｜]\s*(.*?))?\s*$/);
+            if (!m) return;
+            const name = m[3].replace(/^\*\*|\*\*$/g, '').trim(); if (!name || /^名稱/.test(name)) return;
+            const x = this.LETTERS.indexOf(m[1].toUpperCase()), y = 19 - Number(m[2]);
+            const key = name; if (seen.has(key)) return; seen.add(key);
+            const dupNode = this.visible().find(n => { const c = this.cardOf(n); return (c ? c.title : n.text) === name; });
+            rows.push({ x, y, name, note: (m[4] || '').trim(), on: !dupNode, dup: !!dupNode, taken: this.occupied(x, y) });
+        });
+        return rows;
+    },
+    aiPreview() {
+        const el = document.getElementById('bd-ai-preview'); if (!el) return;
+        const A = this.ai; A.rows = this.aiParse(A.text);
+        const esc = x => this.esc(x);
+        el.innerHTML = A.rows.length ? `<div class="pm-hint">讀到 ${A.rows.length} 顆。都是「想法」，要做的再轉成卡片。</div>
+            <div class="bd-pe-list">${A.rows.map((r, i) => `<label class="bd-pe"><input type="checkbox" ${r.on ? 'checked' : ''} onchange="app.board.ai.rows[${i}].on=this.checked"><b class="bd-c" style="display:inline">${this.coord(r.x, r.y)}</b><span>${esc(r.name)}${r.note ? `<span class="td-meta">　${esc(r.note)}</span>` : ''}</span>${r.dup ? '<span class="td-why wait">盤上已有同名</span>' : ''}${r.taken ? '<span class="td-meta">（位置有子，會放旁邊）</span>' : ''}</label>`).join('')}</div>`
+            : (A.text.trim() ? '<div class="pm-hint">還沒讀到「座標 | 名稱 | 說明」的行。</div>' : '');
+    },
+    aiApply() {
+        const rows = (this.ai.rows || []).filter(r => r.on);
+        if (!rows.length) return;
+        const p = this.project();
+        rows.forEach(r => {
+            const at = this.occupied(r.x, r.y) ? this.freePoint(r.x, r.y) : { x: r.x, y: r.y };
+            this.nodes().push({ id: app.makeId('node'), text: r.name.replace(/^❓\s*/, '❓ '), note: r.note, tag: '', gridX: at.x, gridY: at.y, stoneColor: 'white', project: p });
+        });
+        app.saveToLocal(); this.renderFull();
+        app.ui.toast(`已落下 ${rows.length} 顆。滑過棋子可以轉成卡片、改名、拖動`);
     },
     openProject(name) {
         app.state.filters.activeProject = name || '';

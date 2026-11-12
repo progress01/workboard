@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>白板 & 心流沙盒 v6.5</title>
+    <title>白板 & 心流沙盒 v6.6</title>
     
     <!-- Firebase Compat -->
     <script src="https://www.gstatic.com/firebasejs/10.8.1/firebase-app-compat.js"></script>
@@ -675,6 +675,15 @@
         .doc-box .task-meta-input { flex:1; min-width:200px; }
         .doc-box a.worklog-action-btn { text-decoration:none; }
         .pm-doc-link { display:inline-block; margin:4px 0 0 4px; font-size:.82rem; color:#2563eb; text-decoration:none; }
+        .bd-tools { display:flex; gap:6px; flex-wrap:wrap; width:100%; }
+        .bd-tools button { border:1px solid #cbd5e1; background:#fff; border-radius:8px; padding:6px 10px; cursor:pointer; font-size:.86rem; }
+        .bd-tools button.primary { background:#eef2ff; border-color:#a5b4fc; color:#3730a3; font-weight:600; }
+        .bd-note { font-size:.72rem; color:#64748b; text-align:center; display:none; }
+        #matrix-board .matrix-node:hover .bd-note { display:block; }
+        .bd-modes { display:flex; gap:14px; margin:4px 0 6px; font-size:.88rem; }
+        .bd-pe-list { max-height:300px; overflow:auto; border:1px solid #e2e8f0; border-radius:8px; padding:4px; }
+        .bd-pe { display:flex; gap:8px; align-items:center; padding:5px 6px; border-bottom:1px solid #f1f5f9; font-size:.88rem; }
+        .bd-pe:last-child { border-bottom:none; }
         .bd-bar { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin:-6px 0 12px; font-size:.86rem; }
         .bd-proj { display:flex; gap:6px; align-items:center; }
         .bd-proj select { padding:6px 8px; border:1px solid #cbd5e1; border-radius:8px; }
@@ -1139,7 +1148,7 @@
     <!-- 登入畫面 -->
     <div id="login-screen">
         <h1 style="font-size: 2.5rem; margin-bottom: 10px;">白板系統</h1>
-        <p style="color: #94a3b8; margin-bottom: 30px;">v6.5</p>
+        <p style="color: #94a3b8; margin-bottom: 30px;">v6.6</p>
         <button onclick="app.login()" style="padding: 14px 28px; font-size: 1.1rem; border-radius: 30px; border: none; background: #3b82f6; color: white; font-weight: bold; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.3);">
             使用 Google 登入
         </button>
@@ -1511,6 +1520,6 @@
     </div>
 
     <!-- 引用大腦檔案 -->
-    <script src="app.js?v=6.5"></script>
+    <script src="app.js?v=6.6"></script>
 </body>
 </html>
