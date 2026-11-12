@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>白板 & 心流沙盒 v6.6</title>
+    <title>白板 & 心流沙盒 v6.7</title>
     
     <!-- Firebase Compat -->
     <script src="https://www.gstatic.com/firebasejs/10.8.1/firebase-app-compat.js"></script>
@@ -675,6 +675,17 @@
         .doc-box .task-meta-input { flex:1; min-width:200px; }
         .doc-box a.worklog-action-btn { text-decoration:none; }
         .pm-doc-link { display:inline-block; margin:4px 0 0 4px; font-size:.82rem; color:#2563eb; text-decoration:none; }
+        .bd-title { display:flex; gap:8px; align-items:center; flex-wrap:wrap; width:100%; }
+        .bd-title b { font-size:1.05rem; }
+        .bd-back { border:1px solid #cbd5e1; background:#fff; border-radius:8px; padding:4px 9px; cursor:pointer; font-size:.84rem; }
+        .bd-picker { width:100%; }
+        .bd-picker h4 { margin:0 0 6px; }
+        .bd-pick-list { display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:6px; }
+        .bd-pick-card { text-align:left; border:1px solid #e2e8f0; background:#fff; border-radius:10px; padding:8px 10px; cursor:pointer; display:flex; flex-direction:column; gap:2px; }
+        .bd-pick-card:hover { border-color:#a5b4fc; background:#f8faff; }
+        .timer-sub { margin-top:6px; font-size:.86rem; } .timer-sub select { max-width:100%; padding:3px 6px; border:1px solid #cbd5e1; border-radius:6px; }
+        .matrix-node.st-todo .node-stone { box-shadow:0 0 0 3px #818cf8, 2px 4px 6px rgba(0,0,0,.3); }
+        .matrix-node.st-card .node-stone { box-shadow:0 0 0 3px #0ea5e9, 2px 4px 6px rgba(0,0,0,.3) !important; }
         .bd-tools { display:flex; gap:6px; flex-wrap:wrap; width:100%; }
         .bd-tools button { border:1px solid #cbd5e1; background:#fff; border-radius:8px; padding:6px 10px; cursor:pointer; font-size:.86rem; }
         .bd-tools button.primary { background:#eef2ff; border-color:#a5b4fc; color:#3730a3; font-weight:600; }
@@ -744,7 +755,8 @@
         .td-waiting { border:1px dashed #fcd34d; border-radius:8px; padding:2px 4px; margin-bottom:6px; }
         .td-why.wait { background:#fef3c7; color:#92400e; }
         .td-why.chase { background:#fde68a; color:#78350f; font-weight:600; }
-        .td-del.on { color:#b45309; opacity:1; }
+        .td-waitbtn { border:none; background:none; cursor:pointer; font-size:.85rem; opacity:.45; padding:0 2px; flex:0 0 auto; }
+        .td-waitbtn:hover { opacity:1; } .td-waitbtn.on { color:#b45309; opacity:1; }
         .td-blank { font-size:.8rem; color:#64748b; background:#f8fafc; border:1px dashed #cbd5e1; border-radius:8px; padding:6px 10px; margin-bottom:8px; }
         .td-blank button { margin-left:8px; border:1px solid #cbd5e1; background:#fff; border-radius:6px; padding:1px 8px; cursor:pointer; font-size:.78rem; }
         .td-mode { display:inline-flex; border:1px solid #cbd5e1; border-radius:999px; overflow:hidden; }
@@ -1148,7 +1160,7 @@
     <!-- 登入畫面 -->
     <div id="login-screen">
         <h1 style="font-size: 2.5rem; margin-bottom: 10px;">白板系統</h1>
-        <p style="color: #94a3b8; margin-bottom: 30px;">v6.6</p>
+        <p style="color: #94a3b8; margin-bottom: 30px;">v6.7</p>
         <button onclick="app.login()" style="padding: 14px 28px; font-size: 1.1rem; border-radius: 30px; border: none; background: #3b82f6; color: white; font-weight: bold; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.3);">
             使用 Google 登入
         </button>
@@ -1170,7 +1182,7 @@
                     <button class="btn" id="btn-more" onclick="app.toggleMore(event)" title="更多工具">⋯ <span class="nav-btn-label">更多</span></button>
                     <div id="more-menu" class="more-menu">
                         <button type="button" id="btn-view-sandbox" onclick="app.closeMore(); app.switchView('sandbox')">🚀 心流（專注模式）</button>
-                        <button type="button" id="btn-view-matrix" onclick="app.closeMore(); app.board.pick=null; app.switchView('matrix')">♟ 發想棋盤</button>
+                        <button type="button" id="btn-view-matrix" onclick="app.closeMore(); app.board.openLast()">♟ 棋盤（拆卡片）</button>
                         <button type="button" onclick="app.closeMore(); app.taskNav.toggle()">🧭 任務導覽</button>
                         <button type="button" onclick="app.closeMore(); app.coach.open()">🧑‍🏫 AI 老師</button>
                         <button type="button" onclick="app.closeMore(); app.openProjectLab()">🔬 Project Lab</button>
@@ -1231,18 +1243,12 @@
             
             <!-- 0. 發想矩陣 -->
             <div id="view-matrix" class="view-container">
+                <div class="bd-bar" id="matrix-bar-extra"></div>
                 <div class="matrix-input-bar">
                     <input type="text" id="matrix-quick-input" class="matrix-input" placeholder="💡 輸入想法（Enter 落子；可打「D4 內容」指定位置）" onkeydown="if(event.key === 'Enter' && !event.isComposing) app.actions.addMatrixNode()">
-                    <select id="matrix-tag-select" class="matrix-select">
-                        <option value="">無標籤</option>
-                        <option value="q1">🔥 重要・緊急</option>
-                        <option value="q2">📅 重要・不急</option>
-                        <option value="q3">⚡ 緊急・不重</option>
-                        <option value="q4">☕ 不重・不急</option>
-                    </select>
+                    
                     <button class="btn btn-cloud-save" style="padding: 12px 20px; font-size: 1rem; justify-content: center;" onclick="app.actions.addMatrixNode()">＋ 落下棋子</button>
                 </div>
-                <div class="bd-bar" id="matrix-bar-extra"></div>
                 <div class="go-board-surface matrix-board" id="matrix-board">
                     <div class="go-grid-lines" id="matrix-grid-lines"></div>
                 </div>
@@ -1342,7 +1348,7 @@
                 <div class="sb-header">
                     <h1 style="margin: 0; color: #1e293b;">🌟 心流沙盒 <span style="font-size: 1rem; color: #64748b; font-weight: normal;">(自動綁定時間軸與筆記)</span></h1>
                     <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-                        <button class="sb-btn sb-btn-warning" onclick="app.sandbox.promoteNodesToCards()">💡 轉換此頁發想節點為任務</button>
+                        
                         <button class="sb-btn sb-btn-primary" onclick="app.sandbox.downloadMarkdown()">⬇️ 匯出今日總結 (.md)</button>
                         <button class="sb-btn sb-btn-outline" onclick="app.today.interrupt()" title="臨時插進來的事，快速記一筆">⚡ 被打斷</button>
                         <button class="sb-btn sb-btn-outline" onclick="app.switchView('today')">☀️ 回今日</button>
@@ -1429,6 +1435,7 @@
                             <button class="sb-btn-outline" onmousedown="event.preventDefault()" onclick="app.questions.insert(document.getElementById('sb-activeNoteArea'),'question')" title="新增一個待確認的問題">❓ 問題</button>
                             <button class="sb-btn-outline" onmousedown="event.preventDefault()" onclick="app.questions.insert(document.getElementById('sb-activeNoteArea'),'answer')" title="在游標所在的問題下面寫答案">💬 回答</button>
                             <button class="sb-btn-outline" onmousedown="event.preventDefault()" onclick="app.sandbox.insertStamp()" title="新增一行，前面加上現在的日期時間（會出現在工作日誌）">🕒 時間</button>
+                            <button class="sb-btn-outline" onmousedown="event.preventDefault()" onclick="app.state.sandbox.activeTaskId ? app.board.open(app.state.sandbox.activeTaskId) : app.ui.toast('先選一張卡')" title="用棋盤拆這張卡的子項目">♟ 棋盤</button>
                             <button class="sb-btn-outline" onmousedown="event.preventDefault()" onclick="app.pasteSort.open(app.state.sandbox.activeTaskId)" title="整段貼上，自動標出待辦／問題／回答再放進筆記">📥 貼上</button>
                             <button class="sb-btn-outline" onmousedown="event.preventDefault()" onclick="app.state.sandbox.activeTaskId ? app.tidy.run(app.state.sandbox.activeTaskId, 'sandbox') : app.ui.toast('先選一張卡片')" title="把已勾選的待辦、已回答的問題移到工作紀錄">🧹 整理</button>
                             <span class="sb-bar-sep"></span>
@@ -1520,6 +1527,6 @@
     </div>
 
     <!-- 引用大腦檔案 -->
-    <script src="app.js?v=6.6"></script>
+    <script src="app.js?v=6.7"></script>
 </body>
 </html>

@@ -1,5 +1,5 @@
 // =====================================================================
-// 白板 & 心流沙盒 v6.6
+// 白板 & 心流沙盒 v6.7
 // ---------------------------------------------------------------------
 // v3.0 重整重點（資料邏輯）：
 // 1. 所有修改只走一個入口 app.saveToLocal()（= store.markDirty）：
@@ -27,7 +27,7 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 const provider = new firebase.auth.GoogleAuthProvider();
 
-const APP_VERSION = '6.6';
+const APP_VERSION = '6.7';
 const SCHEMA_VERSION = 3;
 const CLOUD_DOC_SOFT_LIMIT = 750 * 1024;   // 超過時提醒
 const CLOUD_DOC_HARD_LIMIT = 1000 * 1000;  // Firestore 單一文件上限約 1 MiB，保守一點
@@ -134,6 +134,14 @@ const app = {
                 this.sandbox.syncDeadlineInputs();
                 this.sandbox.restoreTimer();
                 this.switchView(this.state.view || 'timeline');
+                // 從 Project Lab 的「♟ 到白板棋盤調整」連過來：?board=卡片id
+                try {
+                    const bid = new URLSearchParams(location.search).get('board');
+                    if (bid && this.worktime.getCard(bid)) {
+                        setTimeout(() => this.board.open(bid), 0);
+                        const u = new URL(location.href); u.searchParams.delete('board'); history.replaceState(null, '', u.pathname + u.search + u.hash);
+                    }
+                } catch (_) {}
                 this.renderTsumegoStones();
                 this.ui.renderSyncStatus();
                 this.cloud.checkOnStartup(hadLocal);
@@ -493,7 +501,7 @@ const app = {
                     while (seenCard[card.id]) card.id += 'x';
                     seenCard[card.id] = true;
                     // 文字與日期欄位一律存成字串（舊資料或手動編輯可能留下數字等其他型別）
-                    ['title', 'content', 'project', 'category', 'deliverable', 'acceptance', 'nextStep', 'nextAction', 'waitingWho', 'waitingWhat', 'followUpDate', 'docUrl',
+                    ['title', 'content', 'project', 'category', 'deliverable', 'acceptance', 'nextStep', 'nextAction', 'waitingWho', 'waitingWhat', 'followUpDate', 'docUrl', 'parentId',
                      'chronicleSummary', 'chronicleDate', 'dateStart', 'dateEnd', 'dateSingle', 'actualStart', 'actualEnd', 'timeCategory', 'dateMode', 'color'].forEach(k => {
                         if (card[k] !== undefined && card[k] !== null && typeof card[k] !== 'string') card[k] = String(card[k]);
                     });
@@ -2345,18 +2353,16 @@ const app = {
             card.progress = 100;
             if (!card.actualStart && dateStr) card.actualStart = dateStr;
             if (!card.actualEnd && dateStr) card.actualEnd = dateStr;
+            if (card.parentId) app.board?.syncParent(card);
         },
 
         reopenCompleted(card, preferredStatus = null) {
             if (!card || Number(card.status) !== 2) return;
             if (Number(card.progress) >= 100) delete card.progress;
             delete card.actualEnd;
-            if (preferredStatus !== null) {
-                card.status = Number(preferredStatus);
-                return;
-            }
-            const hasWork = this.totalMinutes(card) > 0 || !!card.actualStart;
-            card.status = hasWork ? 1 : 0;
+            if (preferredStatus !== null) card.status = Number(preferredStatus);
+            else card.status = (this.totalMinutes(card) > 0 || !!card.actualStart) ? 1 : 0;
+            if (card.parentId) app.board?.syncParent(card);
         },
 
         syncProgressStatus(card) {
@@ -3859,6 +3865,7 @@ const app = {
 
         commitTimerSession(note = '心流計時') {
             const sb = app.state.sandbox;
+            if (note === '心流計時' && this.timerSub && sb.timerTaskId === this.timerSubCard) note = `心流計時｜${this.timerSub}`;
             if (!this.ownsTimer()) { this.adoptStoredTimer(); return 0; }
             const wasRunning = sb.timerStatus === 'RUNNING';
             this.closeSegment();
@@ -4099,24 +4106,28 @@ const app = {
             const pillTime = document.getElementById('timer-pill-time');
             if (pillTime) pillTime.textContent = timeStr;
 
-            if (!force && this.lastShownStatus === `${sb.timerStatus}|${sb.timerTaskId}|${sb.activeTaskId}|${sb.mode}`) {
+            if (!force && this.lastShownStatus === `${sb.timerStatus}|${sb.timerTaskId}|${sb.activeTaskId}|${sb.mode}|${this.timerSub || ''}`) {
                 const targetBox = document.getElementById('sb-timerTarget');
                 const acc = targetBox?.querySelector('.timer-acc');
                 if (acc) acc.textContent = app.worktime.formatDuration(Math.floor(this.elapsedMs() / 1000));
                 return;
             }
-            this.lastShownStatus = `${sb.timerStatus}|${sb.timerTaskId}|${sb.activeTaskId}|${sb.mode}`;
+            this.lastShownStatus = `${sb.timerStatus}|${sb.timerTaskId}|${sb.activeTaskId}|${sb.mode}|${this.timerSub || ''}`;
             const esc = s => app.entries.escapeHtml(s);
             const gifBox = document.getElementById('sb-gifContainer');
             const statusText = document.getElementById('sb-statusText');
             const targetBox = document.getElementById('sb-timerTarget');
             const targetCard = sb.timerTaskId ? app.worktime.getCard(sb.timerTaskId) : null;
             const activeCard = sb.activeTaskId ? app.worktime.getCard(sb.activeTaskId) : null;
+            const subCard = (sb.timerStatus !== 'IDLE' ? targetCard : activeCard);
+            if (subCard && this.timerSubCard !== subCard.id) { this.timerSub = ''; this.timerSubCard = subCard.id; }
+            const kids = subCard ? app.board.children(subCard).filter(c => !c.done && !c.childCard) : [];
+            const subSel = kids.length ? `<div class="timer-sub">這次在做：<select onchange="app.sandbox.timerSub=this.value; app.sandbox.timerSubCard='${subCard.id}'; app.sandbox.lastShownStatus='';"><option value="">（整張卡）</option>${kids.map(c => `<option value="${esc(c.text)}" ${c.text === this.timerSub ? 'selected' : ''}>${esc(c.text)}</option>`).join('')}</select></div>` : '';
             if (targetBox) {
                 if (targetCard && sb.timerStatus !== 'IDLE') {
-                    targetBox.innerHTML = `記錄到：<strong>${esc(targetCard.title || '未命名')}</strong><br>本段已累積 <span class="timer-acc">${app.worktime.formatDuration(Math.floor(this.elapsedMs() / 1000))}</span>，停止時自動寫入卡片（跨午夜會自動分日）。`;
+                    targetBox.innerHTML = `記錄到：<strong>${esc(targetCard.title || '未命名')}</strong><br>本段已累積 <span class="timer-acc">${app.worktime.formatDuration(Math.floor(this.elapsedMs() / 1000))}</span>，停止時自動寫入卡片（跨午夜會自動分日）。${subSel}`;
                 } else if (activeCard) {
-                    targetBox.innerHTML = `準備記錄到：<strong>${esc(activeCard.title || '未命名')}</strong> <button type="button" class="worklog-action-btn" onclick="app.sandbox.switchLeftPanel('TODO')">換一張</button><br>按「啟動」後開始累積工時。也可以直接點左邊導覽列的卡片切換。`;
+                    targetBox.innerHTML = `準備記錄到：<strong>${esc(activeCard.title || '未命名')}</strong> <button type="button" class="worklog-action-btn" onclick="app.sandbox.switchLeftPanel('TODO')">換一張</button><br>按「啟動」後開始累積工時。也可以直接點左邊導覽列的卡片切換。${subSel}`;
                 } else {
                     targetBox.innerText = '目前未綁定卡片。計時仍可使用，但不會寫入工時；先從任務清單選一張卡，或直接按卡片上的 ⏱️。';
                 }
@@ -4469,6 +4480,7 @@ const app = {
                             <button class="icon-btn" onclick="app.gcal.open('${id}')" title="加到 Google 日曆">📆</button>
                             <button class="icon-btn" onclick="app.sandbox.focusTaskForTimer('${id}')" title="進入心流，專注在這張卡">🎯</button>
                             ${this.timerButtonHtml(card)}
+                            <button class="icon-btn" onclick="app.board.open('${card.id}')" title="♟ 棋盤：把這張卡拆成子項目${app.board.children(card).length ? `（${app.board.children(card).length}）` : ''}">♟</button>
                             ${card.isMemo ? '' : `<button class="icon-btn" onclick="app.actions.toggleDateMode('${id}')" title="單日／區間">↔️</button>`}
                             <button class="icon-btn" onclick="app.actions.cycleColor('${id}')" title="切換標記顏色">🎨</button>
                         </div>
@@ -7015,10 +7027,7 @@ ${planned.length ? planned.map(({ card }) => this.cardLine(card)).join('\n') : '
         },
 
         addMatrixNode() { app.board.addFromInput(); },
-        updateMatrixNodePos(id, gridX, gridY) { const node = (app.state.nodes[app.state.activeTabId] || []).find(n => n.id === id); if (node) { node.gridX = gridX; node.gridY = gridY; app.saveToLocal(); app.renderMatrix(); } },
-        toggleStoneColor(id) { const node = (app.state.nodes[app.state.activeTabId] || []).find(n => n.id === id); if (node) { node.stoneColor = node.stoneColor === 'black' ? 'white' : 'black'; app.saveToLocal(); app.renderMatrix(); } },
-        deleteMatrixNode(id) { app.board.removeNode(id); },
-        promoteToCard(id) { app.board.promote(id); },
+        updateMatrixNodePos(id, gridX, gridY) { app.board.move(id, gridX, gridY); },
 
         switchTab(id) {
             app.state.activeTabId = id;
@@ -7117,7 +7126,7 @@ app.today = {
     EST_OPTIONS: [15, 30, 45, 60, 90, 120, 180, 240],
     LIMIT_MUST: 4, LIMIT_OPT: 3,
     ui: { which: null, search: '', showSkipped: false, showSettings: false, collapsed: {} },
-    groupBy() { return ['urgency', 'board'].includes(app.prefs.todayGroupBy) ? app.prefs.todayGroupBy : 'project'; },
+    groupBy() { return app.prefs.todayGroupBy === 'urgency' ? 'urgency' : 'project'; },
     setGroupBy(v) { app.prefs.todayGroupBy = v; app.store.savePrefs(); this.render(); },
     toggleGroup(k) { this.ui.collapsed[k] = !this.ui.collapsed[k]; this.render(); },
     skipGroup(ids) { const date = this.date(); ids.forEach(id => { const c = this.W().getCard(id); if (c) { this.setPlan(c, date, { pri: 'skip', slot: null, est: this.planOf(c, date)?.est || this.defaultEst(c), done: false }); } }); app.saveToLocal(); this.render(); app.ui.toast(`${ids.length} 張今天不做`); },
@@ -7506,7 +7515,8 @@ app.today = {
     candidateRow({ card, tabName, why }, showProject = true) {
         const esc = x => this.esc(x);
         const wk = this.weekKey(this.date());
-        const meta = [showProject && card.project ? `#${esc(card.project)}` : '', showProject ? esc(tabName) : ''].filter(Boolean).join(' · ');
+        const parent = card.parentId ? this.W().getCard(card.parentId) : null;
+        const meta = [showProject && card.project ? `#${esc(card.project)}` : '', showProject ? esc(tabName) : '', parent ? `↰ ${esc(parent.title || '母卡')}` : ''].filter(Boolean).join(' · ');
         const urgent = why.some(x => x.k === 'carry' || x.k === 'chase' || (x.k === 'due' && x.w >= 79));
         const waiting = why.some(x => x.k === 'wait' || x.k === 'chase');
         const dup = (this._dupCount || {})[app.quickAdd.norm(card.title)] > 1;
@@ -7524,7 +7534,7 @@ app.today = {
                 <button type="button" class="opt" onclick="app.today.classify('${card.id}','opt')" title="備選">備選</button>
                 <button type="button" class="skip" onclick="app.today.classify('${card.id}','skip')" title="今天不做">不做</button>
             </div>
-            <button type="button" class="td-del ${waiting ? 'on' : ''}" onclick="app.today.editWaiting('${card.id}')" title="${waiting ? '改等誰、追蹤日，或不用等了' : '這件事在等別人 → 放到「在追的事」'}">⏳</button>
+            <button type="button" class="td-waitbtn ${waiting ? 'on' : ''}" onclick="app.today.editWaiting('${card.id}')" title="${waiting ? '改等誰、追蹤日，或不用等了' : '這件事在等別人 → 放到「在追的事」'}">⏳</button>
             <button type="button" class="td-del" onclick="app.actions.deleteCard('${card.id}')" title="刪除這張卡（可在「資料 → 最近刪除」救回）">🗑</button>
         </div>`;
     },
@@ -7575,11 +7585,6 @@ app.today = {
                 ${quiet.map(r => this.candidateRow(r)).join('')}
             </details>` : '';
         if (this.groupBy() === 'urgency') return waitHtml + cands.map(r => this.candidateRow(r)).join('') + quietHtml;
-        if (this.groupBy() === 'board') {
-            const on = app.board.linkedCardIds();
-            const off = [...cands, ...quiet].filter(r => !on.has(r.card.id));
-            return app.board.todayHtml() + waitHtml + (off.length ? `<div class="td-group"><div class="td-group-head"><span class="td-group-name">不在棋盤上的卡 <span class="ls-count">${off.length}</span></span></div>${off.map(r => this.candidateRow(r)).join('')}</div>` : '');
-        }
         // 依專案：每個專案列出它所有未完成的卡（有理由的在前），不另外收起來
         const groups = new Map();
         all.forEach(r => { const k = String(r.card.project || '').trim() || '雜項'; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(r); });
@@ -7705,7 +7710,7 @@ app.today = {
             <div class="td-main" data-mtab="${mtab}">
             <section class="td-sec td-left">
                 <h4>① 分類 <span class="td-meta">未完成 ${allCands.length} 張都在這裡，最重要的先點。</span>
-                    <span class="td-groupby"><button type="button" class="${this.groupBy() === 'project' ? 'on' : ''}" onclick="app.today.setGroupBy('project')">依專案</button><button type="button" class="${this.groupBy() === 'urgency' ? 'on' : ''}" onclick="app.today.setGroupBy('urgency')">依急迫</button><button type="button" class="${this.groupBy() === 'board' ? 'on' : ''}" onclick="app.today.setGroupBy('board')" title="用發想棋盤的位置來挑今天要做的事">♟ 棋盤</button></span></h4>
+                    <span class="td-groupby"><button type="button" class="${this.groupBy() === 'project' ? 'on' : ''}" onclick="app.today.setGroupBy('project')">依專案</button><button type="button" class="${this.groupBy() === 'urgency' ? 'on' : ''}" onclick="app.today.setGroupBy('urgency')">依急迫</button></span></h4>
                 <div class="td-dump">
                     <textarea id="td-dump" rows="1" placeholder="＋ 腦中想到什麼先打下來（Enter 加入；貼多行＝多張卡）" onkeydown="if(event.key==='Enter' && !event.shiftKey && !event.isComposing){ event.preventDefault(); app.today.brainDump(); }">${esc(this.ui.dump || '')}</textarea>
                 </div>
@@ -8815,29 +8820,67 @@ app.docRecord = {
 };
 
 // ==========================================
-// ♟ 發想棋盤：拆解的第一層。位置＝我自己分的區塊，座標（例如 D4）方便稱呼。
-// 棋子轉成卡片後留在盤上，卡片做完會顯示出來，看得出每一塊推進到哪。
+// ♟ 棋盤＝一張卡的拆解圖：卡片是母，棋子是子（＝卡片筆記裡的「- [ ]」待辦）。
+// 子項目底下縮排的幾行是它的細節；長大的子項目可以「升格」成子卡（parentId 連回母卡）。
+// 座標只記在 card.boardMeta，筆記文字保持乾淨。
 // ==========================================
 app.board = {
     LETTERS: 'ABCDEFGHJKLMNOPQRST',
     pick: null,
+    cardId: '',
     esc(x) { return app.entries.escapeHtml(x); },
     coord(x, y) { return this.LETTERS[x] + (19 - y); },
+    parseAt(s) {
+        const m = String(s || '').trim().match(/^([A-HJ-Ta-hj-t])(1[0-9]|[1-9])$/);
+        return m ? { x: this.LETTERS.indexOf(m[1].toUpperCase()), y: 19 - Number(m[2]) } : null;
+    },
     parseCoord(t) {
         const m = String(t || '').match(/^\s*([A-HJ-Ta-hj-t])(1[0-9]|[1-9])(?:\s+|[:：]\s*)([\s\S]+)$/);
         if (!m) return null;
-        const n = Number(m[2]); if (n < 1 || n > 19) return null;
-        return { x: this.LETTERS.indexOf(m[1].toUpperCase()), y: 19 - n, text: m[3].trim() };
+        return { x: this.LETTERS.indexOf(m[1].toUpperCase()), y: 19 - Number(m[2]), text: m[3].trim() };
     },
-    nodes(tabId = app.state.activeTabId) { return app.state.nodes[tabId] || (app.state.nodes[tabId] = []); },
-    project() { return app.state.filters.activeProject || ''; },
-    projOf(n) { const c = this.cardOf(n); return String((c ? c.project : n.project) || '').trim(); },
-    visible(tabId) { const p = this.project(); return this.nodes(tabId).filter(n => !p || this.projOf(n) === p); },
-    pos(n) { return { x: n.gridX !== undefined ? n.gridX : 9, y: n.gridY !== undefined ? n.gridY : 9 }; },
-    occupied(x, y, tabId) { return this.nodes(tabId).some(n => { const p = this.pos(n); return p.x === x && p.y === y; }); },
-    // 從某點往外找最近的空位（不再隨機）
-    freePoint(fx = 9, fy = 9, tabId) {
-        // 優先同一列往右，連續打字會排成一排
+    key(t) { return String(t || '').replace(/\s+/g, ' ').trim(); },
+    card() { return this.cardId ? app.worktime.getCard(this.cardId) : null; },
+    meta(card) { if (!card.boardMeta || typeof card.boardMeta !== 'object') card.boardMeta = {}; return card.boardMeta; },
+
+    // 子項目：最外層的「- [ ]」；它下面縮排更深的行＝細節
+    children(card) {
+        const lines = String(card?.content || '').split('\n');
+        const re = /^(\s*)[-*]\s+\[([ xX])\]\s+(.*)$/;
+        const hits = lines.map((l, i) => { const m = l.match(re); return m ? { i, ind: m[1].replace(/\t/g, '    ').length, done: m[2].toLowerCase() === 'x', text: m[3].trim() } : null; }).filter(Boolean);
+        if (!hits.length) return [];
+        const top = Math.min(...hits.map(h => h.ind));
+        const meta = card.boardMeta || {};
+        return hits.filter(h => h.ind === top).map(h => {
+            const details = [];
+            for (let j = h.i + 1; j < lines.length; j++) {
+                const l = lines[j];
+                if (!l.trim()) { if (details.length) break; else continue; }
+                const ind = (l.match(/^\s*/)[0] || '').replace(/\t/g, '    ').length;
+                if (ind <= top) break;
+                details.push(l.trim());
+            }
+            const k = this.key(h.text), m = meta[k] || {};
+            const child = m.cardId ? app.worktime.getCard(m.cardId) : null;
+            return { lineIndex: h.i, text: h.text, key: k, done: child ? Number(child.status) === 2 : h.done, details, at: this.parseAt(m.at), black: !!m.black, childCard: child };
+        });
+    },
+    // 沒有座標的子項目自動排（從中央往右排）
+    layout(card) {
+        const kids = this.children(card), used = new Set();
+        kids.forEach(c => { if (c.at) used.add(c.at.x + ',' + c.at.y); });
+        let changed = false;
+        kids.forEach(c => {
+            if (c.at) return;
+            const p = this.freePoint(9, 9, used);
+            used.add(p.x + ',' + p.y);
+            c.at = p; this.meta(card)[c.key] = { ...(this.meta(card)[c.key] || {}), at: this.coord(p.x, p.y) }; changed = true;
+        });
+        if (changed) app.saveToLocal();
+        return kids;
+    },
+    freePoint(fx = 9, fy = 9, used) {
+        const taken = used || new Set(this.layoutNoSave().map(c => c.at && (c.at.x + ',' + c.at.y)));
         for (let r = 0; r <= 18; r++) {
             const ring = [];
             for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) if (Math.max(Math.abs(dx), Math.abs(dy)) === r) ring.push([dx, dy]);
@@ -8845,26 +8888,31 @@ app.board = {
             for (const [dx, dy] of ring) {
                 const x = fx + dx, y = fy + dy;
                 if (x < 0 || y < 0 || x > 18 || y > 18) continue;
-                if (!this.occupied(x, y, tabId)) return { x, y };
+                if (!taken.has(x + ',' + y)) return { x, y };
             }
         }
         return { x: fx, y: fy };
     },
-    cardOf(n) { const c = n.cardId ? app.worktime.getCard(n.cardId) : null; return c || null; },
-    linkedCardIds() { const s = new Set(); app.state.tabs.forEach(t => (app.state.nodes[t.id] || []).forEach(n => { if (this.cardOf(n)) s.add(n.cardId); })); return s; },
-    status(n) {
-        const c = this.cardOf(n); if (!c) return null;
-        if (Number(c.status) === 2) return { k: 'done', t: '✓ 完成' };
-        const p = app.today.planOf(c, app.today.todayStr());
-        if (p?.pri === 'must') return { k: 'must', t: '今天必做' };
-        if (p?.pri === 'opt') return { k: 'opt', t: '今天備選' };
-        if (app.today.isWaiting(c)) return { k: 'wait', t: '⏳ 在追' };
-        if (Number(c.status) === 1) return { k: 'doing', t: '進行中' };
-        return { k: 'card', t: '📄 卡片' };
-    },
-    TAGS: { q1: '🔥 重要・緊急', q2: '📅 重要・不急', q3: '⚡ 緊急・不重', q4: '☕ 不重・不急' },
+    layoutNoSave() { const c = this.card(); return c ? this.children(c) : []; },
+    occupied(x, y) { return this.layoutNoSave().some(c => c.at && c.at.x === x && c.at.y === y); },
 
-    gridHtml(nodes, mode) {
+    // ---------- 打開 ----------
+    open(cardId) {
+        const card = cardId ? app.worktime.getCard(cardId) : null;
+        this.cardId = card ? card.id : '';
+        this.pick = null;
+        try { if (card) localStorage.setItem('whiteboard_board_last', card.id); } catch (_) {}
+        app.switchView('matrix');
+        setTimeout(() => document.getElementById('matrix-quick-input')?.focus(), 50);
+    },
+    openLast() {
+        let id = '';
+        try { id = localStorage.getItem('whiteboard_board_last') || ''; } catch (_) {}
+        this.open(app.worktime.getCard(id) ? id : '');
+    },
+
+    // ---------- 畫面 ----------
+    gridHtml(card, kids) {
         const esc = x => this.esc(x);
         let html = '';
         [3, 9, 15].forEach(x => [3, 9, 15].forEach(y => { html += `<div class="star-point" style="left:${x / 18 * 100}%; top:${y / 18 * 100}%;"></div>`; }));
@@ -8872,204 +8920,296 @@ app.board = {
             const p = i / 18 * 100;
             html += `<span class="bd-coord top" style="left:${p}%">${this.LETTERS[i]}</span><span class="bd-coord left" style="top:${p}%">${19 - i}</span>`;
         }
-        if (mode === 'full' && this.pick) html += `<div class="bd-pick" style="left:${this.pick.x / 18 * 100}%; top:${this.pick.y / 18 * 100}%;" title="下一顆落在 ${this.coord(this.pick.x, this.pick.y)}"></div>`;
-        html += nodes.map(n => {
-            const { x, y } = this.pos(n), st = this.status(n), c = st ? this.cardOf(n) : null;
-            const text = c ? (c.title || n.text) : n.text;
-            const cls = `matrix-node ${n.stoneColor === 'black' ? 'stone-black' : 'stone-white'} ${st ? 'linked st-' + st.k : 'idea'}`;
-            const style = `left:${x / 18 * 100}%; top:${y / 18 * 100}%;`;
-            if (mode === 'today') return `<button type="button" class="${cls} bd-mini" data-id="${n.id}" style="${style}" onclick="app.board.todayPick('${n.id}')" title="${esc(this.coord(x, y) + ' ' + text)}"><div class="node-stone"></div><div class="node-paper"><div class="matrix-node-text">${esc(text)}</div>${st ? `<div class="bd-st ${st.k}">${st.t}</div>` : ''}</div></button>`;
-            return `<div class="${cls}" data-id="${n.id}" style="${style}">
+        if (this.pick) html += `<div class="bd-pick" style="left:${this.pick.x / 18 * 100}%; top:${this.pick.y / 18 * 100}%;"></div>`;
+        html += kids.map((c, idx) => {
+            const { x, y } = c.at;
+            const st = c.done ? 'done' : (c.childCard ? (app.today.isWaiting(c.childCard) ? 'wait' : 'card') : 'todo');
+            const stText = { done: '✓ 完成', card: '↗ 已升格成卡片', wait: '⏳ 子卡在追', todo: '' }[st];
+            return `<div class="matrix-node ${c.black ? 'stone-black' : 'stone-white'} linked st-${st}" data-id="${idx}" style="left:${x / 18 * 100}%; top:${y / 18 * 100}%;">
                 <div class="node-stone"></div>
                 <div class="node-paper">
-                    <div class="bd-head"><span class="bd-c">${this.coord(x, y)}</span>${n.tag && this.TAGS[n.tag] ? `<span class="node-tag tag-${n.tag}">${this.TAGS[n.tag]}</span>` : ''}</div>
-                    <div class="matrix-node-text">${esc(text)}</div>
-                    ${n.note ? `<div class="bd-note">${esc(n.note)}</div>` : ''}
-                    ${st ? `<div class="bd-st ${st.k}">${st.t}</div>` : ''}
+                    <div class="bd-head"><span class="bd-c">${this.coord(x, y)}</span></div>
+                    <div class="matrix-node-text">${esc(c.text)}</div>
+                    ${c.details.length ? `<div class="bd-note">${c.details.slice(0, 6).map(d => esc(d.replace(/^[-*]\s+/, ''))).join('<br>')}${c.details.length > 6 ? '<br>…' : ''}</div>` : ''}
+                    ${stText ? `<div class="bd-st ${st}">${stText}</div>` : ''}
                     <div class="node-action-group">
-                        <button class="node-action-btn" onclick="app.board.rename('${n.id}')" title="改名${st ? '（會改卡片標題）' : ''}">✎</button>
-                        <button class="node-action-btn" onclick="app.actions.toggleStoneColor('${n.id}')" title="黑子＝標記警戒">☯️</button>
-                        ${st ? `<button class="node-action-btn" onclick="app.today.focus('${n.cardId}')" title="打開卡片（專注模式）">↗</button>` : `<button class="node-action-btn" onclick="app.board.promote('${n.id}')" title="轉成卡片（棋子會留在盤上）">📄</button>`}
-                        <button class="node-action-btn del" style="color:#ef4444;" onclick="app.board.removeNode('${n.id}')" title="${st ? '拿掉棋子（卡片保留）' : '刪除'}">×</button>
+                        ${c.childCard ? `<button class="node-action-btn" onclick="app.board.open('${c.childCard.id}')" title="打開子卡的棋盤">♟</button><button class="node-action-btn" onclick="app.today.focus('${c.childCard.id}')" title="打開子卡（專注）">↗</button>`
+                            : `<button class="node-action-btn" onclick="app.board.toggleDone(${idx})" title="${c.done ? '改回未完成' : '完成'}">${c.done ? '↩' : '✓'}</button>`}
+                        <button class="node-action-btn" onclick="app.board.edit(${idx})" title="改名、寫細節">✎</button>
+                        <button class="node-action-btn" onclick="app.board.toggleBlack(${idx})" title="黑子＝警戒、還不確定">☯️</button>
+                        ${c.childCard ? '' : `<button class="node-action-btn" onclick="app.board.promote(${idx})" title="升格成子卡（一天做不完、有自己的截止日、要等別人時）">⬆</button>`}
+                        <button class="node-action-btn del" style="color:#ef4444;" onclick="app.board.remove(${idx})" title="刪除這個子項目">×</button>
                     </div>
                 </div>
             </div>`;
         }).join('');
         return html;
     },
-
     renderFull() {
         const grid = document.getElementById('matrix-grid-lines'); if (!grid) return;
-        grid.innerHTML = this.gridHtml(this.visible(), 'full');
-        this.renderBar();
+        const card = this.card();
         const board = document.getElementById('matrix-board');
+        const bar = document.getElementById('matrix-bar-extra');
+        const inputBar = document.querySelector('#view-matrix .matrix-input-bar');
+        if (!card) {
+            grid.innerHTML = '';
+            if (board) board.style.display = 'none';
+            if (inputBar) inputBar.style.display = 'none';
+            if (bar) bar.innerHTML = this.pickerHtml();
+            return;
+        }
+        if (board) board.style.display = '';
+        if (inputBar) inputBar.style.display = '';
+        const kids = this.layout(card);
+        grid.innerHTML = this.gridHtml(card, kids);
+        this.renderBar(card, kids);
         if (board && !board._bdClick) { board._bdClick = true; board.addEventListener('click', e => this.boardClick(e)); }
     },
-    renderBar() {
+    renderBar(card, kids) {
         const el = document.getElementById('matrix-bar-extra'); if (!el) return;
-        const esc = x => this.esc(x), p = this.project();
-        const names = app.projectReg?.names ? app.projectReg.names() : [];
-        const all = this.visible(), linked = all.filter(n => this.cardOf(n)), done = linked.filter(n => Number(this.cardOf(n).status) === 2);
-        el.innerHTML = `<span class="bd-tools"><button type="button" class="primary" onclick="app.board.aiOpen()" title="讓 AI 幫你拆第一層，或檢查你的拆法；結果先預覽再落子">🤖 和 AI 一起拆</button>
-                <button type="button" onclick="app.board.placeExisting()" title="把已經有的卡片放上棋盤">＋ 放現有卡片</button>
-                ${done.length ? `<button type="button" onclick="app.board.clearDone()" title="盤面太滿時，把已完成的子收掉（卡片不受影響）">收掉完成的子 ${done.length}</button>` : ''}
+        const esc = x => this.esc(x);
+        const parent = card.parentId ? app.worktime.getCard(card.parentId) : null;
+        const done = kids.filter(c => c.done).length;
+        el.innerHTML = `<div class="bd-title">
+                <button type="button" class="bd-back" onclick="app.board.open('')" title="換一張卡">☰ 換卡片</button>
+                ${parent ? `<button type="button" class="bd-back" onclick="app.board.open('${parent.id}')" title="回到母卡的棋盤">↰ ${esc(parent.title || '母卡')}</button>` : ''}
+                <b>♟ ${esc(card.title || '（未命名）')}</b><span class="td-meta">${esc(card.project || '雜項')} · 子項目 ${kids.length} · 完成 ${done}</span>
+                <button type="button" class="bd-back" onclick="app.today.focus('${card.id}')" title="打開這張卡（筆記、計時）">↗ 打開卡片</button>
+            </div>
+            <span class="bd-tools"><button type="button" class="primary" onclick="app.board.aiOpen()" title="讓 AI 幫這張卡拆子項目，或檢查你的拆法">🤖 和 AI 一起拆</button>
                 <button type="button" onclick="app.board.editZones()" title="寫下你的分區習慣，AI 會照著放">🗺 我的分區</button></span>
-            <label class="bd-proj">專案<select onchange="app.board.setProject(this.value)"><option value="">全部</option>${[...new Set([...names, ...this.nodes().map(n => this.projOf(n)).filter(Boolean)])].map(n => `<option value="${esc(n)}" ${n === p ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select></label>
-            <span class="td-meta">工作區「${esc(app.state.tabs.find(t => t.id === app.state.activeTabId)?.name || '')}」· ${all.length} 顆棋子 · 轉成卡片 ${linked.length} · 完成 ${done.length}</span>
-            <span class="bd-legend"><span><i style="border-color:#d6c28f"></i>想法</span><span><i style="border-color:#818cf8"></i>已是卡片</span><span><i style="border-color:#ef4444"></i>今天必做</span><span><i style="border-color:#3b82f6"></i>備選</span><span><i style="border-color:#f59e0b"></i>在追</span><span><i style="border-color:#22c55e"></i>完成</span></span>
-            <span class="td-meta">${this.pick ? `下一顆落在 <b>${this.coord(this.pick.x, this.pick.y)}</b>（<a href="#" onclick="app.board.pick=null; app.board.renderFull(); return false;">取消</a>）` : '先點盤上的交叉點選位置，或打「D4 內容」'}</span>`;
+            <span class="bd-legend"><span><i style="border-color:#818cf8"></i>子項目</span><span><i style="border-color:#22c55e"></i>完成</span><span><i style="border-color:#0ea5e9"></i>已升格成卡片</span><span><i style="border-color:#f59e0b"></i>子卡在追</span><span>黑子＝警戒</span></span>
+            <span class="td-meta">${this.pick ? `下一顆落在 <b>${this.coord(this.pick.x, this.pick.y)}</b>（<a href="#" onclick="app.board.pick=null; app.board.renderFull(); return false;">取消</a>）` : '點交叉點選位置，或打「D4 內容」；子項目會寫進這張卡的筆記'}</span>`;
         const inp = document.getElementById('matrix-quick-input');
-        if (inp) inp.placeholder = this.pick ? `💡 落在 ${this.coord(this.pick.x, this.pick.y)}…（Enter 落子）` : '💡 輸入想法（Enter 落子；可打「D4 內容」指定位置）';
+        if (inp) inp.placeholder = this.pick ? `＋ 子項目，落在 ${this.coord(this.pick.x, this.pick.y)}…（Enter）` : '＋ 子項目（Enter 落子；可打「D4 內容」指定位置）';
     },
-    setProject(v) { app.state.filters.activeProject = v; app.renderAll(); },
+    pickerHtml() {
+        const esc = x => this.esc(x), q = String(this._q || '').trim().toLowerCase();
+        const rows = app.worktime.allCards().filter(({ card, tabName }) => Number(card.status) !== 2 && !/^♻/.test(tabName) && !app.sync.isBlankCard(card) && !card.fixed)
+            .filter(({ card }) => !q || [card.title, card.project].some(x => String(x || '').toLowerCase().includes(q)));
+        const withKids = rows.filter(({ card }) => this.children(card).length).sort((a, b) => this.children(b.card).length - this.children(a.card).length);
+        const others = rows.filter(({ card }) => !this.children(card).length);
+        const legacy = app.state.tabs.reduce((n, t) => n + (app.state.nodes[t.id] || []).length, 0);
+        const row = ({ card, tabName }) => `<button type="button" class="bd-pick-card" onclick="app.board.open('${card.id}')"><b>${esc(card.title || '（未命名）')}</b><span class="td-meta">${esc(card.project || '雜項')} · ${esc(tabName)}${this.children(card).length ? ` · 子項目 ${this.children(card).length}` : ''}</span></button>`;
+        return `<div class="bd-picker">
+            <h4>♟ 選一張卡來拆</h4>
+            <p class="pm-hint" style="margin-top:0;">棋盤是一張卡的拆解圖：卡片是母，棋子是子項目（＝卡片筆記裡的待辦）。也可以從卡片上的「♟ 棋盤」直接打開。</p>
+            <input type="search" class="td-search" placeholder="找卡片…" value="${esc(this._q || '')}" oninput="app.board._q=this.value; clearTimeout(app.board._qt); app.board._qt=setTimeout(()=>app.board.renderFull(),200)">
+            ${legacy ? `<div class="td-backup">舊棋盤上還有 ${legacy} 顆棋子。<button type="button" onclick="app.board.migrateOpen()">搬進卡片</button></div>` : ''}
+            ${withKids.length ? `<div class="td-meta" style="margin:8px 0 4px;">已經有子項目的</div><div class="bd-pick-list">${withKids.slice(0, 30).map(row).join('')}</div>` : ''}
+            <div class="td-meta" style="margin:8px 0 4px;">其他卡片</div><div class="bd-pick-list">${others.slice(0, 60).map(row).join('') || '<div class="td-meta">沒有</div>'}</div>
+        </div>`;
+    },
     boardClick(e) {
-        if (e.target.closest('.matrix-node') || app.dragState.isDragging) return;
+        if (e.target.closest('.matrix-node') || app.dragState.isDragging || !this.card()) return;
         const grid = document.getElementById('matrix-grid-lines'), r = grid.getBoundingClientRect();
         const x = Math.round((e.clientX - r.left) / r.width * 18), y = Math.round((e.clientY - r.top) / r.height * 18);
-        if (x < 0 || y < 0 || x > 18 || y > 18) return;
-        if (this.occupied(x, y)) return;
+        if (x < 0 || y < 0 || x > 18 || y > 18 || this.occupied(x, y)) return;
         this.pick = this.pick && this.pick.x === x && this.pick.y === y ? null : { x, y };
         this.renderFull();
         document.getElementById('matrix-quick-input')?.focus();
     },
-    addFromInput() {
-        const inputEl = document.getElementById('matrix-quick-input'), tagEl = document.getElementById('matrix-tag-select');
-        let text = String(inputEl?.value || '').trim(); if (!text) return;
-        let at = null;
-        const pc = this.parseCoord(text);
-        if (pc) { text = pc.text; at = this.occupied(pc.x, pc.y) ? this.freePoint(pc.x, pc.y) : { x: pc.x, y: pc.y }; }
-        else if (this.pick) at = this.occupied(this.pick.x, this.pick.y) ? this.freePoint(this.pick.x, this.pick.y) : this.pick;
-        else { const last = this.nodes().slice(-1)[0]; const p = last ? this.pos(last) : { x: 9, y: 9 }; at = this.freePoint(p.x, p.y); }
-        this.nodes().push({ id: app.makeId('node'), text, tag: tagEl?.value || '', gridX: at.x, gridY: at.y, stoneColor: 'white', project: this.project() });
-        // 下一顆預設落在旁邊，連續打字就會排成一串
-        this.pick = this.freePoint(at.x, at.y);
-        if (inputEl) inputEl.value = '';
-        app.saveToLocal(); this.renderFull();
-    },
-    findNode(id) { for (const t of app.state.tabs) { const n = (app.state.nodes[t.id] || []).find(x => x.id === id); if (n) return { n, tabId: t.id }; } return null; },
-    promote(id, tabId) {
-        const hit = this.findNode(id); if (!hit) return null;
-        const { n } = hit;
-        if (this.cardOf(n)) return this.cardOf(n);
-        const color = { q1: 'red', q2: 'green', q3: 'yellow' }[n.tag] || 'blue';
-        const card = app.quickAdd.create({ title: n.text, tabId: tabId || hit.tabId, project: n.project || '' });
-        card.color = color;
-        n.cardId = card.id;
-        app.saveToLocal();
-        if (app.state.view === 'matrix') this.renderFull();
-        app.ui.toast(`已轉成卡片「${card.title}」，棋子留在 ${this.coord(this.pos(n).x, this.pos(n).y)}`);
-        return card;
-    },
-    async removeNode(id) {
-        const hit = this.findNode(id); if (!hit) return;
-        if (!this.cardOf(hit.n) && !await app.ui.confirm('刪除棋子', `<p>刪除「${this.esc(hit.n.text)}」？</p>`, '刪除', true)) return;
-        app.state.nodes[hit.tabId] = app.state.nodes[hit.tabId].filter(n => n.id !== id);
-        app.saveToLocal(); this.renderFull();
-        if (this.cardOf(hit.n)) app.ui.toast('已拿掉棋子，卡片還在');
-    },
 
-    async rename(id) {
-        const hit = this.findNode(id); if (!hit) return;
-        const c = this.cardOf(hit.n);
-        this._rn = { text: c ? (c.title || '') : hit.n.text, note: hit.n.note || '' };
+    // ---------- 編輯：一律改卡片筆記 ----------
+    lines(card) { return String(card.content || '').split('\n'); },
+    save(card) { app.saveToLocal(); this.renderFull(); app.ui.defer?.(() => app.refreshCard?.(card.id)); },
+    addChild(card, text, at, details = []) {
+        const t = this.key(text); if (!t) return;
+        const kids = this.children(card);
+        const lines = this.lines(card);
+        const indent = kids.length ? (lines[kids[0].lineIndex].match(/^\s*/)[0] || '') : '';
+        const block = [`${indent}- [ ] ${t}`, ...details.filter(Boolean).map(d => `${indent}  - ${d}`)];
+        // 接在最後一個子項目（含它的細節）後面；沒有子項目就加在筆記最後
+        let insertAt = lines.length;
+        if (kids.length) { const last = kids[kids.length - 1]; insertAt = last.lineIndex + 1 + last.details.length; while (insertAt < lines.length && !lines[insertAt].trim() && insertAt === last.lineIndex + 1 + last.details.length && false) insertAt++; }
+        else { while (lines.length && !lines[lines.length - 1].trim()) lines.pop(); insertAt = lines.length; }
+        lines.splice(insertAt, 0, ...block);
+        card.content = lines.join('\n').replace(/^\n+/, '');
+        this.meta(card)[t] = { ...(this.meta(card)[t] || {}), at: this.coord(at.x, at.y) };
+    },
+    addFromInput() {
+        const card = this.card(); if (!card) return;
+        const inputEl = document.getElementById('matrix-quick-input');
+        let text = String(inputEl?.value || '').trim(); if (!text) return;
+        let at;
+        const pc = this.parseCoord(text);
+        if (pc) { text = pc.text; at = this.occupied(pc.x, pc.y) ? this.freePoint(pc.x, pc.y) : pc; }
+        else if (this.pick) at = this.occupied(this.pick.x, this.pick.y) ? this.freePoint(this.pick.x, this.pick.y) : this.pick;
+        else { const kids = this.layoutNoSave(); const last = kids[kids.length - 1]; at = this.freePoint(last?.at?.x ?? 9, last?.at?.y ?? 9); }
+        if (this.children(card).some(c => c.key === this.key(text))) { app.ui.toast('這張卡已經有同名的子項目', 'warn'); return; }
+        this.addChild(card, text, at);
+        this.pick = this.freePoint(at.x, at.y, new Set([...this.layoutNoSave().map(c => c.at && (c.at.x + ',' + c.at.y)), at.x + ',' + at.y]));
+        if (inputEl) inputEl.value = '';
+        this.save(card);
+    },
+    kid(idx) { const card = this.card(); const kids = card ? this.children(card) : []; return { card, c: kids[idx] }; },
+    move(idx, x, y) {
+        const { card, c } = this.kid(Number(idx)); if (!c) return;
+        if (this.layoutNoSave().some((k, i) => i !== Number(idx) && k.at && k.at.x === x && k.at.y === y)) { this.renderFull(); return; }
+        this.meta(card)[c.key] = { ...(this.meta(card)[c.key] || {}), at: this.coord(x, y) };
+        app.saveToLocal(); this.renderFull();
+    },
+    toggleBlack(idx) {
+        const { card, c } = this.kid(idx); if (!c) return;
+        const m = this.meta(card)[c.key] = { ...(this.meta(card)[c.key] || {}) };
+        if (m.black) delete m.black; else m.black = true;
+        app.saveToLocal(); this.renderFull();
+    },
+    toggleDone(idx) {
+        const { card, c } = this.kid(idx); if (!c) return;
+        app.sandbox.toggleSubtask(card.id, c.lineIndex);
+        this.renderFull();
+    },
+    async edit(idx) {
+        const { card, c } = this.kid(idx); if (!c) return;
+        this._ed = { text: c.text, details: c.details.map(d => d.replace(/^[-*]\s+/, '')).join('\n') };
         const esc = x => this.esc(x);
         const v = await app.ui.dialog({
-            title: `✎ ${this.coord(this.pos(hit.n).x, this.pos(hit.n).y)}`,
-            html: `<div class="qa-fields"><label style="flex:1;">名稱${c ? '（＝卡片標題）' : ''}<input id="bd-rn" value="${esc(this._rn.text)}" oninput="app.board._rn.text=this.value"></label></div>
-                <div class="qa-fields"><label style="flex:1;">一句說明（選填，滑過棋子會看到）<input value="${esc(this._rn.note)}" oninput="app.board._rn.note=this.value"></label></div>`,
+            title: `✎ ${this.coord(c.at.x, c.at.y)}`,
+            html: `<div class="qa-fields"><label style="flex:1;">子項目${c.childCard ? '（也會改子卡的標題）' : ''}<input id="bd-rn" value="${esc(this._ed.text)}" oninput="app.board._ed.text=this.value"></label></div>
+                <label class="pm-hint" style="display:block;margin-top:6px;">細節（一行一點：聯絡人、連結、備註、❓ 問題）</label>
+                <textarea class="ps-input" style="min-height:110px;" oninput="app.board._ed.details=this.value">${esc(this._ed.details)}</textarea>`,
             buttons: [{ label: '取消', value: null }, { label: '儲存', value: 'ok', primary: true }]
         });
-        if (v !== 'ok' || !this._rn.text.trim()) return;
-        if (c) c.title = this._rn.text.trim(); else hit.n.text = this._rn.text.trim();
-        hit.n.note = this._rn.note.trim();
-        app.saveToLocal(); this.renderFull();
+        if (v !== 'ok') return;
+        const nt = this.key(this._ed.text); if (!nt) return;
+        if (nt !== c.key && this.children(card).some(k => k.key === nt)) { app.ui.toast('已經有同名的子項目', 'warn'); return; }
+        const lines = this.lines(card), head = lines[c.lineIndex];
+        const indent = head.match(/^\s*/)[0] || '';
+        lines[c.lineIndex] = head.replace(/(\[[ xX]\]\s+).*$/, `$1${nt}`);
+        const det = String(this._ed.details || '').split('\n').map(x => x.trim()).filter(Boolean).map(d => `${indent}  ${/^[-*]\s/.test(d) || /^[❓💬]/.test(d) ? d : '- ' + d}`);
+        lines.splice(c.lineIndex + 1, c.details.length, ...det);
+        card.content = lines.join('\n');
+        if (nt !== c.key) { const m = this.meta(card); m[nt] = m[c.key]; delete m[c.key]; }
+        if (c.childCard) c.childCard.title = nt;
+        this.save(card);
     },
-    async clearDone() {
-        const done = this.visible().filter(n => { const c = this.cardOf(n); return c && Number(c.status) === 2; });
-        if (!done.length) return;
-        if (!await app.ui.confirm('收掉完成的子', `<p>把 ${done.length} 顆已完成的棋子從盤上收掉？卡片本身不會動。</p>`, '收掉')) return;
-        const ids = new Set(done.map(n => n.id));
-        app.state.nodes[app.state.activeTabId] = this.nodes().filter(n => !ids.has(n.id));
-        app.saveToLocal(); this.renderFull();
+    async remove(idx) {
+        const { card, c } = this.kid(idx); if (!c) return;
+        if (!await app.ui.confirm('刪除子項目', `<p>從「${this.esc(card.title || '')}」的筆記刪掉「${this.esc(c.text)}」${c.details.length ? `和底下 ${c.details.length} 行細節` : ''}？${c.childCard ? '<br>子卡本身會保留。' : ''}</p>`, '刪除', true)) return;
+        const lines = this.lines(card);
+        lines.splice(c.lineIndex, 1 + c.details.length);
+        card.content = lines.join('\n');
+        delete this.meta(card)[c.key];
+        if (c.childCard && c.childCard.parentId === card.id) delete c.childCard.parentId;
+        this.save(card);
     },
-    async placeExisting() {
-        const on = this.linkedCardIds(), p = this.project(), tab = app.state.activeTabId;
-        const list = (app.state.workspaces[tab] || []).filter(c => Number(c.status) !== 2 && !on.has(c.id) && !app.sync.isBlankCard(c) && !c.fixed && (!p || String(c.project || '').trim() === p));
-        if (!list.length) { app.ui.toast(p ? `「${p}」沒有還沒上盤的卡` : '這個工作區的卡都已經在盤上了'); return; }
-        this._pe = new Set();
+    // ⬆ 升格：子項目變成一張子卡，細節搬過去，母子互相連結
+    promote(idx) {
+        const { card, c } = this.kid(idx); if (!c || c.childCard) return;
+        const tabId = app.actions.tabOfCard(card.id) || app.state.activeTabId;
+        const child = app.quickAdd.create({ title: c.text, tabId, project: card.project || '' });
+        child.content = c.details.map(d => d.startsWith('- ') || /^[❓💬]/.test(d) ? d : '- ' + d).join('\n');
+        child.parentId = card.id;
+        child.refs = [{ id: app.makeId('ref'), type: 'card', cardId: card.id, title: card.title || '', note: '母卡', createdAt: new Date().toISOString() }];
+        if (c.done) app.worktime.markCompleted(child);
+        this.meta(card)[c.key] = { ...(this.meta(card)[c.key] || {}), cardId: child.id };
+        this.save(card);
+        app.ui.toast(`「${c.text}」已升格成子卡，在母卡棋盤上點 ♟ 可以繼續往下拆`);
+    },
+    // 子卡完成 → 母卡上的那一行也勾起來（母卡全部勾完會照原本規則完成）
+    syncParent(child) {
+        const parent = child?.parentId ? app.worktime.getCard(child.parentId) : null; if (!parent) return;
+        const c = this.children(parent).find(k => k.childCard && k.childCard.id === child.id); if (!c) return;
+        const line = this.lines(parent)[c.lineIndex], isX = /\[[xX]\]/.test(line), want = Number(child.status) === 2;
+        if (isX !== want) app.sandbox.toggleSubtask(parent.id, c.lineIndex);
+    },
+
+    // ---------- 舊棋盤（工作區的棋子）搬進卡片 ----------
+    async migrateOpen() {
+        const tabs = app.state.tabs.filter(t => (app.state.nodes[t.id] || []).length);
+        if (!tabs.length) return;
+        const tab = tabs[0], nodes = app.state.nodes[tab.id];
+        const cards = (app.state.workspaces[tab.id] || []).filter(c => Number(c.status) !== 2 && !app.sync.isBlankCard(c));
+        this._mg = { target: '__new__' };
         const esc = x => this.esc(x);
         const v = await app.ui.dialog({
-            title: '＋ 放現有卡片',
+            title: `搬進卡片：「${tab.name}」的 ${nodes.length} 顆舊棋子`,
             wide: true,
-            html: `<p class="pm-hint" style="margin-top:0;">勾選要放上棋盤的卡。${this.pick ? `會從 <b>${this.coord(this.pick.x, this.pick.y)}</b> 開始往右排。` : '先在盤上點一個交叉點，就會從那裡開始排。'}放上去之後可以再拖。</p>
-                <div class="bd-pe-list">${list.map(c => `<label class="bd-pe"><input type="checkbox" onchange="this.checked ? app.board._pe.add('${c.id}') : app.board._pe.delete('${c.id}')"><span>${esc(c.title || '（未命名）')}</span><span class="td-meta">${esc(c.project || '雜項')}</span></label>`).join('')}</div>`,
-            buttons: [{ label: '取消', value: null }, { label: '放上棋盤', value: 'ok', primary: true }]
+            html: `<p class="pm-hint" style="margin-top:0;">每顆棋子會變成那張卡的一個子項目，位置保留。已經轉成卡片的棋子，會變成「已升格」的子項目（連到原本的卡）。</p>
+                <div class="bd-pe-list">${nodes.map(n => `<div class="bd-pe"><b class="bd-c" style="display:inline">${this.coord(n.gridX ?? 9, n.gridY ?? 9)}</b><span>${esc(n.text)}</span>${n.cardId ? '<span class="td-meta">（已是卡片）</span>' : ''}</div>`).join('')}</div>
+                <div class="qa-fields" style="margin-top:8px;"><label style="flex:1;">搬到哪張卡<select onchange="app.board._mg.target=this.value"><option value="__new__">新開一張「${esc(tab.name)} 的拆解」</option>${cards.map(c => `<option value="${c.id}">${esc(c.title || '（未命名）')}</option>`).join('')}</select></label></div>`,
+            buttons: [{ label: '取消', value: null }, { label: '搬進去', value: 'ok', primary: true }]
         });
-        if (v !== 'ok' || !this._pe.size) return;
-        let at = this.pick || this.freePoint(9, 9);
-        list.filter(c => this._pe.has(c.id)).forEach(c => {
-            at = this.occupied(at.x, at.y) ? this.freePoint(at.x, at.y) : at;
-            this.nodes().push({ id: app.makeId('node'), text: c.title || '', tag: '', gridX: at.x, gridY: at.y, stoneColor: 'white', project: c.project || '', cardId: c.id });
-            at = this.freePoint(at.x, at.y);
+        if (v !== 'ok') return;
+        let card = this._mg.target === '__new__' ? null : app.worktime.getCard(this._mg.target);
+        if (!card) card = app.quickAdd.create({ title: `${tab.name} 的拆解`, tabId: tab.id, project: nodes.find(n => n.project)?.project || '' });
+        await app.backup.save(`舊棋盤搬進卡片前（${tab.name}）`, app.store.serialize());
+        nodes.forEach(n => {
+            const linked = n.cardId ? app.worktime.getCard(n.cardId) : null;
+            const text = this.key(linked ? linked.title : n.text); if (!text) return;
+            if (this.children(card).some(c => c.key === text)) return;
+            const at = { x: n.gridX ?? 9, y: n.gridY ?? 9 };
+            this.addChild(card, text, this.children(card).some(c => c.at && c.at.x === at.x && c.at.y === at.y) ? this.freePoint(at.x, at.y, new Set(this.children(card).map(c => c.at && (c.at.x + ',' + c.at.y)))) : at, n.note ? [n.note] : []);
+            const m = this.meta(card)[text];
+            if (n.stoneColor === 'black') m.black = true;
+            if (linked) { m.cardId = linked.id; if (!linked.parentId) linked.parentId = card.id; }
         });
-        this.pick = at;
-        app.saveToLocal(); this.renderFull();
-        app.ui.toast(`已放上 ${this._pe.size} 張卡`);
+        app.state.nodes[tab.id] = [];
+        app.saveToLocal();
+        this.open(card.id);
+        app.ui.toast(`已搬進「${card.title}」。搬之前的版本存在「🗂 資料 → 本機快照」`);
     },
+
+    // ---------- 🗺 我的分區 ----------
     zones() { return String(app.settings.get('boardZones') || '').trim(); },
     async editZones() {
         this._z = this.zones();
         const v = await app.ui.dialog({
             title: '🗺 我的分區',
-            html: `<p class="pm-hint" style="margin-top:0;">寫下你習慣把什麼放在哪一區。AI 拆的時候會照著放座標；不寫也可以，AI 會自己排並說明。</p>
+            html: `<p class="pm-hint" style="margin-top:0;">寫下你習慣把什麼放在哪一區。AI 拆的時候會照著放座標；不寫也可以。</p>
                 <textarea class="ps-input" style="min-height:110px;" placeholder="例如：&#10;左下（A–G, 1–7）＝前期：需求、訪談、資料&#10;右下（N–T, 1–7）＝開發與製作&#10;右上（N–T, 13–19）＝上線、驗收、交付&#10;左上（A–G, 13–19）＝溝通協調、等別人&#10;中腹＝還不確定、要研究的" oninput="app.board._z=this.value">${this.esc(this._z)}</textarea>`,
             buttons: [{ label: '取消', value: null }, { label: '儲存', value: 'ok', primary: true }]
         });
         if (v === 'ok') { app.settings.set('boardZones', this._z.trim() || undefined); app.ui.toast('已存好分區'); }
     },
 
-    // ---------- 🤖 和 AI 一起拆 ----------
+    // ---------- 🤖 和 AI 一起拆（拆的是這張卡） ----------
     ai: { mode: 'split', goal: '', text: '', rows: [] },
     aiPrompt() {
-        const A = this.ai, p = this.project(), slots = [];
-        const nodes = this.visible();
+        const A = this.ai, card = this.card(); if (!card) return '';
+        const kids = this.children(card);
+        const parent = card.parentId ? app.worktime.getCard(card.parentId) : null;
+        const p = String(card.project || '').trim();
         const b = p && app.coach?.brief ? app.coach.brief(p) : {};
         const brief = [['目的', b.goal], ['交付', b.deliverable], ['期限', b.deadline], ['相關的人', b.stakeholders], ['限制', b.constraints]].filter(x => String(x[1] || '').trim()).map(([k, v]) => `- ${k}：${v}`);
-        nodes.forEach(n => { const st = this.status(n), c = this.cardOf(n); slots.push(`- ${this.coord(this.pos(n).x, this.pos(n).y)}　${c ? c.title : n.text}${n.note ? `（${n.note}）` : ''}${st ? `［${st.t.replace(/^[^\s]+\s/, '')}］` : '［想法］'}${n.stoneColor === 'black' ? '［警戒］' : ''}`); });
+        const W = app.worktime;
+        const notes = String(card.content || '').split('\n').filter(l => !/^\s*[-*]\s+\[[ xX]\]/.test(l)).join('\n').trim();
         const ask = A.mode === 'review'
-            ? ['請檢查我目前在棋盤上的拆法（第一層）：', '1. 有沒有漏掉的大塊？有沒有其實是同一件事、或太大要再拆的？', '2. 哪些其實是「執行步驟」而不是可以獨立交付的成果？', '3. 哪些是還沒驗證的假設或未知，應該先研究？', '4. 位置是否符合我的分區？', '先用條列說明（簡短），最後把「建議新增」的棋子用下面格式列出（沒有就寫「無」）。']
-            : ['請幫我把這件事拆成「第一層」：4～9 個可以獨立交付或驗收的大塊（不是執行步驟）。', '資訊不足時，先問我最多 3 個問題；我回答後再給最後結果。', '還不確定、要先研究的放「❓」開頭。', '依我的分區放座標，避開已經有棋子的位置，相關的放在相鄰的位置。'];
+            ? ['請檢查我這張卡目前的拆法（子項目）：', '1. 有沒有漏掉的？有沒有重複、或太大要再拆的（太大的建議我「升格」成子卡）？', '2. 哪些其實是還沒驗證的假設或未知，應該先確認？', '3. 位置是否符合我的分區？', '先用條列說明（簡短），最後把「建議新增」的子項目用下面格式列出（沒有就寫「無」）。']
+            : ['請幫我把這張卡拆成子項目：4～9 個，每個是做完看得到結果的一塊（不是太細的動作）。', '資訊不足時，先問我最多 3 個問題；我回答後再給最後結果。', '還不確定、要先研究的，名稱用「❓」開頭。', '依我的分區放座標，避開已經有子項目的位置，相關的放相鄰。'];
         return [
-            '我在用一個 19 路棋盤做專案拆解的第一層：每顆棋子是一大塊工作，位置是我自己分的區（座標像圍棋：A–T 不含 I，1–19，1 在最下面）。',
-            '',
-            ...ask,
-            '',
-            '【輸出格式】最後結果放在一個程式碼區塊裡，一行一顆：',
-            '```', '座標 | 名稱（10 字內） | 一句說明', 'D4 | 需求訪談 | 跟承辦確認範圍與時程', '```',
-            '',
-            `【專案】${p || '（沒有指定，整個工作區）'}`,
+            '我用一個 19 路棋盤拆解一張工作卡：卡片是母，每顆棋子是一個子項目，位置是我自己分的區（座標像圍棋：A–T 不含 I，1–19，1 在最下面）。',
+            '', ...ask, '',
+            '【輸出格式】最後結果放在一個程式碼區塊裡，一行一個：',
+            '```', '座標 | 子項目名稱（15 字內） | 一句細節', 'D4 | 需求訪談 | 跟承辦確認範圍與時程', '```', '',
+            `【這張卡】${card.title || '（未命名）'}`,
+            `專案：${p || '雜項'}${parent ? `　母卡：${parent.title}` : ''}　預計完成：${W.plannedEnd(card) || '未定'}`,
+            card.deliverable ? `要交出什麼：${card.deliverable}` : '', card.acceptance ? `怎樣算完成：${card.acceptance}` : '',
             ...(brief.length ? ['【專案簡述】', ...brief] : []),
-            `【我想拆的事】${A.goal.trim() || '（見專案與目前盤面）'}`,
-            this.zones() ? `【我的分區】\n${this.zones()}` : '【我的分區】沒有固定，請你排並在說明裡講一下分區邏輯。',
-            '【目前盤上】', ...(slots.length ? slots : ['（空的）'])
-        ].join('\n');
+            A.goal.trim() ? `【我補充】${A.goal.trim()}` : '',
+            notes ? `【卡片筆記（節錄）】\n${notes.slice(0, 3000)}` : '',
+            this.zones() ? `【我的分區】\n${this.zones()}` : '【我的分區】沒有固定，請你排並說明分區邏輯。',
+            '【目前的子項目】', ...(kids.length ? kids.map(c => `- ${this.coord(c.at?.x ?? 9, c.at?.y ?? 9)}　${c.text}${c.done ? '［完成］' : ''}${c.childCard ? '［已升格成卡片］' : ''}${c.black ? '［警戒］' : ''}${c.details.length ? `：${c.details.slice(0, 3).join('；')}` : ''}`) : ['（還沒有）'])
+        ].filter(x => x !== '').join('\n');
     },
     aiOpen() {
+        const card = this.card(); if (!card) return;
         const A = this.ai; A.text = ''; A.rows = [];
         const esc = x => this.esc(x), masked = (app.batch?.maskPairs?.() || []).length;
         app.ui.dialog({
-            title: `🤖 和 AI 一起拆${this.project() ? `：${this.project()}` : ''}`,
+            title: `🤖 和 AI 一起拆：${card.title || '（未命名）'}`,
             wide: true,
             html: `<div class="bt-step"><b>① 告訴 AI 要做什麼</b>
-                    <div class="bd-modes"><label><input type="radio" name="bd-mode" ${A.mode !== 'review' ? 'checked' : ''} onchange="app.board.ai.mode='split'"> 幫我拆第一層</label><label><input type="radio" name="bd-mode" ${A.mode === 'review' ? 'checked' : ''} onchange="app.board.ai.mode='review'"> 檢查我現在的拆法</label></div>
-                    <textarea class="ps-input" style="min-height:70px;" placeholder="想拆的事（可以很粗）：例如「化學署官網改版，明年 6 月上線，要先做使用者調查」" oninput="app.board.ai.goal=this.value">${esc(A.goal)}</textarea>
-                    <div class="bt-row"><button type="button" class="worklog-add-btn" onclick="app.board.aiSend()">🤖 複製給 AI</button><span class="pm-hint">會帶上：關於我、專案簡述、我的分區、目前盤面${masked ? `；${masked} 組敏感名稱先代換` : ''}。可以跟 AI 來回討論，最後的表再貼回來。</span></div>
+                    <div class="bd-modes"><label><input type="radio" name="bd-mode" ${A.mode !== 'review' ? 'checked' : ''} onchange="app.board.ai.mode='split'"> 幫我拆子項目</label><label><input type="radio" name="bd-mode" ${A.mode === 'review' ? 'checked' : ''} onchange="app.board.ai.mode='review'"> 檢查我現在的拆法</label></div>
+                    <textarea class="ps-input" style="min-height:60px;" placeholder="想補充的（可空白）：例如「明年 6 月上線，要先做使用者調查」" oninput="app.board.ai.goal=this.value">${esc(A.goal)}</textarea>
+                    <div class="bt-row"><button type="button" class="worklog-add-btn" onclick="app.board.aiSend()">🤖 複製給 AI</button><span class="pm-hint">會帶上：關於我、這張卡（交付、筆記）、專案簡述、我的分區、目前子項目${masked ? `；${masked} 組敏感名稱先代換` : ''}。</span></div>
                 </div>
                 <div class="bt-step"><b>② 把 AI 最後給的表貼回來</b>
-                    <textarea class="ps-input" id="bd-ai-text" style="min-height:90px;" placeholder="整段貼上也可以，只會讀「座標 | 名稱 | 說明」的行" oninput="app.board.ai.text=this.value; app.board.aiPreview()"></textarea>
+                    <textarea class="ps-input" id="bd-ai-text" style="min-height:90px;" placeholder="整段貼上也可以，只會讀「座標 | 名稱 | 細節」的行" oninput="app.board.ai.text=this.value; app.board.aiPreview()"></textarea>
                     <div id="bd-ai-preview"></div>
                 </div>`,
-            buttons: [{ label: '取消', value: null }, { label: '落下勾選的子', value: 'ok', primary: true }]
+            buttons: [{ label: '取消', value: null }, { label: '加入勾選的子項目', value: 'ok', primary: true }]
         }).then(v => { if (v === 'ok') this.aiApply(); });
     },
     async aiSend() {
@@ -9083,15 +9223,15 @@ app.board = {
     aiParse(raw) {
         let t = String(raw || '');
         if (app.batch?.unmask) t = app.batch.unmask(t);
+        const card = this.card(), have = new Set(card ? this.children(card).map(c => c.key) : []);
         const rows = [], seen = new Set();
         t.split('\n').forEach(line => {
             const m = line.replace(/^\s*[-*•]\s*/, '').match(/^\s*([A-HJ-Ta-hj-t])\s*(1[0-9]|[1-9])\s*[|｜]\s*([^|｜]+?)\s*(?:[|｜]\s*(.*?))?\s*$/);
             if (!m) return;
-            const name = m[3].replace(/^\*\*|\*\*$/g, '').trim(); if (!name || /^名稱/.test(name)) return;
+            const name = this.key(m[3].replace(/^\*\*|\*\*$/g, '')); if (!name || /^(子項目)?名稱/.test(name) || seen.has(name)) return;
+            seen.add(name);
             const x = this.LETTERS.indexOf(m[1].toUpperCase()), y = 19 - Number(m[2]);
-            const key = name; if (seen.has(key)) return; seen.add(key);
-            const dupNode = this.visible().find(n => { const c = this.cardOf(n); return (c ? c.title : n.text) === name; });
-            rows.push({ x, y, name, note: (m[4] || '').trim(), on: !dupNode, dup: !!dupNode, taken: this.occupied(x, y) });
+            rows.push({ x, y, name, note: (m[4] || '').trim(), on: !have.has(name), dup: have.has(name), taken: this.occupied(x, y) });
         });
         return rows;
     },
@@ -9099,60 +9239,20 @@ app.board = {
         const el = document.getElementById('bd-ai-preview'); if (!el) return;
         const A = this.ai; A.rows = this.aiParse(A.text);
         const esc = x => this.esc(x);
-        el.innerHTML = A.rows.length ? `<div class="pm-hint">讀到 ${A.rows.length} 顆。都是「想法」，要做的再轉成卡片。</div>
-            <div class="bd-pe-list">${A.rows.map((r, i) => `<label class="bd-pe"><input type="checkbox" ${r.on ? 'checked' : ''} onchange="app.board.ai.rows[${i}].on=this.checked"><b class="bd-c" style="display:inline">${this.coord(r.x, r.y)}</b><span>${esc(r.name)}${r.note ? `<span class="td-meta">　${esc(r.note)}</span>` : ''}</span>${r.dup ? '<span class="td-why wait">盤上已有同名</span>' : ''}${r.taken ? '<span class="td-meta">（位置有子，會放旁邊）</span>' : ''}</label>`).join('')}</div>`
-            : (A.text.trim() ? '<div class="pm-hint">還沒讀到「座標 | 名稱 | 說明」的行。</div>' : '');
+        el.innerHTML = A.rows.length ? `<div class="pm-hint">讀到 ${A.rows.length} 個，會寫進這張卡的筆記（- [ ] 子項目，細節縮排在下面）。</div>
+            <div class="bd-pe-list">${A.rows.map((r, i) => `<label class="bd-pe"><input type="checkbox" ${r.on ? 'checked' : ''} onchange="app.board.ai.rows[${i}].on=this.checked"><b class="bd-c" style="display:inline">${this.coord(r.x, r.y)}</b><span>${esc(r.name)}${r.note ? `<span class="td-meta">　${esc(r.note)}</span>` : ''}</span>${r.dup ? '<span class="td-why wait">已經有了</span>' : ''}${r.taken ? '<span class="td-meta">（位置有子，會放旁邊）</span>' : ''}</label>`).join('')}</div>`
+            : (A.text.trim() ? '<div class="pm-hint">還沒讀到「座標 | 名稱 | 細節」的行。</div>' : '');
     },
     aiApply() {
-        const rows = (this.ai.rows || []).filter(r => r.on);
+        const card = this.card(); if (!card) return;
+        const rows = (this.ai.rows || []).filter(r => r.on && !r.dup);
         if (!rows.length) return;
-        const p = this.project();
         rows.forEach(r => {
             const at = this.occupied(r.x, r.y) ? this.freePoint(r.x, r.y) : { x: r.x, y: r.y };
-            this.nodes().push({ id: app.makeId('node'), text: r.name.replace(/^❓\s*/, '❓ '), note: r.note, tag: '', gridX: at.x, gridY: at.y, stoneColor: 'white', project: p });
+            this.addChild(card, r.name, at, r.note ? [r.note] : []);
         });
-        app.saveToLocal(); this.renderFull();
-        app.ui.toast(`已落下 ${rows.length} 顆。滑過棋子可以轉成卡片、改名、拖動`);
-    },
-    openProject(name) {
-        app.state.filters.activeProject = name || '';
-        this.pick = null;
-        app.switchView('matrix');
-        setTimeout(() => document.getElementById('matrix-quick-input')?.focus(), 50);
-    },
-
-    // ---------- 今日：用棋盤挑今天要做的事 ----------
-    todayHtml() {
-        const esc = x => this.esc(x), tab = this.todayTab();
-        const nodes = (app.state.nodes[tab] || []).filter(n => { const c = this.cardOf(n); return !c || Number(c.status) !== 2 || app.today.planOf(c, app.today.date()); });
-        const tabs = app.state.tabs.filter(t => (app.state.nodes[t.id] || []).length);
-        return `<div class="bd-today">
-            <div class="bd-today-head">${tabs.length > 1 ? `<select onchange="app.board.ui.tab=this.value; app.today.render()">${tabs.map(t => `<option value="${t.id}" ${t.id === tab ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select>` : ''}
-                <span class="td-meta">點棋子排進今天；淡色＝還沒轉成卡片的想法。</span>
-                <button type="button" class="ps-mini" onclick="app.switchView('matrix')">到棋盤編輯 →</button></div>
-            ${nodes.length ? `<div class="go-board-surface bd-today-board"><div class="go-grid-lines">${this.gridHtml(nodes, 'today')}</div></div>` : '<div class="data-empty">這個工作區的棋盤還是空的。新專案可以先到棋盤拆第一層。</div>'}
-        </div>`;
-    },
-    ui: { tab: '' },
-    todayTab() {
-        const ok = id => app.state.tabs.some(t => t.id === id);
-        if (ok(this.ui.tab)) return this.ui.tab;
-        if ((app.state.nodes[app.state.activeTabId] || []).length) return app.state.activeTabId;
-        return app.state.tabs.find(t => (app.state.nodes[t.id] || []).length)?.id || app.state.activeTabId;
-    },
-    async todayPick(id) {
-        const hit = this.findNode(id); if (!hit) return;
-        const c = this.cardOf(hit.n), date = app.today.date();
-        const p = c ? app.today.planOf(c, date) : null;
-        const v = await app.ui.dialog({
-            title: `${this.coord(this.pos(hit.n).x, this.pos(hit.n).y)}　${c ? app.today.name(c) : hit.n.text}`,
-            html: c ? `<p style="margin-top:0;" class="pm-hint">${p ? `目前：${{ must: '必做', opt: '備選', skip: '今天不做' }[p.pri] || ''}` : '還沒排進這天'}</p>` : '<p style="margin-top:0;" class="pm-hint">這還是一個想法，排進今天會先轉成卡片（棋子留在盤上）。</p>',
-            buttons: [{ label: '取消', value: null }, ...(c ? [{ label: '↗ 打開', value: 'open' }, { label: '不做', value: 'skip' }] : []), { label: '備選', value: 'opt' }, { label: '必做', value: 'must', primary: true }]
-        });
-        if (!v) return;
-        if (v === 'open') { app.today.focus(c.id); return; }
-        const card = c || this.promote(id);
-        if (card) app.today.classify(card.id, v);
+        this.save(card);
+        app.ui.toast(`已加入 ${rows.length} 個子項目到「${card.title}」`);
     }
 };
 
@@ -9320,7 +9420,6 @@ app.lists = {
                 <input class="pj-due" type="date" value="${esc(r.p.due || '')}" onchange="app.lists.setProject(${esc(JSON.stringify(r.n))}, 'due', this.value)" title="專案截止日">
                 <span class="pj-stat">未完成 ${r.open}・共 ${r.total} 張${r.mins ? ` · ⏱ ${esc(W.formatMinutes(r.mins))}` : ''}</span>
                 <span class="ct-actions">
-                    <button type="button" onclick="app.board.openProject(${esc(JSON.stringify(r.n))})" title="在發想棋盤上拆這個專案">♟</button>
                     <button type="button" onclick="app.lists.openProject(${esc(JSON.stringify(r.n))})" title="看這個專案的卡片">↗</button>
                     <button type="button" onclick="app.lists.mergeProject(${esc(JSON.stringify(r.n))})" title="合併到另一個專案（名字打錯、重複時用）">⇢</button>
                     ${r.total ? '' : `<button type="button" onclick="app.lists.removeProject(${esc(JSON.stringify(r.n))})" title="刪除這個專案（沒有卡片才能刪）">🗑</button>`}
@@ -9371,11 +9470,7 @@ app.lists = {
         if (!n) return;
         app.projectReg.set(n, { status: 'active' });
         this.render();
-        app.ui.dialog({
-            title: `新專案「${n}」`,
-            html: '<p style="margin-top:0;">要先到發想棋盤拆第一層嗎？把想到的大塊一顆顆落下、排好位置，再轉成卡片。</p>',
-            buttons: [{ label: '之後再說', value: null }, { label: '♟ 到棋盤拆第一層', value: 'go', primary: true }]
-        }).then(v => { if (v === 'go') app.board.openProject(n); else setTimeout(() => document.getElementById('pj-new')?.focus(), 0); });
+        setTimeout(() => document.getElementById('pj-new')?.focus(), 0);
     },
     openProject(name) { this.ui.project = name; this.ui.tab = 'cards'; this.savePrefs(); this.render(); },
 
