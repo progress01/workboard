@@ -1,5 +1,5 @@
 // =====================================================================
-// 白板 & 心流沙盒 v6.3
+// 白板 & 心流沙盒 v6.4
 // ---------------------------------------------------------------------
 // v3.0 重整重點（資料邏輯）：
 // 1. 所有修改只走一個入口 app.saveToLocal()（= store.markDirty）：
@@ -27,7 +27,7 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 const provider = new firebase.auth.GoogleAuthProvider();
 
-const APP_VERSION = '6.3';
+const APP_VERSION = '6.4';
 const SCHEMA_VERSION = 3;
 const CLOUD_DOC_SOFT_LIMIT = 750 * 1024;   // 超過時提醒
 const CLOUD_DOC_HARD_LIMIT = 1000 * 1000;  // Firestore 單一文件上限約 1 MiB，保守一點
@@ -4286,7 +4286,7 @@ const app = {
     goArea(area) {
         const v = area === 'cards' ? 'lists'
             : area === 'schedule' ? (['timeline', 'gantt', 'calendar'].includes(this.prefs.scheduleView) ? this.prefs.scheduleView : 'timeline')
-            : area === 'review' ? (['report', 'chronicle'].includes(this.prefs.reviewView) ? this.prefs.reviewView : 'report')
+            : area === 'review' ? 'report'
             : 'today';
         this.switchView(v);
     },
@@ -4560,39 +4560,7 @@ const app = {
         if (span) span.textContent = text;
     },
 
-    renderMatrix() {
-        let nodes = this.state.nodes[this.state.activeTabId] || []; 
-        if (this.state.filters.activeProject) nodes = nodes.filter(n => String(n.project || '').trim() === this.state.filters.activeProject);
-        
-        const getTagHtml = (tagVal) => {
-            if (tagVal === 'q1') return `<div class="node-tag tag-q1">🔥 重要・緊急</div>`; if (tagVal === 'q2') return `<div class="node-tag tag-q2">📅 重要・不急</div>`;
-            if (tagVal === 'q3') return `<div class="node-tag tag-q3">⚡ 緊急・不重</div>`; if (tagVal === 'q4') return `<div class="node-tag tag-q4">☕ 不重・不急</div>`;
-            return '';
-        };
-
-        let html = ''; const starPositions = [3, 9, 15];
-        starPositions.forEach(x => { starPositions.forEach(y => { html += `<div class="star-point" style="left: ${(x/18)*100}%; top: ${(y/18)*100}%;"></div>`; }); });
-
-        html += nodes.map(n => {
-            const gridX = n.gridX !== undefined ? n.gridX : 9; const gridY = n.gridY !== undefined ? n.gridY : 9;
-            const stoneClass = n.stoneColor === 'black' ? 'stone-black' : 'stone-white';
-            const leftPct = (gridX / 18) * 100; const topPct = (gridY / 18) * 100;
-            return `
-            <div class="matrix-node ${stoneClass}" data-id="${n.id}" style="left:${leftPct}%; top:${topPct}%;">
-                <div class="node-stone"></div>
-                <div class="node-paper">
-                    ${getTagHtml(n.tag)}
-                    <div class="matrix-node-text">${this.entries.escapeHtml(n.text)}</div>
-                    <div class="node-action-group">
-                        <button class="node-action-btn" onclick="app.actions.toggleStoneColor('${n.id}')" title="標記警戒">☯️</button>
-                        <button class="node-action-btn" onclick="app.actions.promoteToCard('${n.id}')" title="轉為排程卡片">📄</button>
-                        <button class="node-action-btn del" style="color:#ef4444;" onclick="app.actions.deleteMatrixNode('${n.id}')" title="刪除">×</button>
-                    </div>
-                </div>
-            </div>`
-        }).join('');
-        document.getElementById('matrix-grid-lines').innerHTML = html;
-    },
+    renderMatrix() { app.board.renderFull(); },
 
     renderChronicle() {
         const target = document.getElementById('chronicle-render-target');
@@ -7039,24 +7007,11 @@ ${planned.length ? planned.map(({ card }) => this.cardLine(card)).join('\n') : '
             app.saveToLocal(); app.refreshCard(id);
         },
 
-        addMatrixNode() {
-            const inputEl = document.getElementById('matrix-quick-input'); const tagEl = document.getElementById('matrix-tag-select');
-            const text = inputEl.value.trim(); if (!text) return;
-            if (!app.state.nodes[app.state.activeTabId]) app.state.nodes[app.state.activeTabId] = [];
-            const gridX = Math.floor(Math.random() * 7) + 6; const gridY = Math.floor(Math.random() * 7) + 6;
-            app.state.nodes[app.state.activeTabId].push({ id: app.makeId('node'), text, tag: tagEl.value, gridX, gridY, stoneColor: 'white', project: app.state.filters.activeProject || '' });
-            inputEl.value = ''; app.saveToLocal(); app.renderMatrix();
-        },
+        addMatrixNode() { app.board.addFromInput(); },
         updateMatrixNodePos(id, gridX, gridY) { const node = (app.state.nodes[app.state.activeTabId] || []).find(n => n.id === id); if (node) { node.gridX = gridX; node.gridY = gridY; app.saveToLocal(); app.renderMatrix(); } },
         toggleStoneColor(id) { const node = (app.state.nodes[app.state.activeTabId] || []).find(n => n.id === id); if (node) { node.stoneColor = node.stoneColor === 'black' ? 'white' : 'black'; app.saveToLocal(); app.renderMatrix(); } },
-        deleteMatrixNode(id) { app.state.nodes[app.state.activeTabId] = (app.state.nodes[app.state.activeTabId] || []).filter(n => n.id !== id); app.saveToLocal(); app.renderMatrix(); },
-        promoteToCard(id) {
-            const nodes = app.state.nodes[app.state.activeTabId] || []; const idx = nodes.findIndex(n => n.id === id); if (idx === -1) return;
-            const node = nodes[idx]; let cardColor = 'blue';
-            if (node.tag === 'q1') cardColor = 'red'; else if (node.tag === 'q3') cardColor = 'yellow'; else if (node.tag === 'q2') cardColor = 'green';
-            app.state.workspaces[app.state.activeTabId].push({ id: app.makeId('card'), title: node.text, content: '', project: node.project || '', dateMode: 'single', dateSingle: app.worktime.localDateString(), color: cardColor, status: 0, isMemo: false });
-            nodes.splice(idx, 1); app.saveToLocal(); app.renderAll(); app.ui.toast('🚀 已轉為排程卡片，到「📜 時間軸」可以看到');
-        },
+        deleteMatrixNode(id) { app.board.removeNode(id); },
+        promoteToCard(id) { app.board.promote(id); },
 
         switchTab(id) {
             app.state.activeTabId = id;
@@ -7155,7 +7110,7 @@ app.today = {
     EST_OPTIONS: [15, 30, 45, 60, 90, 120, 180, 240],
     LIMIT_MUST: 4, LIMIT_OPT: 3,
     ui: { which: null, search: '', showSkipped: false, showSettings: false, collapsed: {} },
-    groupBy() { return app.prefs.todayGroupBy === 'urgency' ? 'urgency' : 'project'; },
+    groupBy() { return ['urgency', 'board'].includes(app.prefs.todayGroupBy) ? app.prefs.todayGroupBy : 'project'; },
     setGroupBy(v) { app.prefs.todayGroupBy = v; app.store.savePrefs(); this.render(); },
     toggleGroup(k) { this.ui.collapsed[k] = !this.ui.collapsed[k]; this.render(); },
     skipGroup(ids) { const date = this.date(); ids.forEach(id => { const c = this.W().getCard(id); if (c) { this.setPlan(c, date, { pri: 'skip', slot: null, est: this.planOf(c, date)?.est || this.defaultEst(c), done: false }); } }); app.saveToLocal(); this.render(); app.ui.toast(`${ids.length} 張今天不做`); },
@@ -7254,8 +7209,18 @@ app.today = {
     },
 
     // 候選：之前沒做完、快到期、進行中、有下一步、有未完成待辦、本週重點、剛新增
+    // 在追的事：等別人的卡。不算逾期、不提醒沒做完，到追蹤日才跳到前面。
+    isWaiting(card) { return !!(String(card.waitingWho || '').trim() || String(card.waitingWhat || '').trim() || Number(card.status) === 3); },
     reasons(card, date) {
         const W = this.W(), r = [];
+        if (this.isWaiting(card)) {
+            const who = String(card.waitingWho || '').trim(), what = String(card.waitingWhat || '').trim(), fu = String(card.followUpDate || '');
+            const label = `等${who ? ' ' + who : ''}${what ? '：' + what : ''}` + (who || what ? '' : '（卡住／等待）');
+            if (fu && fu <= date) r.push({ k: 'chase', t: `⏳ 今天要追：${label}`, w: 88 });
+            else r.push({ k: 'wait', t: `⏳ ${label}${fu ? `（${fu.slice(5).replace('-', '/')} 追）` : '（沒設追蹤日）'}`, w: 20 });
+            if (card.weekFocus === this.weekKey(date)) r.push({ k: 'star', t: '⭐ 本週重點', w: 85 });
+            return r;
+        }
         const prev = Object.entries(card.plans || {}).filter(([d, p]) => d < date && ['must', 'opt'].includes(p?.pri)).sort().pop();
         if (prev) r.push({ k: 'carry', t: `${prev[0].slice(5).replace('-', '/')} 沒做完`, w: 100 });
         const end = card.isMemo ? '' : W.plannedEnd(card);
@@ -7267,9 +7232,6 @@ app.today = {
         }
         if (card.weekFocus === this.weekKey(date)) r.push({ k: 'star', t: '⭐ 本週重點', w: 85 });
         if (Number(card.status) === 1) r.push({ k: 'doing', t: '進行中', w: 40 });
-        const who = String(card.waitingWho || '').trim(), what = String(card.waitingWhat || '').trim(), fu = String(card.followUpDate || '');
-        if (who || what) r.push({ k: 'wait', t: `⏳ 等${who ? ' ' + who : ''}${what ? '：' + what : ''}${fu ? `（追蹤 ${fu.slice(5).replace('-', '/')}）` : ''}`, w: fu && fu <= date ? 75 : 20 });
-        else if (Number(card.status) === 3) r.push({ k: 'wait', t: '卡住／等待', w: 20 });
         if (String(card.nextStep || '').trim()) r.push({ k: 'next', t: '有下一步', w: 30 });
         const open = app.sandbox.parseSubtasks(card.content).filter(s => !s.completed).length;
         if (open) r.push({ k: 'todo', t: `待辦 ${open}`, w: 25 });
@@ -7538,7 +7500,8 @@ app.today = {
         const esc = x => this.esc(x);
         const wk = this.weekKey(this.date());
         const meta = [showProject && card.project ? `#${esc(card.project)}` : '', showProject ? esc(tabName) : ''].filter(Boolean).join(' · ');
-        const urgent = why.some(x => x.k === 'carry' || (x.k === 'due' && x.w >= 79));
+        const urgent = why.some(x => x.k === 'carry' || x.k === 'chase' || (x.k === 'due' && x.w >= 79));
+        const waiting = why.some(x => x.k === 'wait' || x.k === 'chase');
         const dup = (this._dupCount || {})[app.quickAdd.norm(card.title)] > 1;
         why = dup ? [...why, { k: 'dup', t: '可能重複', w: 0 }] : why;
         return `<div class="td-cand ${urgent ? 'urgent' : ''} ${why.some(x => x.k !== 'dup') ? '' : 'quiet'}" draggable="true" ondragstart="if(event.target===this) app.today.dragStart(event,'${card.id}')" title="可以直接拖到右邊的時段">
@@ -7554,8 +7517,37 @@ app.today = {
                 <button type="button" class="opt" onclick="app.today.classify('${card.id}','opt')" title="備選">備選</button>
                 <button type="button" class="skip" onclick="app.today.classify('${card.id}','skip')" title="今天不做">不做</button>
             </div>
+            <button type="button" class="td-del ${waiting ? 'on' : ''}" onclick="app.today.editWaiting('${card.id}')" title="${waiting ? '改等誰、追蹤日，或不用等了' : '這件事在等別人 → 放到「在追的事」'}">⏳</button>
             <button type="button" class="td-del" onclick="app.actions.deleteCard('${card.id}')" title="刪除這張卡（可在「資料 → 最近刪除」救回）">🗑</button>
         </div>`;
+    },
+
+    async editWaiting(id) {
+        const card = this.W().getCard(id); if (!card) return;
+        const was = this.isWaiting(card);
+        const f = { who: card.waitingWho || '', what: card.waitingWhat || '', fu: card.followUpDate || this.addDays(this.todayStr(), 3) };
+        this._waitForm = f;
+        const esc = x => this.esc(x);
+        const v = await app.ui.dialog({
+            title: `⏳ 在追的事：${this.name(card)}`,
+            html: `<p class="pm-hint" style="margin-top:0;">在等別人的事不算逾期、不佔今天的位置；到追蹤日會自動跳到候選上面，提醒你去催。</p>
+                <div class="qa-fields">
+                    <label>等誰<input value="${esc(f.who)}" placeholder="例如：化學署承辦" oninput="app.today._waitForm.who=this.value"></label>
+                    <label style="flex:2;">等什麼<input value="${esc(f.what)}" placeholder="例如：回覆會議時間" oninput="app.today._waitForm.what=this.value"></label>
+                    <label>哪天追<input type="date" value="${esc(f.fu)}" oninput="app.today._waitForm.fu=this.value"></label>
+                </div>`,
+            buttons: [{ label: '取消', value: null }, ...(was ? [{ label: '不用等了', value: 'clear' }] : []), { label: '儲存', value: 'ok', primary: true }]
+        });
+        if (v === 'clear') {
+            card.waitingWho = ''; card.waitingWhat = ''; card.followUpDate = '';
+            if (Number(card.status) === 3) card.status = 1;
+        } else if (v === 'ok') {
+            card.waitingWho = f.who.trim(); card.waitingWhat = f.what.trim(); card.followUpDate = f.fu || '';
+            if (Number(card.status) !== 2) card.status = 3;
+        } else return;
+        app.saveToLocal();
+        this.render();
+        app.ui.toast(v === 'clear' ? '已移出「在追的事」' : `已放到「在追的事」${card.followUpDate ? `，${card.followUpDate.slice(5).replace('-', '/')} 提醒你追` : ''}`);
     },
 
     candidatesHtml(allIn) {
@@ -7566,8 +7558,8 @@ app.today = {
         const waiting = all.filter(r => r.why.some(x => x.k === 'wait'));
         all = all.filter(r => !r.why.some(x => x.k === 'wait'));
         const waitHtml = waiting.length ? `<div class="td-group td-waiting">
-                <div class="td-group-head"><button type="button" class="td-group-name" onclick="app.today.toggleGroup('__wait__')">${this.ui.collapsed.__wait__ ? '▸' : '▾'} ⏳ 在等別人 <span class="ls-count">${waiting.length}</span></button><span class="td-meta">今天要催的就按「必做」</span></div>
-                ${this.ui.collapsed.__wait__ ? '' : waiting.map(r => this.candidateRow(r)).join('')}
+                <div class="td-group-head"><button type="button" class="td-group-name" onclick="app.today.toggleGroup('__waitOpen__')">${this.ui.collapsed.__waitOpen__ ? '▾' : '▸'} ⏳ 在追的事 <span class="ls-count">${waiting.length}</span></button><span class="td-meta">在等別人，不算逾期；到追蹤日會自動跳到上面</span></div>
+                ${this.ui.collapsed.__waitOpen__ ? waiting.map(r => this.candidateRow(r)).join('') : ''}
             </div>` : '';
         // 有理由的（快到期、進行中、有待辦…）排前面；其他未完成的卡收在最下面，不會漏掉
         const cands = all.filter(r => r.why.length), quiet = all.filter(r => !r.why.length);
@@ -7576,9 +7568,14 @@ app.today = {
                 ${quiet.map(r => this.candidateRow(r)).join('')}
             </details>` : '';
         if (this.groupBy() === 'urgency') return waitHtml + cands.map(r => this.candidateRow(r)).join('') + quietHtml;
+        if (this.groupBy() === 'board') {
+            const on = app.board.linkedCardIds();
+            const off = [...cands, ...quiet].filter(r => !on.has(r.card.id));
+            return app.board.todayHtml() + waitHtml + (off.length ? `<div class="td-group"><div class="td-group-head"><span class="td-group-name">不在棋盤上的卡 <span class="ls-count">${off.length}</span></span></div>${off.map(r => this.candidateRow(r)).join('')}</div>` : '');
+        }
         // 依專案：每個專案列出它所有未完成的卡（有理由的在前），不另外收起來
         const groups = new Map();
-        all.forEach(r => { const k = String(r.card.project || '').trim() || '（沒有專案）'; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(r); });
+        all.forEach(r => { const k = String(r.card.project || '').trim() || '雜項'; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(r); });
         const top = rs => Math.max(0, ...rs.flatMap(r => r.why.map(x => x.w)));
         return [...groups.entries()].sort((a, b) => top(b[1]) - top(a[1]) || a[0].localeCompare(b[0], 'zh-Hant')).map(([k, rs]) => {
             const closed = !!this.ui.collapsed[k];
@@ -7701,7 +7698,7 @@ app.today = {
             <div class="td-main" data-mtab="${mtab}">
             <section class="td-sec td-left">
                 <h4>① 分類 <span class="td-meta">未完成 ${allCands.length} 張都在這裡，最重要的先點。</span>
-                    <span class="td-groupby"><button type="button" class="${this.groupBy() === 'project' ? 'on' : ''}" onclick="app.today.setGroupBy('project')">依專案</button><button type="button" class="${this.groupBy() === 'urgency' ? 'on' : ''}" onclick="app.today.setGroupBy('urgency')">依急迫</button></span></h4>
+                    <span class="td-groupby"><button type="button" class="${this.groupBy() === 'project' ? 'on' : ''}" onclick="app.today.setGroupBy('project')">依專案</button><button type="button" class="${this.groupBy() === 'urgency' ? 'on' : ''}" onclick="app.today.setGroupBy('urgency')">依急迫</button><button type="button" class="${this.groupBy() === 'board' ? 'on' : ''}" onclick="app.today.setGroupBy('board')" title="用發想棋盤的位置來挑今天要做的事">♟ 棋盤</button></span></h4>
                 <div class="td-dump">
                     <textarea id="td-dump" rows="1" placeholder="＋ 腦中想到什麼先打下來（Enter 加入；貼多行＝多張卡）" onkeydown="if(event.key==='Enter' && !event.shiftKey && !event.isComposing){ event.preventDefault(); app.today.brainDump(); }">${esc(this.ui.dump || '')}</textarea>
                 </div>
@@ -8668,6 +8665,194 @@ app.quickAdd = {
 };
 
 // ==========================================
+// ♟ 發想棋盤：拆解的第一層。位置＝我自己分的區塊，座標（例如 D4）方便稱呼。
+// 棋子轉成卡片後留在盤上，卡片做完會顯示出來，看得出每一塊推進到哪。
+// ==========================================
+app.board = {
+    LETTERS: 'ABCDEFGHJKLMNOPQRST',
+    pick: null,
+    esc(x) { return app.entries.escapeHtml(x); },
+    coord(x, y) { return this.LETTERS[x] + (19 - y); },
+    parseCoord(t) {
+        const m = String(t || '').match(/^\s*([A-HJ-Ta-hj-t])(1[0-9]|[1-9])(?:\s+|[:：]\s*)([\s\S]+)$/);
+        if (!m) return null;
+        const n = Number(m[2]); if (n < 1 || n > 19) return null;
+        return { x: this.LETTERS.indexOf(m[1].toUpperCase()), y: 19 - n, text: m[3].trim() };
+    },
+    nodes(tabId = app.state.activeTabId) { return app.state.nodes[tabId] || (app.state.nodes[tabId] = []); },
+    project() { return app.state.filters.activeProject || ''; },
+    visible(tabId) { const p = this.project(); return this.nodes(tabId).filter(n => !p || String(n.project || '').trim() === p); },
+    pos(n) { return { x: n.gridX !== undefined ? n.gridX : 9, y: n.gridY !== undefined ? n.gridY : 9 }; },
+    occupied(x, y, tabId) { return this.nodes(tabId).some(n => { const p = this.pos(n); return p.x === x && p.y === y; }); },
+    // 從某點往外找最近的空位（不再隨機）
+    freePoint(fx = 9, fy = 9, tabId) {
+        // 優先同一列往右，連續打字會排成一排
+        for (let r = 0; r <= 18; r++) {
+            const ring = [];
+            for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) if (Math.max(Math.abs(dx), Math.abs(dy)) === r) ring.push([dx, dy]);
+            ring.sort((a, b) => Math.abs(a[1]) - Math.abs(b[1]) || (a[0] < 0) - (b[0] < 0) || Math.abs(a[0]) - Math.abs(b[0]) || (a[1] < 0) - (b[1] < 0));
+            for (const [dx, dy] of ring) {
+                const x = fx + dx, y = fy + dy;
+                if (x < 0 || y < 0 || x > 18 || y > 18) continue;
+                if (!this.occupied(x, y, tabId)) return { x, y };
+            }
+        }
+        return { x: fx, y: fy };
+    },
+    cardOf(n) { const c = n.cardId ? app.worktime.getCard(n.cardId) : null; return c || null; },
+    linkedCardIds() { const s = new Set(); app.state.tabs.forEach(t => (app.state.nodes[t.id] || []).forEach(n => { if (this.cardOf(n)) s.add(n.cardId); })); return s; },
+    status(n) {
+        const c = this.cardOf(n); if (!c) return null;
+        if (Number(c.status) === 2) return { k: 'done', t: '✓ 完成' };
+        const p = app.today.planOf(c, app.today.todayStr());
+        if (p?.pri === 'must') return { k: 'must', t: '今天必做' };
+        if (p?.pri === 'opt') return { k: 'opt', t: '今天備選' };
+        if (app.today.isWaiting(c)) return { k: 'wait', t: '⏳ 在追' };
+        if (Number(c.status) === 1) return { k: 'doing', t: '進行中' };
+        return { k: 'card', t: '📄 卡片' };
+    },
+    TAGS: { q1: '🔥 重要・緊急', q2: '📅 重要・不急', q3: '⚡ 緊急・不重', q4: '☕ 不重・不急' },
+
+    gridHtml(nodes, mode) {
+        const esc = x => this.esc(x);
+        let html = '';
+        [3, 9, 15].forEach(x => [3, 9, 15].forEach(y => { html += `<div class="star-point" style="left:${x / 18 * 100}%; top:${y / 18 * 100}%;"></div>`; }));
+        for (let i = 0; i < 19; i++) {
+            const p = i / 18 * 100;
+            html += `<span class="bd-coord top" style="left:${p}%">${this.LETTERS[i]}</span><span class="bd-coord left" style="top:${p}%">${19 - i}</span>`;
+        }
+        if (mode === 'full' && this.pick) html += `<div class="bd-pick" style="left:${this.pick.x / 18 * 100}%; top:${this.pick.y / 18 * 100}%;" title="下一顆落在 ${this.coord(this.pick.x, this.pick.y)}"></div>`;
+        html += nodes.map(n => {
+            const { x, y } = this.pos(n), st = this.status(n), c = st ? this.cardOf(n) : null;
+            const text = c ? (c.title || n.text) : n.text;
+            const cls = `matrix-node ${n.stoneColor === 'black' ? 'stone-black' : 'stone-white'} ${st ? 'linked st-' + st.k : 'idea'}`;
+            const style = `left:${x / 18 * 100}%; top:${y / 18 * 100}%;`;
+            if (mode === 'today') return `<button type="button" class="${cls} bd-mini" data-id="${n.id}" style="${style}" onclick="app.board.todayPick('${n.id}')" title="${esc(this.coord(x, y) + ' ' + text)}"><div class="node-stone"></div><div class="node-paper"><div class="matrix-node-text">${esc(text)}</div>${st ? `<div class="bd-st ${st.k}">${st.t}</div>` : ''}</div></button>`;
+            return `<div class="${cls}" data-id="${n.id}" style="${style}">
+                <div class="node-stone"></div>
+                <div class="node-paper">
+                    <div class="bd-head"><span class="bd-c">${this.coord(x, y)}</span>${n.tag && this.TAGS[n.tag] ? `<span class="node-tag tag-${n.tag}">${this.TAGS[n.tag]}</span>` : ''}</div>
+                    <div class="matrix-node-text">${esc(text)}</div>
+                    ${st ? `<div class="bd-st ${st.k}">${st.t}</div>` : ''}
+                    <div class="node-action-group">
+                        <button class="node-action-btn" onclick="app.actions.toggleStoneColor('${n.id}')" title="黑子＝標記警戒">☯️</button>
+                        ${st ? `<button class="node-action-btn" onclick="app.today.focus('${n.cardId}')" title="打開卡片（專注模式）">↗</button>` : `<button class="node-action-btn" onclick="app.board.promote('${n.id}')" title="轉成卡片（棋子會留在盤上）">📄</button>`}
+                        <button class="node-action-btn del" style="color:#ef4444;" onclick="app.board.removeNode('${n.id}')" title="${st ? '拿掉棋子（卡片保留）' : '刪除'}">×</button>
+                    </div>
+                </div>
+            </div>`;
+        }).join('');
+        return html;
+    },
+
+    renderFull() {
+        const grid = document.getElementById('matrix-grid-lines'); if (!grid) return;
+        grid.innerHTML = this.gridHtml(this.visible(), 'full');
+        this.renderBar();
+        const board = document.getElementById('matrix-board');
+        if (board && !board._bdClick) { board._bdClick = true; board.addEventListener('click', e => this.boardClick(e)); }
+    },
+    renderBar() {
+        const el = document.getElementById('matrix-bar-extra'); if (!el) return;
+        const esc = x => this.esc(x), p = this.project();
+        const names = app.projectReg?.names ? app.projectReg.names() : [];
+        const all = this.nodes(), linked = all.filter(n => this.cardOf(n)), done = linked.filter(n => Number(this.cardOf(n).status) === 2);
+        el.innerHTML = `<label class="bd-proj">專案<select onchange="app.board.setProject(this.value)"><option value="">全部</option>${[...new Set([...names, ...all.map(n => String(n.project || '').trim()).filter(Boolean)])].map(n => `<option value="${esc(n)}" ${n === p ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select></label>
+            <span class="td-meta">工作區「${esc(app.state.tabs.find(t => t.id === app.state.activeTabId)?.name || '')}」· ${all.length} 顆棋子 · 轉成卡片 ${linked.length} · 完成 ${done.length}</span>
+            <span class="bd-legend"><span><i style="border-color:#d6c28f"></i>想法</span><span><i style="border-color:#818cf8"></i>已是卡片</span><span><i style="border-color:#ef4444"></i>今天必做</span><span><i style="border-color:#3b82f6"></i>備選</span><span><i style="border-color:#f59e0b"></i>在追</span><span><i style="border-color:#22c55e"></i>完成</span></span>
+            <span class="td-meta">${this.pick ? `下一顆落在 <b>${this.coord(this.pick.x, this.pick.y)}</b>（<a href="#" onclick="app.board.pick=null; app.board.renderFull(); return false;">取消</a>）` : '先點盤上的交叉點選位置，或打「D4 內容」'}</span>`;
+        const inp = document.getElementById('matrix-quick-input');
+        if (inp) inp.placeholder = this.pick ? `💡 落在 ${this.coord(this.pick.x, this.pick.y)}…（Enter 落子）` : '💡 輸入想法（Enter 落子；可打「D4 內容」指定位置）';
+    },
+    setProject(v) { app.state.filters.activeProject = v; app.renderAll(); },
+    boardClick(e) {
+        if (e.target.closest('.matrix-node') || app.dragState.isDragging) return;
+        const grid = document.getElementById('matrix-grid-lines'), r = grid.getBoundingClientRect();
+        const x = Math.round((e.clientX - r.left) / r.width * 18), y = Math.round((e.clientY - r.top) / r.height * 18);
+        if (x < 0 || y < 0 || x > 18 || y > 18) return;
+        if (this.occupied(x, y)) return;
+        this.pick = this.pick && this.pick.x === x && this.pick.y === y ? null : { x, y };
+        this.renderFull();
+        document.getElementById('matrix-quick-input')?.focus();
+    },
+    addFromInput() {
+        const inputEl = document.getElementById('matrix-quick-input'), tagEl = document.getElementById('matrix-tag-select');
+        let text = String(inputEl?.value || '').trim(); if (!text) return;
+        let at = null;
+        const pc = this.parseCoord(text);
+        if (pc) { text = pc.text; at = this.occupied(pc.x, pc.y) ? this.freePoint(pc.x, pc.y) : { x: pc.x, y: pc.y }; }
+        else if (this.pick) at = this.occupied(this.pick.x, this.pick.y) ? this.freePoint(this.pick.x, this.pick.y) : this.pick;
+        else { const last = this.nodes().slice(-1)[0]; const p = last ? this.pos(last) : { x: 9, y: 9 }; at = this.freePoint(p.x, p.y); }
+        this.nodes().push({ id: app.makeId('node'), text, tag: tagEl?.value || '', gridX: at.x, gridY: at.y, stoneColor: 'white', project: this.project() });
+        // 下一顆預設落在旁邊，連續打字就會排成一串
+        this.pick = this.freePoint(at.x, at.y);
+        if (inputEl) inputEl.value = '';
+        app.saveToLocal(); this.renderFull();
+    },
+    findNode(id) { for (const t of app.state.tabs) { const n = (app.state.nodes[t.id] || []).find(x => x.id === id); if (n) return { n, tabId: t.id }; } return null; },
+    promote(id, tabId) {
+        const hit = this.findNode(id); if (!hit) return null;
+        const { n } = hit;
+        if (this.cardOf(n)) return this.cardOf(n);
+        const color = { q1: 'red', q2: 'green', q3: 'yellow' }[n.tag] || 'blue';
+        const card = app.quickAdd.create({ title: n.text, tabId: tabId || hit.tabId, project: n.project || '' });
+        card.color = color;
+        n.cardId = card.id;
+        app.saveToLocal();
+        if (app.state.view === 'matrix') this.renderFull();
+        app.ui.toast(`已轉成卡片「${card.title}」，棋子留在 ${this.coord(this.pos(n).x, this.pos(n).y)}`);
+        return card;
+    },
+    async removeNode(id) {
+        const hit = this.findNode(id); if (!hit) return;
+        if (!this.cardOf(hit.n) && !await app.ui.confirm('刪除棋子', `<p>刪除「${this.esc(hit.n.text)}」？</p>`, '刪除', true)) return;
+        app.state.nodes[hit.tabId] = app.state.nodes[hit.tabId].filter(n => n.id !== id);
+        app.saveToLocal(); this.renderFull();
+        if (this.cardOf(hit.n)) app.ui.toast('已拿掉棋子，卡片還在');
+    },
+    openProject(name) {
+        app.state.filters.activeProject = name || '';
+        this.pick = null;
+        app.switchView('matrix');
+        setTimeout(() => document.getElementById('matrix-quick-input')?.focus(), 50);
+    },
+
+    // ---------- 今日：用棋盤挑今天要做的事 ----------
+    todayHtml() {
+        const esc = x => this.esc(x), tab = this.todayTab();
+        const nodes = (app.state.nodes[tab] || []).filter(n => { const c = this.cardOf(n); return !c || Number(c.status) !== 2 || app.today.planOf(c, app.today.date()); });
+        const tabs = app.state.tabs.filter(t => (app.state.nodes[t.id] || []).length);
+        return `<div class="bd-today">
+            <div class="bd-today-head">${tabs.length > 1 ? `<select onchange="app.board.ui.tab=this.value; app.today.render()">${tabs.map(t => `<option value="${t.id}" ${t.id === tab ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select>` : ''}
+                <span class="td-meta">點棋子排進今天；淡色＝還沒轉成卡片的想法。</span>
+                <button type="button" class="ps-mini" onclick="app.switchView('matrix')">到棋盤編輯 →</button></div>
+            ${nodes.length ? `<div class="go-board-surface bd-today-board"><div class="go-grid-lines">${this.gridHtml(nodes, 'today')}</div></div>` : '<div class="data-empty">這個工作區的棋盤還是空的。新專案可以先到棋盤拆第一層。</div>'}
+        </div>`;
+    },
+    ui: { tab: '' },
+    todayTab() {
+        const ok = id => app.state.tabs.some(t => t.id === id);
+        if (ok(this.ui.tab)) return this.ui.tab;
+        if ((app.state.nodes[app.state.activeTabId] || []).length) return app.state.activeTabId;
+        return app.state.tabs.find(t => (app.state.nodes[t.id] || []).length)?.id || app.state.activeTabId;
+    },
+    async todayPick(id) {
+        const hit = this.findNode(id); if (!hit) return;
+        const c = this.cardOf(hit.n), date = app.today.date();
+        const p = c ? app.today.planOf(c, date) : null;
+        const v = await app.ui.dialog({
+            title: `${this.coord(this.pos(hit.n).x, this.pos(hit.n).y)}　${c ? app.today.name(c) : hit.n.text}`,
+            html: c ? `<p style="margin-top:0;" class="pm-hint">${p ? `目前：${{ must: '必做', opt: '備選', skip: '今天不做' }[p.pri] || ''}` : '還沒排進這天'}</p>` : '<p style="margin-top:0;" class="pm-hint">這還是一個想法，排進今天會先轉成卡片（棋子留在盤上）。</p>',
+            buttons: [{ label: '取消', value: null }, ...(c ? [{ label: '↗ 打開', value: 'open' }, { label: '不做', value: 'skip' }] : []), { label: '備選', value: 'opt' }, { label: '必做', value: 'must', primary: true }]
+        });
+        if (!v) return;
+        if (v === 'open') { app.today.focus(c.id); return; }
+        const card = c || this.promote(id);
+        if (card) app.today.classify(card.id, v);
+    }
+};
+
+// ==========================================
 // ✅ 清單：所有卡片的待辦、問題、問答集中在一頁（資料仍在卡片筆記裡，改這裡＝改卡片）
 // ==========================================
 app.lists = {
@@ -8831,6 +9016,7 @@ app.lists = {
                 <input class="pj-due" type="date" value="${esc(r.p.due || '')}" onchange="app.lists.setProject(${esc(JSON.stringify(r.n))}, 'due', this.value)" title="專案截止日">
                 <span class="pj-stat">未完成 ${r.open}・共 ${r.total} 張${r.mins ? ` · ⏱ ${esc(W.formatMinutes(r.mins))}` : ''}</span>
                 <span class="ct-actions">
+                    <button type="button" onclick="app.board.openProject(${esc(JSON.stringify(r.n))})" title="在發想棋盤上拆這個專案">♟</button>
                     <button type="button" onclick="app.lists.openProject(${esc(JSON.stringify(r.n))})" title="看這個專案的卡片">↗</button>
                     <button type="button" onclick="app.lists.mergeProject(${esc(JSON.stringify(r.n))})" title="合併到另一個專案（名字打錯、重複時用）">⇢</button>
                     ${r.total ? '' : `<button type="button" onclick="app.lists.removeProject(${esc(JSON.stringify(r.n))})" title="刪除這個專案（沒有卡片才能刪）">🗑</button>`}
@@ -8881,7 +9067,11 @@ app.lists = {
         if (!n) return;
         app.projectReg.set(n, { status: 'active' });
         this.render();
-        setTimeout(() => document.getElementById('pj-new')?.focus(), 0);
+        app.ui.dialog({
+            title: `新專案「${n}」`,
+            html: '<p style="margin-top:0;">要先到發想棋盤拆第一層嗎？把想到的大塊一顆顆落下、排好位置，再轉成卡片。</p>',
+            buttons: [{ label: '之後再說', value: null }, { label: '♟ 到棋盤拆第一層', value: 'go', primary: true }]
+        }).then(v => { if (v === 'go') app.board.openProject(n); else setTimeout(() => document.getElementById('pj-new')?.focus(), 0); });
     },
     openProject(name) { this.ui.project = name; this.ui.tab = 'cards'; this.savePrefs(); this.render(); },
 
@@ -8972,7 +9162,7 @@ app.lists = {
         const tabOrder = Object.fromEntries(app.state.tabs.map((t, i) => [t.id, i]));
         return [...map.entries()].map(([key, rs]) => ({
             key, rows: rs,
-            label: U.ctGroup === 'ws' ? (app.state.tabs.find(t => t.id === key)?.name || '未知') : (key === this.NO_PROJECT ? '（沒有專案）' : key)
+            label: U.ctGroup === 'ws' ? (app.state.tabs.find(t => t.id === key)?.name || '未知') : (key === this.NO_PROJECT ? '雜項（沒填專案）' : key)
         })).sort((a, b) => U.ctGroup === 'ws' ? (tabOrder[a.key] ?? 99) - (tabOrder[b.key] ?? 99)
             : (a.key === this.NO_PROJECT) - (b.key === this.NO_PROJECT) || a.label.localeCompare(b.label, 'zh-Hant'));
     },
@@ -9004,7 +9194,7 @@ app.lists = {
         if (this.ui.ctGroup === 'ws') { app.actions.moveCard(cardId, groupKey); return; }
         r.card.project = groupKey === this.NO_PROJECT ? '' : groupKey;
         app.refreshCard(cardId);
-        app.ui.toast(`專案改成「${r.card.project || '（沒有專案）'}」`);
+        app.ui.toast(`專案改成「${r.card.project || '雜項'}」`);
     },
     dragStart(e, id) {
         this._drag = id;
