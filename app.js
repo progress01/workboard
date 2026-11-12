@@ -1,5 +1,5 @@
 // =====================================================================
-// 白板 & 心流沙盒 v6.7
+// 白板 & 心流沙盒 v6.8
 // ---------------------------------------------------------------------
 // v3.0 重整重點（資料邏輯）：
 // 1. 所有修改只走一個入口 app.saveToLocal()（= store.markDirty）：
@@ -27,7 +27,7 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 const provider = new firebase.auth.GoogleAuthProvider();
 
-const APP_VERSION = '6.7';
+const APP_VERSION = '6.8';
 const SCHEMA_VERSION = 3;
 const CLOUD_DOC_SOFT_LIMIT = 750 * 1024;   // 超過時提醒
 const CLOUD_DOC_HARD_LIMIT = 1000 * 1000;  // Firestore 單一文件上限約 1 MiB，保守一點
@@ -8735,8 +8735,15 @@ app.docRecord = {
     prompt(card) {
         return [
             '請把下面這張工作卡的資料，整理成一份 Trello 卡片描述，讓之後的我（或接手的人）不用問就看得懂脈絡。',
-            '規則：',
-            '1. 照【格式】的段落寫，用 Markdown（Trello 支援）。段落沒有資料就寫「（待補）」，不要自己補成事實。',
+            '',
+            '【第一步：先問我，補足紀錄】',
+            '先對照【格式】檢查資料缺什麼，特別是：為什麼有這件事、誰提出或牽涉誰、做過哪些決定和原因、最後的結果或現在卡在哪、有哪些檔案或畫面值得截圖。',
+            '一次問我最多 5 個問題，挑最影響別人看懂的先問。每題簡短，能用選項就給選項，讓我好回答。',
+            '我回答後，如果還有關鍵缺口可以再問一輪（最多 3 題）；我說「直接寫」或「不知道」的就略過。',
+            '資料已經夠清楚的話，跳過提問，直接寫。',
+            '',
+            '【第二步：寫紀錄】',
+            '1. 照【格式】的段落寫，用 Markdown（Trello 支援）。我的回答要寫進去；問了也沒答案的寫「（待補）」，不要自己補成事實。',
             '2. 過程紀錄依日期整理，合併重複、刪掉瑣碎的計時，留下有意義的進展與結果。',
             '3. 在適合放截圖的地方標「📷 建議截圖：…」，說明要截什麼。',
             '4. 簡潔，條列為主。最後只輸出卡片描述本身，放在一個程式碼區塊裡，方便我複製。',
@@ -8753,7 +8760,7 @@ app.docRecord = {
         app.ui.dialog({
             title: `📝 整理成 Trello 紀錄：${card.title || '（未命名）'}`,
             wide: true,
-            html: `<p class="pm-hint" style="margin-top:0;">段落結束時用：卡片完成、告一段落，或筆記太長不想留在白板上。圖片 AI 放不了，貼到 Trello 時自己補。</p>
+            html: `<p class="pm-hint" style="margin-top:0;">段落結束時用：卡片完成、告一段落，或筆記太長不想留在白板上。AI 會先問你幾個問題把缺的補齊，再寫紀錄。圖片 AI 放不了，貼到 Trello 時自己補。</p>
                 <div class="bt-step"><b>① 複製給 AI</b>
                     <div class="bt-row"><button type="button" class="worklog-add-btn" onclick="app.docRecord.send()">🤖 複製提示（含「關於我」${masked ? `，${masked} 組敏感名稱會先代換` : ''}）</button></div>
                     <details><summary class="pm-hint">紀錄格式（可以改，會記住）</summary>
@@ -8761,7 +8768,7 @@ app.docRecord = {
                         <button type="button" class="ps-mini" onclick="app.docRecord.saveTemplate(''); app.ui.toast('已恢復預設格式，重新打開就看得到')">恢復預設格式</button>
                     </details>
                 </div>
-                <div class="bt-step"><b>② 把 AI 寫好的貼回來</b>${masked ? '<span class="pm-hint">（代號會自動換回真名）</span>' : '<span class="pm-hint">（可略過，直接從 AI 複製到 Trello 也行）</span>'}
+                <div class="bt-step"><b>② 回答 AI 的問題，把最後寫好的紀錄貼回來</b>${masked ? '<span class="pm-hint">（代號會自動換回真名）</span>' : '<span class="pm-hint">（可略過，直接從 AI 複製到 Trello 也行）</span>'}
                     <textarea class="ps-input" id="dr-result" style="min-height:120px;" placeholder="整段貼上，包含程式碼區塊也可以" oninput="app.docRecord.state.result=this.value"></textarea>
                     <div class="bt-row"><button type="button" class="worklog-add-btn" onclick="app.docRecord.copyResult()">📋 複製成 Trello 用的文字</button></div>
                 </div>
@@ -8790,7 +8797,7 @@ app.docRecord = {
         if (navigator.share && /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent)) {
             try { await navigator.share({ text }); return; } catch (err) { if (err?.name === 'AbortError') return; }
         }
-        app.worktime.copyText(text, '已複製，貼到 AI。寫好後貼回第②步');
+        app.worktime.copyText(text, '已複製，貼到 AI。先回答它的問題，最後的紀錄貼回第②步');
     },
     clean(raw) {
         let t = String(raw || '');
