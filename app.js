@@ -1,5 +1,5 @@
 // =====================================================================
-// 白板 & 心流沙盒 v6.4
+// 白板 & 心流沙盒 v6.5
 // ---------------------------------------------------------------------
 // v3.0 重整重點（資料邏輯）：
 // 1. 所有修改只走一個入口 app.saveToLocal()（= store.markDirty）：
@@ -27,7 +27,7 @@ const db = firebase.firestore();
 const auth = firebase.auth();
 const provider = new firebase.auth.GoogleAuthProvider();
 
-const APP_VERSION = '6.4';
+const APP_VERSION = '6.5';
 const SCHEMA_VERSION = 3;
 const CLOUD_DOC_SOFT_LIMIT = 750 * 1024;   // 超過時提醒
 const CLOUD_DOC_HARD_LIMIT = 1000 * 1000;  // Firestore 單一文件上限約 1 MiB，保守一點
@@ -493,7 +493,7 @@ const app = {
                     while (seenCard[card.id]) card.id += 'x';
                     seenCard[card.id] = true;
                     // 文字與日期欄位一律存成字串（舊資料或手動編輯可能留下數字等其他型別）
-                    ['title', 'content', 'project', 'category', 'deliverable', 'acceptance', 'nextStep', 'nextAction', 'waitingWho', 'waitingWhat', 'followUpDate',
+                    ['title', 'content', 'project', 'category', 'deliverable', 'acceptance', 'nextStep', 'nextAction', 'waitingWho', 'waitingWhat', 'followUpDate', 'docUrl',
                      'chronicleSummary', 'chronicleDate', 'dateStart', 'dateEnd', 'dateSingle', 'actualStart', 'actualEnd', 'timeCategory', 'dateMode', 'color'].forEach(k => {
                         if (card[k] !== undefined && card[k] !== null && typeof card[k] !== 'string') card[k] = String(card[k]);
                     });
@@ -570,7 +570,7 @@ const app = {
 
     // 跟著雲端同步的設定（時段、可專心時數、公司專案清單、專案名稱對照）。沒設過的沿用這台電腦以前的值。
     settings: {
-        KEYS: ['todaySlots', 'todayBudget', 'companyProjects', 'companyProjectMap', 'aiAbout'],
+        KEYS: ['todaySlots', 'todayBudget', 'companyProjects', 'companyProjectMap', 'aiAbout', 'trelloTemplate'],
         all() { try { const v = JSON.parse(app.state.sandbox.settings || '{}'); return v && typeof v === 'object' ? v : {}; } catch { return {}; } },
         get(k) { const v = this.all(); return v[k] !== undefined ? v[k] : app.prefs?.[k]; },
         set(k, val) {
@@ -2440,6 +2440,7 @@ const app = {
                             <span class="pm-collapse-summary">${esc(summary)}</span>
                             <span class="pm-collapse-icon">展開 ▾</span>
                         </button>
+                        ${card.docUrl ? `<a class="pm-doc-link" href="${esc(app.refs.href(card.docUrl))}" target="_blank" rel="noopener" title="${esc(card.docUrl)}">📁 Trello／文件</a>` : ''}
                     </div>`;
             }
 
@@ -2521,6 +2522,12 @@ const app = {
                                     <input class="task-meta-input" ${fk('followUpDate')} type="date" value="${esc(card.followUpDate || '')}" title="哪天要追" onchange="app.worktime.updateCardField('${id}','followUpDate',this.value,'${source}')">
                                     ${waitingSet ? `<span style="display:flex;gap:4px;"><button type="button" class="worklog-action-btn" onclick="app.gcal.followUp('${id}')" title="在追蹤日加一個提醒到 Google 日曆">📅 提醒</button><button type="button" class="worklog-action-btn" onclick="app.worktime.clearWaiting('${id}','${source}')" title="已收到回覆，清除等待">✓ 收到了</button></span>` : '<span></span>'}
                                 </div>
+                            </div>
+                            <div class="doc-box">
+                                <span class="task-meta-label">📁 Trello／文件</span>
+                                <input class="task-meta-input" ${fk('docUrl')} value="${esc(card.docUrl || '')}" placeholder="貼上 Trello 卡或文件的網址（脈絡、圖片放那邊）" oninput="app.worktime.editText('${id}','docUrl',this.value,'${source}')">
+                                ${card.docUrl ? `<a class="worklog-action-btn" href="${esc(app.refs.href(card.docUrl))}" target="_blank" rel="noopener" title="打開">↗</a>` : ''}
+                                <button type="button" class="worklog-action-btn" onclick="app.docRecord.open('${id}')" title="把這張卡的筆記、待辦、問答、工時整理成一份紀錄，請 AI 照格式寫，貼到 Trello">📝 整理成 Trello 紀錄</button>
                             </div>
                             ${conflictPanel}
                         </div>
@@ -8665,6 +8672,149 @@ app.quickAdd = {
 };
 
 // ==========================================
+// 📝 整理成 Trello 紀錄：段落結束時（完成、告一段落、筆記太長）把脈絡交給 AI 照格式寫，貼到 Trello；
+// 白板只留連結。格式可以自己改（跟著雲端同步）。
+// ==========================================
+app.docRecord = {
+    DEFAULT_TEMPLATE: [
+        '# {專案}｜{標題}',
+        '',
+        '## 背景',
+        '為什麼有這件事、誰提出、牽涉哪些單位或人。',
+        '',
+        '## 目標與交付',
+        '要交出什麼；怎樣算完成。',
+        '',
+        '## 過程紀錄',
+        '依日期排序，一行一筆：日期｜做了什麼｜結果。',
+        '',
+        '## 決定與原因',
+        '做了哪些決定、為什麼。沒有就寫「無」。',
+        '',
+        '## 問題與回答',
+        '❓ 問題 → 💬 回答；還沒有答案的標「待確認」。',
+        '',
+        '## 目前狀態',
+        '完成／進行中；下一步；在等誰、等什麼。',
+        '',
+        '## 相關連結與附件',
+        '連結列表。',
+        '📷 建議截圖：標出哪些地方放截圖最能看懂脈絡（我會自己貼）。'
+    ].join('\n'),
+    state: { cardId: '', result: '' },
+    esc(x) { return app.entries.escapeHtml(x); },
+    template() { return String(app.settings.get('trelloTemplate') || '').trim() || this.DEFAULT_TEMPLATE; },
+    data(card) {
+        const W = app.worktime, tabId = app.actions.tabOfCard(card.id);
+        const st = ['未開始', '進行中', '已完成', '卡住／等待'][Number(card.status) || 0] || '';
+        const logs = (card.workLogs || []).slice().sort((a, b) => String(a.workDate).localeCompare(String(b.workDate)))
+            .map(l => `- ${l.workDate}｜${Math.round(l.minutes)} 分｜${String(l.note || '').replace(/\n/g, ' ')}`);
+        const entries = (card.entries || []).map(e => `- ${String(e.createdAt || '').slice(0, 10)}｜${e.title || ''}：${String(e.content || '').replace(/\n+/g, ' ').slice(0, 400)}`);
+        const refs = (card.refs || []).map(r => r.type === 'card' ? `- 相關卡片：${W.getCard(r.cardId)?.title || r.title || ''}` : `- ${r.title || ''} ${r.url || ''}`.trim());
+        const note = String(card.content || '').trim();
+        return [
+            `標題：${card.title || '（未命名）'}`,
+            `專案：${card.project || '雜項'}　工作區：${app.state.tabs.find(t => t.id === tabId)?.name || ''}`,
+            `狀態：${st}　預計：${W.plannedStart(card) || '—'} ～ ${W.plannedEnd(card) || '—'}　實際：${card.actualStart || '—'} ～ ${card.actualEnd || '—'}`,
+            `總工時：${W.formatMinutes(W.totalMinutes(card))}`,
+            card.deliverable ? `要交出什麼：${card.deliverable}` : '',
+            card.acceptance ? `怎樣算完成：${card.acceptance}` : '',
+            card.nextStep ? `下一步：${card.nextStep}` : '',
+            (card.waitingWho || card.waitingWhat) ? `在等：${card.waitingWho || ''} ${card.waitingWhat || ''}（追蹤日 ${card.followUpDate || '未定'}）` : '',
+            '', '【筆記】（含 - [ ] 待辦、❓ 問題、💬 回答、🕒 時間戳記）', note ? (note.length > 8000 ? note.slice(0, 8000) + '\n…（後面省略）' : note) : '（沒有）',
+            ...(entries.length ? ['', '【工作紀錄】', ...entries] : []),
+            ...(logs.length ? ['', '【工時紀錄】', ...logs.slice(-60)] : []),
+            ...(refs.length ? ['', '【參考】', ...refs] : [])
+        ].filter(x => x !== '').join('\n').replace(/\n{3,}/g, '\n\n');
+    },
+    prompt(card) {
+        return [
+            '請把下面這張工作卡的資料，整理成一份 Trello 卡片描述，讓之後的我（或接手的人）不用問就看得懂脈絡。',
+            '規則：',
+            '1. 照【格式】的段落寫，用 Markdown（Trello 支援）。段落沒有資料就寫「（待補）」，不要自己補成事實。',
+            '2. 過程紀錄依日期整理，合併重複、刪掉瑣碎的計時，留下有意義的進展與結果。',
+            '3. 在適合放截圖的地方標「📷 建議截圖：…」，說明要截什麼。',
+            '4. 簡潔，條列為主。最後只輸出卡片描述本身，放在一個程式碼區塊裡，方便我複製。',
+            '',
+            '【格式】', this.template(),
+            '',
+            '【卡片資料】', this.data(card)
+        ].join('\n');
+    },
+    open(cardId) {
+        const card = app.worktime.getCard(cardId); if (!card) return;
+        this.state = { cardId, result: '' };
+        const esc = x => this.esc(x), masked = (app.batch?.maskPairs?.() || []).length;
+        app.ui.dialog({
+            title: `📝 整理成 Trello 紀錄：${card.title || '（未命名）'}`,
+            wide: true,
+            html: `<p class="pm-hint" style="margin-top:0;">段落結束時用：卡片完成、告一段落，或筆記太長不想留在白板上。圖片 AI 放不了，貼到 Trello 時自己補。</p>
+                <div class="bt-step"><b>① 複製給 AI</b>
+                    <div class="bt-row"><button type="button" class="worklog-add-btn" onclick="app.docRecord.send()">🤖 複製提示（含「關於我」${masked ? `，${masked} 組敏感名稱會先代換` : ''}）</button></div>
+                    <details><summary class="pm-hint">紀錄格式（可以改，會記住）</summary>
+                        <textarea class="ps-input" style="min-height:160px;" onchange="app.docRecord.saveTemplate(this.value)">${esc(this.template())}</textarea>
+                        <button type="button" class="ps-mini" onclick="app.docRecord.saveTemplate(''); app.ui.toast('已恢復預設格式，重新打開就看得到')">恢復預設格式</button>
+                    </details>
+                </div>
+                <div class="bt-step"><b>② 把 AI 寫好的貼回來</b>${masked ? '<span class="pm-hint">（代號會自動換回真名）</span>' : '<span class="pm-hint">（可略過，直接從 AI 複製到 Trello 也行）</span>'}
+                    <textarea class="ps-input" id="dr-result" style="min-height:120px;" placeholder="整段貼上，包含程式碼區塊也可以" oninput="app.docRecord.state.result=this.value"></textarea>
+                    <div class="bt-row"><button type="button" class="worklog-add-btn" onclick="app.docRecord.copyResult()">📋 複製成 Trello 用的文字</button></div>
+                </div>
+                <div class="bt-step"><b>③ 貼到 Trello 後，把網址貼回來</b>
+                    <input class="task-meta-input" id="dr-url" value="${esc(card.docUrl || '')}" placeholder="https://trello.com/c/…" style="width:100%;">
+                    <label class="pm-hint" style="display:flex;gap:6px;align-items:center;margin-top:6px;"><input type="checkbox" id="dr-log" checked> 在卡片筆記最後加一行「已整理到 Trello」（日期＋連結）</label>
+                </div>`,
+            buttons: [{ label: '關閉', value: null }, { label: '儲存連結', value: 'ok', primary: true }]
+        }).then(v => {
+            if (v !== 'ok') return;
+            const url = String(document.getElementById('dr-url')?.value || this._url || '').trim();
+            this.saveUrl(cardId, url, this._log !== false);
+        });
+        setTimeout(() => {
+            const u = document.getElementById('dr-url'), l = document.getElementById('dr-log');
+            this._url = u?.value || ''; this._log = true;
+            u?.addEventListener('input', () => { this._url = u.value; });
+            l?.addEventListener('change', () => { this._log = l.checked; });
+        }, 30);
+    },
+    saveTemplate(v) { app.settings.set('trelloTemplate', String(v || '').trim() && String(v).trim() !== this.DEFAULT_TEMPLATE ? String(v).trim() : undefined); },
+    async send() {
+        const card = app.worktime.getCard(this.state.cardId); if (!card) return;
+        let text = app.aiText(this.prompt(card));
+        if (app.batch?.mask) text = app.batch.mask(text);
+        if (navigator.share && /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent)) {
+            try { await navigator.share({ text }); return; } catch (err) { if (err?.name === 'AbortError') return; }
+        }
+        app.worktime.copyText(text, '已複製，貼到 AI。寫好後貼回第②步');
+    },
+    clean(raw) {
+        let t = String(raw || '');
+        const m = t.match(/```(?:markdown|md)?\s*\n([\s\S]*?)```/);
+        if (m) t = m[1];
+        if (app.batch?.unmask) t = app.batch.unmask(t);
+        return t.trim();
+    },
+    copyResult() {
+        const t = this.clean(this.state.result || document.getElementById('dr-result')?.value);
+        if (!t) { app.ui.toast('先把 AI 寫好的內容貼到第②步', 'warn'); return; }
+        app.worktime.copyText(t, '已複製，貼到 Trello 卡片的描述');
+    },
+    saveUrl(cardId, url, log) {
+        const card = app.worktime.getCard(cardId); if (!card) return;
+        if (!url) return;
+        const changed = card.docUrl !== url;
+        card.docUrl = url;
+        if (log) {
+            const W = app.worktime, d = W.localDateString();
+            card.content = String(card.content || '').replace(/\s*$/, '') + `${card.content ? '\n' : ''}📁 ${d} 已整理到 Trello：${url}`;
+        }
+        app.saveToLocal();
+        app.refreshCard ? app.refreshCard(cardId) : app.renderAll();
+        app.ui.toast(changed || log ? '已存好 Trello 連結' : '連結沒有變');
+    }
+};
+
+// ==========================================
 // ♟ 發想棋盤：拆解的第一層。位置＝我自己分的區塊，座標（例如 D4）方便稱呼。
 // 棋子轉成卡片後留在盤上，卡片做完會顯示出來，看得出每一塊推進到哪。
 // ==========================================
@@ -9125,7 +9275,7 @@ app.lists = {
                 <select class="ct-type" onchange="app.today.setType('${card.id}', this.value)" title="任務類型"><option value="">—</option>${app.today.TYPE_ORDER.map(k => `<option value="${k}" ${k === card.taskType ? 'selected' : ''}>${app.today.TYPES[k].icon} ${app.today.TYPES[k].name}</option>`).join('')}</select>
                 <select class="ct-status st-${st}" onchange="app.lists.setStatus('${card.id}', this.value)">${statusOpts.map(v => `<option value="${v}" ${v === st ? 'selected' : ''}>${esc(W.statusLabel(v))}</option>`).join('')}</select>
                 <input class="ct-date ${dueCls}" type="date" value="${esc(end)}" onchange="app.lists.setDate('${card.id}', this.value)" title="${end ? '預計完成日（清空＝改回自由卡片）' : '選日期＝變成排程工項'}">
-                <span class="ct-info">${subs.length ? `<span title="待辦完成／全部">☑ ${doneN}/${subs.length}</span>` : ''}${openQ ? `<span title="未答問題">❓ ${openQ}</span>` : ''}${mins ? `<span title="已記工時">⏱ ${esc(W.formatMinutes(mins))}</span>` : ''}</span>
+                <span class="ct-info">${card.docUrl ? `<a href="${esc(app.refs.href(card.docUrl))}" target="_blank" rel="noopener" title="Trello／文件：${esc(card.docUrl)}">📁</a>` : ''}${subs.length ? `<span title="待辦完成／全部">☑ ${doneN}/${subs.length}</span>` : ''}${openQ ? `<span title="未答問題">❓ ${openQ}</span>` : ''}${mins ? `<span title="已記工時">⏱ ${esc(W.formatMinutes(mins))}</span>` : ''}</span>
                 <span class="ct-actions"><button type="button" class="ct-move" onclick="app.lists.moveBy('${card.id}',-1)" title="往上">▲</button><button type="button" class="ct-move" onclick="app.lists.moveBy('${card.id}',1)" title="往下">▼</button><button type="button" onclick="app.sandbox.focusTaskForTimer('${card.id}')" title="進心流專注這張卡">🎯</button><button type="button" onclick="app.actions.jumpToCard('${card.id}','${tabId}')" title="到時間軸看這張卡">↗</button><button type="button" onclick="app.actions.deleteCard('${card.id}','${tabId}')" title="刪除這張卡（可在「資料 → 最近刪除」救回）">🗑</button></span>
             </div>`;
         };
